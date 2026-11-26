@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useId, useState, useEffect } from 'react';
 import { apiRequest } from '../../../services/apiClient';
 import { Product } from '../../../types';
 import { toPersianDigits } from '../../../utils/formatters';
@@ -8,16 +8,17 @@ import { CampaignDiscountBadge } from '../../../components/common/CampaignDiscou
 import { productWeightLabel, resolveStockBadge } from '../../../utils/productPurchase';
 import { toPersianDigits as toPersianDigitsFmt } from '../../../utils/formatters';
 
-// FIX 13: tabs live INSIDE the info column, directly after the info
-// block and BEFORE the variant selector (live bundle order: info with
-// tabs at its end -> variant box -> buy bar). The Fix 12 full-width
-// placement below the grid was wrong.
-export const ProductDetailTabs: React.FC<{ product: Product; fashion?: boolean }> = ({ product, fashion = false }) => {
+export const ProductDetailTabs: React.FC<{ product: Product; fashion?: boolean; central?: boolean }> = ({ product, fashion = false, central = false }) => {
+  const id = useId();
   const [tab, setTab] = useState<'specs' | 'reviews'>('specs');
   return (
-      <div className="pt-1">
+      <div className={central ? "central-pdp-details" : "pt-1"}>
+        {central && <h2 className="text-xl font-extrabold">دربارهٔ کالا</h2>}
         <div className={`flex border-b ${fashion ? 'border-[#e5e0d8]' : 'border-slate-200'} text-xs lg:text-sm font-bold mb-2`}>
           <button
+            type="button"
+            aria-pressed={tab === 'specs'}
+            aria-controls={id}
             onClick={() => setTab('specs')}
             className={`pb-1.5 pt-2.5 px-3 border-b-2 ${
               tab === 'specs'
@@ -32,6 +33,9 @@ export const ProductDetailTabs: React.FC<{ product: Product; fashion?: boolean }
             مشخصات فنی
           </button>
           <button
+            type="button"
+            aria-pressed={tab === 'reviews'}
+            aria-controls={id}
             onClick={() => setTab('reviews')}
             className={`pb-1.5 pt-2.5 px-3 border-b-2 ${
               tab === 'reviews'
@@ -47,9 +51,13 @@ export const ProductDetailTabs: React.FC<{ product: Product; fashion?: boolean }
           </button>
         </div>
 
+        <div id={id}>
         {tab === 'specs' ? (
           <div className="space-y-2 text-xs lg:text-sm">
-            <p className={`${fashion ? 'text-[#737373]' : 'text-slate-600'} text-[11px] lg:text-sm leading-relaxed`}>{product.description}</p>
+            {product.description?.trim() && <p className={`${fashion ? 'text-[#737373]' : 'text-slate-600'} text-[11px] lg:text-sm leading-relaxed`}>{product.description}</p>}
+            {central && !product.description?.trim() && !Object.keys(product.specs || {}).length && !productWeightLabel(product) && (
+              <p className="text-sm text-[#53665e]">هنوز توضیح یا مشخصات فنی برای این کالا ثبت نشده است.</p>
+            )}
             {Object.entries(product.specs || {}).length > 0 || productWeightLabel(product) ? (
               <div className={fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-2.5 divide-y divide-[#e5e0d8]' : 'bg-slate-50 rounded-xl p-2.5 divide-y divide-slate-200'}>
                 {/* P0: weight/dims are the first specs rows (they follow
@@ -78,6 +86,7 @@ export const ProductDetailTabs: React.FC<{ product: Product; fashion?: boolean }
         ) : (
           <ReviewsTab productId={product.id} fashion={fashion} />
         )}
+        </div>
       </div>
   );
 };
@@ -155,8 +164,8 @@ export const ProductStockLine: React.FC<{ product: Product; fashion?: boolean; s
   );
 };
 
-export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean; selectedVariantId?: string | null }> = ({ product, fashion = false, selectedVariantId = null }) => {
-  const { formatPrice, toPersianDigits, currentStore, categories, openCatalogCategory, openCatalogBrand, setActiveView, routeStoreSlug } = useStore();
+export const ProductDetailAssurances: React.FC<{ product: Product; fashion?: boolean; central?: boolean }> = ({ product, fashion = false, central = false }) => {
+  const { currentStore, toPersianDigits } = useStore();
   // Live parity (bundle t3): the return window comes from
   // GET /public/return-window-days (valid 1..365, else null);
   // when the value is missing/failed live renders no number.
@@ -171,7 +180,43 @@ export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean; 
       .catch(() => {});
     return () => { on = false; };
   }, []);
-  const isDropshipperStore = currentStore.ownerType === 'dropshipper';
+  const isDropshipperStore = currentStore?.ownerType === 'dropshipper';
+  return (
+      <div className={central ? 'central-pdp-assurances' : fashion ? 'bg-white rounded-none p-2.5 space-y-1.5 text-[11px] text-[#737373] border border-[#e5e0d8]' : 'bg-slate-50 rounded-xl p-2.5 space-y-1.5 text-[11px] text-slate-600 border border-slate-200'}>
+        <div className={fashion ? 'flex items-center gap-1.5 text-[#1c1c1a] font-bold' : 'flex items-center gap-1.5 text-brand-deep font-bold'}>
+          <Truck className={fashion ? 'w-4 h-4 text-[#1c1c1a]' : 'w-4 h-4 text-brand-deep'}  strokeWidth={1.5}/>
+          <span>
+            {isDropshipperStore
+              ? 'ارسال با بسته‌بندی ایمن پستی به سراسر کشور'
+              : 'ارسال از انبار مرکزی با بسته‌بندی ایمن'}
+          </span>
+        </div>
+        <div className={`grid grid-cols-2 gap-1 pt-1 border-t ${fashion ? 'border-[#e5e0d8]' : 'border-slate-200'}`}>
+          <span className="flex items-center gap-1">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600"  strokeWidth={1.5}/>
+            {product.supplierWarranty || 'ضمانت اصالت و سلامت'}
+          </span>
+          <span className="flex items-center gap-1">
+            <RotateCcw className={fashion ? 'w-3.5 h-3.5 text-[#737373]' : 'w-3.5 h-3.5 text-blue-600'}  strokeWidth={1.5}/>
+            {returnWindowDays != null ? `${toPersianDigits(returnWindowDays)} روز مهلت تست و بازگشت` : 'مهلت تست و بازگشت'}
+          </span>
+        </div>
+        {/* P0: effective weight/dims of the selected variant (inherits
+            the product's when the variant has none); hidden when empty. */}
+        {!central && productWeightLabel(product) && (
+          <div className="flex items-center gap-1 flex-wrap pt-1">
+            <Package className={fashion ? 'w-3.5 h-3.5 text-[#737373] shrink-0' : 'w-3.5 h-3.5 text-slate-500 shrink-0'} strokeWidth={1.5} />
+            <span>{productWeightLabel(product)}</span>
+          </div>
+        )}
+      </div>
+  );
+};
+
+export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean; central?: boolean; selectedVariantId?: string | null }> = ({
+  product, fashion = false, central = false, selectedVariantId = null,
+}) => {
+  const { formatPrice, toPersianDigits, categories, openCatalogCategory, openCatalogBrand, setActiveView, routeStoreSlug } = useStore();
   // FIX 13 (sweep-corrected): live branches delivery copy on the
   // store's ownerType (ownerType === 'dropshipper'), NOT on the
   // product warehouse — the Fix 12 warehouse branch was wrong for
@@ -194,7 +239,7 @@ export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean; 
   }
 
   return (
-    <div className="space-y-3.5 text-xs">
+    <div className={central ? "central-pdp-intro" : "space-y-3.5 text-xs"}>
       {breadcrumb.length > 0 && (
         <nav aria-label="مسیر صفحه" className={`flex flex-wrap items-center gap-x-1 text-[11px] lg:text-sm ${fashion ? 'text-[#737373]' : 'text-slate-500'}`}>
           <button type="button" onClick={() => { if (routeStoreSlug) setActiveView('seller_storefront', { storeSlug: routeStoreSlug }); else setActiveView('customer'); if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' }); }} className="hover:underline">خانه</button>
@@ -204,16 +249,16 @@ export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean; 
               <button type="button" onClick={() => openCatalogCategory(b.slug)} className="hover:underline">{b.title}</button>
             </React.Fragment>
           ))}
-          <span aria-hidden="true">/</span>
-          <span aria-current="page" className="font-bold">{product.title}</span>
+          {!central && <span aria-hidden="true">/</span>}
+          {!central && <span aria-current="page" className="font-bold">{product.title}</span>}
         </nav>
       )}
-      <div className={`flex items-center justify-between text-[11px] lg:text-sm ${fashion ? 'text-[#737373]' : 'text-slate-500'}`}>
-        <span>دسته: {categoryTitle}</span>
+      <div className={`flex flex-wrap items-center gap-3 text-[11px] lg:text-sm ${fashion ? 'text-[#737373]' : 'text-slate-500'}`}>
+        {!central && <span>دسته: {categoryTitle}</span>}
         {product.brand ? <button type="button" onClick={() => openCatalogBrand(product.brand!)} className={fashion ? 'hover:underline hover:text-[#1c1c1a] font-bold cursor-pointer' : 'hover:underline hover:text-brand-deep font-bold cursor-pointer'}>برند: {product.brand}</button> : null}
       </div>
 
-      <h1 className={fashion ? 'text-xl lg:text-[32px] font-extrabold text-[#1c1c1a] leading-[1.4] tracking-normal' : 'text-base lg:text-2xl font-extrabold text-slate-900 leading-snug'}>{product.title}</h1>
+      <h1 className={fashion ? 'text-xl lg:text-[32px] font-extrabold text-[#1c1c1a] leading-[1.4] tracking-normal' : central ? 'central-pdp-title' : 'text-base lg:text-2xl font-extrabold text-slate-900 leading-snug'}>{product.title}</h1>
 
       {/* FIX 14: live renders no rating/sales line at all when the values
           are zero (rating only if rating>0 && reviews>0, sales only if >0). */}
@@ -236,36 +281,10 @@ export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean; 
         </div>
       )}
 
-      <div className={fashion ? 'bg-white rounded-none p-2.5 space-y-1.5 text-[11px] text-[#737373] border border-[#e5e0d8]' : 'bg-slate-50 rounded-xl p-2.5 space-y-1.5 text-[11px] text-slate-600 border border-slate-200'}>
-        <div className={fashion ? 'flex items-center gap-1.5 text-[#1c1c1a] font-bold' : 'flex items-center gap-1.5 text-brand-deep font-bold'}>
-          <Truck className={fashion ? 'w-4 h-4 text-[#1c1c1a]' : 'w-4 h-4 text-brand-deep'}  strokeWidth={1.5}/>
-          <span>
-            {isDropshipperStore
-              ? 'ارسال با بسته‌بندی ایمن پستی به سراسر کشور'
-              : 'ارسال از انبار مرکزی با بسته‌بندی ایمن'}
-          </span>
-        </div>
-        <div className={`grid grid-cols-2 gap-1 pt-1 border-t ${fashion ? 'border-[#e5e0d8]' : 'border-slate-200'}`}>
-          <span className="flex items-center gap-1">
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600"  strokeWidth={1.5}/>
-            {product.supplierWarranty || 'ضمانت اصالت و سلامت'}
-          </span>
-          <span className="flex items-center gap-1">
-            <RotateCcw className={fashion ? 'w-3.5 h-3.5 text-[#737373]' : 'w-3.5 h-3.5 text-blue-600'}  strokeWidth={1.5}/>
-            {returnWindowDays != null ? `${toPersianDigits(returnWindowDays)} روز مهلت تست و بازگشت` : 'مهلت تست و بازگشت'}
-          </span>
-        </div>
-        {/* P0: effective weight/dims of the selected variant (inherits
-            the product's when the variant has none); hidden when empty. */}
-        {productWeightLabel(product) && (
-          <div className="flex items-center gap-1 flex-wrap pt-1">
-            <Package className={fashion ? 'w-3.5 h-3.5 text-[#737373] shrink-0' : 'w-3.5 h-3.5 text-slate-500 shrink-0'} strokeWidth={1.5} />
-            <span>{productWeightLabel(product)}</span>
-          </div>
-        )}
-      </div>
+      {!central && <ProductDetailAssurances product={product} fashion={fashion} />}
 
-            {product.discountPercent > 0 && (
+      {!central && <>
+      {product.discountPercent > 0 && (
         <CampaignDiscountBadge
           campaignName={product.campaignName || 'جشنواره تخفیف فروشگاه'}
           discountPercent={product.discountPercent}
@@ -302,7 +321,7 @@ export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean; 
           )}
         </div>
       </div>
-
+      </>}
     </div>
   );
 };

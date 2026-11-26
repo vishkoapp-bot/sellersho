@@ -1,193 +1,158 @@
-import { HelpExplainer } from '../common/HelpExplainer';
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { isMockMode } from '../../services/apiClient';
 import { ArrowRight, User, Package, Heart, ShieldCheck, LogOut, ChevronLeft, Wallet, RotateCcw } from 'lucide-react';
-import { orderApi, CustomerReturnDto } from '../../services/orderApi';
+import { orderApi, type CustomerReturnDto } from '../../services/orderApi';
 import { toPersianDigits } from '../../utils/formatters';
+import { HelpExplainer } from '../common/HelpExplainer';
 
-// F1: «مرجوعی‌های من» menu row — same pattern as the Orders row. The
-// count comes from orderApi.getMyReturns() (one extra GET /returns on
-// profile open); null = still loading. The window note is part of the row
-// so it never implies returns are possible outside the 7-day window.
-export const CustomerReturnsMenuRow: React.FC<{
-  returnsCount: number | null;
-  onOpen: () => void;
-}> = ({ returnsCount, onOpen }) => (
-  <button
-    onClick={onOpen}
-    className="w-full p-3.5 flex items-center justify-between hover:bg-slate-50 transition-colors text-right"
-  >
-    <div className="flex items-center gap-2.5">
-      <RotateCcw className="w-4 h-4 text-amber-600" strokeWidth={1.5}/>
-      <div>
-        <span className="font-bold text-slate-800 block">مرجوعی‌های من</span>
-        <span className="text-[10px] text-slate-400 block">
-          {returnsCount === null
-            ? 'در حال دریافت…'
-            : returnsCount === 0
-              ? 'هنوز مرجوعی‌ای ثبت نکرده‌اید'
-              : `${toPersianDigits(returnsCount)} مرجوعی ثبت شده`}
-        </span>
-        <span className="text-[10px] text-slate-400 block">۷ روز مهلت تست و عودت کالا پس از تحویل</span>
+type AccountLayoutProps = React.PropsWithChildren<{
+  title: string;
+  onBack: () => void;
+  extra?: React.ReactNode;
+  central: boolean;
+}>;
+
+export const CustomerAccountLayout: React.FC<AccountLayoutProps> = ({ title, onBack, extra, central, children }) => {
+  const Container = central ? 'main' : 'div';
+  const tone = {
+    '--account-accent': central ? '#164638' : 'var(--color-brand-deep)',
+    '--account-soft': central ? '#edf2e9' : 'var(--color-brand-soft)',
+  } as React.CSSProperties;
+  return (
+    <Container id={central ? 'main-content' : undefined} tabIndex={central ? -1 : undefined} style={tone}
+      className={`flex-1 ${central ? 'bg-[#f8f6ef] text-[#172d26]' : 'bg-slate-50 text-slate-900'}`}>
+      <div className="mx-auto w-full max-w-6xl px-4 pb-12 pt-5 sm:px-6 sm:pt-9 lg:px-8">
+        <header className="mb-5 flex flex-wrap items-center justify-between gap-3 sm:mb-7">
+          <div className="flex min-w-0 items-center gap-3">
+            <button type="button" onClick={onBack} aria-label="بازگشت به فروشگاه"
+              className="grid size-11 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-[var(--account-accent)] hover:bg-[var(--account-soft)]">
+              <ArrowRight className="size-5" aria-hidden="true" />
+            </button>
+            <h1 className="text-xl font-black sm:text-3xl">{title}</h1>
+          </div>
+          {extra}
+        </header>
+        {children}
       </div>
-    </div>
-    <ChevronLeft className="w-4 h-4 text-slate-400" strokeWidth={1.5}/>
+    </Container>
+  );
+};
+
+type AccountRowProps = React.PropsWithChildren<{
+  title: string;
+  icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean }>;
+  onOpen: () => void;
+}>;
+const AccountRow: React.FC<AccountRowProps> = ({ title, icon: Icon, onOpen, children }) => (
+  <button type="button" onClick={onOpen}
+    className="flex w-full items-center gap-3 px-4 py-3.5 text-start hover:bg-[var(--account-soft)] sm:px-5">
+    <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-[var(--account-soft)] text-[var(--account-accent)]">
+      <Icon className="size-5" aria-hidden />
+    </span>
+    <span className="min-w-0 flex-1">
+      <span className="block text-sm font-bold">{title}</span>
+      <span className="mt-0.5 block text-xs leading-6 text-slate-600">{children}</span>
+    </span>
+    <ChevronLeft className="size-4 shrink-0 text-slate-600" aria-hidden="true" />
   </button>
 );
 
+export const CustomerReturnsMenuRow: React.FC<{
+  returnsCount: number | null;
+  unavailable?: boolean;
+  onOpen: () => void;
+}> = ({ returnsCount, unavailable, onOpen }) => (
+  <AccountRow title="مرجوعی‌های من" icon={RotateCcw} onOpen={onOpen}>
+    <span className="block">{unavailable ? 'پیگیری وضعیت مرجوعی' : returnsCount === null
+      ? 'در حال دریافت…'
+      : returnsCount === 0 ? 'هنوز مرجوعی‌ای ثبت نکرده‌اید' : `${toPersianDigits(returnsCount)} مرجوعی ثبت شده`}</span>
+    <span className="block">۷ روز مهلت تست و عودت کالا پس از تحویل</span>
+  </AccountRow>
+);
+
 export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
-  const { 
-    customerUser, logoutCustomer, orders, wishlistIds, 
-    setActiveView, openStaticPage, formatPrice, toPersianDigits 
+  const {
+    customerUser, logoutCustomer, orders, wishlistIds, currentStore, routeStoreSlug,
+    setActiveView, openStaticPage, formatPrice,
   } = useStore();
   const { success } = useToast();
+  const central = routeStoreSlug == null && currentStore?.ownerType !== 'dropshipper';
+  const storeId = currentStore?.id;
+  const orderCount = storeId ? orders.filter(order => order.storeId === storeId).length : 0;
 
-  const handleLogout = () => {
-    logoutCustomer();
-    success('با موفقیت از حساب کاربری خارج شدید.');
-    onBack(); // بازگشت به صفحه اصلی
-  };
-
-  // OrderContext contains only this authenticated account's backend-owned list.
-  const myOrders = orders;
-
-  // F1: one extra GET /returns on profile open for the returns count.
-  // (CustomerOrdersView fetches the same list again on mount — the store
-  // context does not hold it, so sharing would need a lift; the spec
-  // allows the single extra fetch.)
   const [myReturns, setMyReturns] = useState<CustomerReturnDto[] | null>(null);
+  const [returnsUnavailable, setReturnsUnavailable] = useState(false);
   useEffect(() => {
+    if (central && !customerUser.isLoggedIn) return;
     let active = true;
     orderApi.getMyReturns()
       .then((list) => { if (active) setMyReturns(list); })
-      .catch(() => { if (active) setMyReturns([]); });
+      .catch(() => { if (active) setReturnsUnavailable(true); });
     return () => { active = false; };
-  }, []);
+  }, [central, customerUser.isLoggedIn, customerUser.mobile]);
 
-  // F1 destination: the existing «مرجوعی‌های من» section inside the
-  // Orders view — zero new backend, reuses the tested flow. Scroll to the
-  // section once the view has mounted.
   const goToReturns = () => {
     setActiveView('customer_orders');
-    setTimeout(() => {
-      if (typeof document === 'undefined') return;
-      const heading = Array.from(document.querySelectorAll('h2'))
-        .find((h) => h.textContent?.includes('مرجوعی‌های من'));
-      heading?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 250);
+    const url = new URL(window.location.href);
+    url.hash = 'returns';
+    window.history.replaceState(window.history.state, '', url);
+  };
+
+  const returnsCount = myReturns && myReturns.filter(row => orders.some(order => order.id === row.orderId && order.storeId === storeId)).length;
+  const logout = () => {
+    logoutCustomer();
+    success('از حساب کاربری خارج شدید.');
+    onBack();
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-[#f8fafc] select-none pb-20">
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 px-3.5 py-2.5 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <button onClick={onBack} className="p-1 rounded-lg hover:bg-slate-100 text-slate-700">
-            <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
-          </button>
-          <h1 className="text-xs font-bold text-slate-900">پروفایل کاربری من</h1>
-        </div>
-        <button onClick={handleLogout} className="text-rose-600 hover:text-rose-700 text-xs font-bold flex items-center gap-1">
-          <LogOut className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-          <span>خروج</span>
-        </button>
-      </header>
-
-      <div className="p-3.5 space-y-3">
-        {/* User Card */}
-        <div className="bg-white rounded-2xl border border-slate-200/90 p-4 shadow-2xs space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-base">
-                <User className="w-6 h-6"  strokeWidth={1.5}/>
-              </div>
-              <div>
-                <h2 className="text-xs font-bold text-slate-900">{customerUser.fullName}</h2>
-                <span className="text-[11px] text-slate-500 font-mono" dir="ltr">
-                  {toPersianDigits(customerUser.mobile)}
-                </span>
+    <CustomerAccountLayout title="پروفایل کاربری من" onBack={onBack} central={central}
+      extra={<button type="button" onClick={logout} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-rose-200 bg-white px-3 text-sm font-bold text-rose-800 hover:bg-rose-50">
+        <LogOut className="size-4" aria-hidden="true" /> خروج
+      </button>}>
+      <div className={`grid items-start gap-4 ${central ? 'lg:grid-cols-[minmax(260px,1fr)_minmax(0,1.8fr)] lg:gap-6' : ''}`}>
+        <div className="space-y-4">
+          <section className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-6" aria-label="مشخصات حساب">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="grid size-12 shrink-0 place-items-center rounded-xl bg-[var(--account-soft)] text-[var(--account-accent)]">
+                <User className="size-6" aria-hidden="true" />
+              </span>
+              <div className="min-w-0">
+                {customerUser.fullName && <h2 className="break-words text-base font-extrabold">{customerUser.fullName}</h2>}
+                <bdi dir="ltr" className="inline-block select-text text-sm font-semibold">{toPersianDigits(customerUser.mobile)}</bdi>
               </div>
             </div>
-            <span className="text-[9px] bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold px-2 py-0.5 rounded-full">
-              تایید هویت پیامکی
-            </span>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100 text-[10px] text-slate-500">
-            <div>
-              <span>کد ملی:</span>
-              <strong className="font-mono text-slate-700 mr-1">{toPersianDigits(customerUser.nationalCode)}</strong>
-            </div>
-            <div>
-              <span>عضویت:</span>
-              <strong className="text-slate-700 mr-1">۱۴۰۵ (پذیرش فعال)</strong>
-            </div>
-          </div>
-        </div>
-
-        {/* Balance Card */}
-        <div className="bg-gradient-to-l from-slate-900 to-slate-800 rounded-2xl p-3.5 text-white shadow-xs space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Wallet className="w-4 h-4 text-emerald-400"  strokeWidth={1.5}/>
-              <span className="text-xs font-bold">کیف پول و پاداش خرید</span>
+            <p className="mt-4 flex items-center gap-2 text-xs font-semibold text-[var(--account-accent)]">
+              <ShieldCheck className="size-4" aria-hidden="true" /> شمارهٔ موبایل تأیید شده
+            </p>
+            {customerUser.nationalCode && <p className="mt-2 border-t border-slate-100 pt-2 text-xs text-slate-600">
+              کد ملی <bdi dir="ltr" className="ms-1 select-text font-bold">{toPersianDigits(customerUser.nationalCode)}</bdi>
+            </p>}
+          </section>
+          {!central && <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-xs">
+            <span className="flex items-center gap-1.5 font-bold">
+              <Wallet className="size-4 text-[var(--account-accent)]" aria-hidden="true" /> کیف پول و پاداش خرید
               <HelpExplainer text="مبالغ کش‌بک و بازگشت وجه خریدهای قبلی شما به صورت خودکار در فاکتورهای بعدی اعمال می‌شود." />
-            </div>
-            <span className="text-sm font-black text-emerald-400">{formatPrice(isMockMode() ? 340000 : 0)} تومان</span>
-          </div>
+            </span>
+            <strong>{formatPrice(isMockMode() ? 340000 : 0)} تومان</strong>
+          </div>}
         </div>
 
-        {/* Menu Items */}
-        <div className="bg-white rounded-2xl border border-slate-200/90 divide-y divide-slate-100 shadow-2xs overflow-hidden text-xs">
-          <button
-            onClick={() => setActiveView('customer_orders')}
-            className="w-full p-3.5 flex items-center justify-between hover:bg-slate-50 transition-colors text-right"
-          >
-            <div className="flex items-center gap-2.5">
-              <Package className="w-4 h-4 text-blue-600"  strokeWidth={1.5}/>
-              <div>
-                <span className="font-bold text-slate-800 block">سفارش‌های من</span>
-                <span className="text-[10px] text-slate-400">{toPersianDigits(myOrders.length)} سفارش ثبت شده</span>
-              </div>
-            </div>
-            <ChevronLeft className="w-4 h-4 text-slate-400"  strokeWidth={1.5}/>
-          </button>
-
-          <CustomerReturnsMenuRow
-            returnsCount={myReturns === null ? null : myReturns.length}
-            onOpen={goToReturns}
-          />
-
-          <button
-            onClick={() => setActiveView('customer_wishlist')}
-            className="w-full p-3.5 flex items-center justify-between hover:bg-slate-50 transition-colors text-right"
-          >
-            <div className="flex items-center gap-2.5">
-              <Heart className="w-4 h-4 text-rose-500"  strokeWidth={1.5}/>
-              <div>
-                <span className="font-bold text-slate-800 block">لیست علاقه‌مندی‌ها</span>
-                <span className="text-[10px] text-slate-400">{toPersianDigits(wishlistIds.length)} کالای نشان‌شده</span>
-              </div>
-            </div>
-            <ChevronLeft className="w-4 h-4 text-slate-400"  strokeWidth={1.5}/>
-          </button>
-
-          <button
-            onClick={() => openStaticPage('terms')}
-            className="w-full p-3.5 flex items-center justify-between hover:bg-slate-50 transition-colors text-right"
-          >
-            <div className="flex items-center gap-2.5">
-              <ShieldCheck className="w-4 h-4 text-emerald-600"  strokeWidth={1.5}/>
-              <div>
-                <span className="font-bold text-slate-800 block">قوانین و ضمانت انبار مرکزی</span>
-                <span className="text-[10px] text-slate-400">۷ روز مهلت تست و عودت کالا</span>
-              </div>
-            </div>
-            <ChevronLeft className="w-4 h-4 text-slate-400"  strokeWidth={1.5}/>
-          </button>
-        </div>
+        <nav aria-label="امکانات حساب" className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <AccountRow title="سفارش‌های من" icon={Package} onOpen={() => setActiveView('customer_orders')}>
+            {orderCount === 0 ? 'وضعیت خریدهای این فروشگاه' : `${toPersianDigits(orderCount)} سفارش در این فروشگاه`}
+          </AccountRow>
+          <CustomerReturnsMenuRow returnsCount={returnsCount} unavailable={returnsUnavailable} onOpen={goToReturns} />
+          <AccountRow title="علاقه‌مندی‌ها" icon={Heart} onOpen={() => setActiveView('customer_wishlist')}>
+            {wishlistIds.length === 0 ? 'کالاهای ذخیره‌شده برای خرید بعدی' : `${toPersianDigits(wishlistIds.length)} کالای ذخیره‌شده`}
+          </AccountRow>
+          <AccountRow title="شرایط خرید و مرجوعی" icon={ShieldCheck} onOpen={() => openStaticPage('terms')}>
+            قوانین خرید و ضمانت کالا
+          </AccountRow>
+        </nav>
       </div>
-    </div>
+    </CustomerAccountLayout>
   );
 };

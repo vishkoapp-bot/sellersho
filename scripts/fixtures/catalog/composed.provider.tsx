@@ -70,6 +70,23 @@ const products = Array.from({ length: 24 }, (_, index) => ({
   isActive: true,
   image: '/templates/fashion/knitwear.webp',
 } as ProductDto));
+if (routeParams.has('pdp-flow')) {
+  const stock = routeParams.has('sold-out') ? 0 : 4;
+  Object.assign(products[0], {
+    productType: 'variable',
+    stock,
+    image: fixtureImages[0],
+    images: fixtureImages,
+    variants: [
+      { id: 'pdp-stone', name: 'سنگی', spnc: 'PDP-STONE', attributes: {}, minCartQty: 2, stock },
+      { id: 'pdp-forest', name: 'سبز', spnc: 'PDP-FOREST', attributes: {}, minCartQty: 1, stock: Math.min(stock, 1) },
+    ],
+    variantPrices: {
+      'pdp-stone': { price: 100000, originalPrice: 100000, discountPercent: 0 },
+      'pdp-forest': { price: 150000, originalPrice: 180000, discountPercent: 17 },
+    },
+  });
+}
 const central = { id: 'fixture-central', slug: 'central', name: 'فروشگاه مرکزی', ownerType: 'central' as const };
 const seller = {
   id: 'fixture-store', slug: 'batch-eight-store', name: 'فروشگاه نمونه', ownerType: 'dropshipper',
@@ -536,7 +553,7 @@ function FixtureControls() {
     toast: toast.showToast,
     openWorkspace: (view: ActiveView) => store.setActiveView(view),
     state: () => ({ view: store.activeView, catalogTotal: store.catalogTotal, productCount: store.products.length,
-      userId: currentUser?.id, isSessionReady,
+      userId: currentUser?.id, isSessionReady, storeSlug: store.currentStore.slug,
       stores: store.stores.map(entry => entry.id) }),
     openCheckout: (shipping: number) => {
       fixture.shipping = shipping;

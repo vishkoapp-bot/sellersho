@@ -1,20 +1,19 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useId } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { isProductPublishedInStore } from '../../utils/storeAssortment';
 import { useToast } from '../../context/ToastContext';
 import { Product } from '../../types';
-import { activeProductVariants, initialPurchaseVariant, productForVariant, purchaseLimits, resolvePurchase, cartQuantityAllowed } from '../../utils/productPurchase';
+import { activeProductVariants, initialPurchaseVariant, isHiddenSyntheticVariant, productForVariant, purchaseLimits, resolvePurchase, cartQuantityAllowed } from '../../utils/productPurchase';
 import { ProductDetailRelated } from './product/ProductDetailRelated';
 import { ProductDetailGallery } from './product/ProductDetailGallery';
-import { ProductDetailInfo, ProductDetailTabs } from './product/ProductDetailInfo';
+import { ProductDetailAssurances, ProductDetailInfo, ProductDetailTabs } from './product/ProductDetailInfo';
 import { catalogApi } from '../../services/catalogApi';
 import { buildProductUrl } from '../../utils/routing';
 import { NotFoundView } from '../NotFoundView';
-import { storefrontProducts } from '../storefront/templates/templateTypes';
 import { resolvePdpTheme } from './product/pdpTheme';
 import { mapBackendProduct } from '../../context/ProductContext';
 import { ProductVariantSelector } from '../ProductVariantSelector';
-import { ArrowRight, Share2, Heart, ShoppingCart } from 'lucide-react';
+import { ArrowRight, Share2, Heart, ShoppingCart, Minus, Plus, PackageCheck, PackageX, Zap } from 'lucide-react';
 import { ReturnWindowBadge } from '../ReturnWindowBadge';
 import { BuyNowAddressModal } from '../BuyNowAddressModal';
 
@@ -33,7 +32,6 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     setDirectBuyAddress,
     clearDirectBuy,
     currentStore,
-    cartItemsCount,
     cart,
     products,
     openProductDetail,
@@ -43,9 +41,25 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     stores,
   } = useStore();
   const { success, info, error } = useToast();
+  // PDP store scope: the route scope (a /store/<slug>/product/ URL or
+  // a storefront click) wins; otherwise a dropshipper current store
+  // scopes its own PDP. Derived BEFORE the detail fetch so a cold
+  // store-product URL is store-priced from the very first request -
+  // keying the fetch on currentStore alone flashed the central price
+  // until the context alignment installed the routed store.
+  const scopedStoreSlug: string | null =
+    routeStoreSlug ??
+    (currentStore?.ownerType === 'dropshipper' && currentStore.slug
+      ? currentStore.slug
+      : null);
+  const central = scopedStoreSlug == null;
   const buyBarRef = useRef<HTMLDivElement>(null);
+  const purchaseRef = useRef<HTMLElement>(null);
+  const purchaseId = useId();
+  const [purchaseInView, setPurchaseInView] = useState(true);
   const [showFloatingBuyBar, setShowFloatingBuyBar] = useState(false);
   useEffect(() => {
+    if (central || typeof IntersectionObserver === 'undefined') return;
     let previousY = window.scrollY;
     let observedBar: HTMLDivElement | null = null;
     const observer = new IntersectionObserver((entries) => {
@@ -73,10 +87,10 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
       window.removeEventListener('scroll', updateBuyBar);
       window.removeEventListener('resize', updateBuyBar);
     };
-  }, [product.id, routeStoreSlug]);
+  }, [central, product.id, routeStoreSlug]);
 
-  const [qty, setQty] = useState(1);
-  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
+  const [quantity, setQty] = useState(1);
+  const [variantChoice, setVariantChoice] = useState<{ productId: string; id: string; linkedSpnc: string | null }>();
   // FIX 14b: live PDP addon cards (variant -> addon cards -> buy bar).
   const [selectedAddonIds, setSelectedAddonIds] = useState<string[]>([]);
   const [buyNowModalOpen, setBuyNowModalOpen] = useState(false);
@@ -104,17 +118,16 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     const t = setTimeout(() => setStoreResolveTimedOut(true), 15000);
     return () => clearTimeout(t);
   }, [routeStoreSlug, routeStoreResolved]);
-  // PDP store scope: the route scope (a /store/<slug>/product/ URL or
-  // a storefront click) wins; otherwise a dropshipper current store
-  // scopes its own PDP. Derived BEFORE the detail fetch so a cold
-  // store-product URL is store-priced from the very first request -
-  // keying the fetch on currentStore alone flashed the central price
-  // until the context alignment installed the routed store.
-  const scopedStoreSlug: string | null =
-    routeStoreSlug ??
-    (currentStore?.ownerType === 'dropshipper' && currentStore.slug
-      ? currentStore.slug
-      : null);
+  useEffect(() => {
+    const purchase = buyBarRef.current;
+    if (!central || !purchase || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(([entry]) => {
+      setPurchaseInView(entry.isIntersecting);
+    }, { rootMargin: '0px 0px -68px 0px' });
+    observer.observe(purchase);
+    return () => observer.disconnect();
+  }, [central, product.id]);
+
   useEffect(() => {
     setDetailProduct(null);
     setDetailFailed(false);
@@ -176,20 +189,24 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
 
   const displayBase = detailProduct?.id === product.id ? detailProduct : product;
   const variants = activeProductVariants(displayBase);
+  const visibleVariants = variants.filter(variant => !isHiddenSyntheticVariant(displayBase, variant));
+  const linkedSpnc = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('spnc');
+  const manualVariant = variantChoice?.productId === displayBase.id && variantChoice.linkedSpnc === linkedSpnc
+    ? visibleVariants.find(variant => variant.id === variantChoice.id)
+    : undefined;
+  const selectedVariant = manualVariant ?? initialPurchaseVariant(displayBase, linkedSpnc, displayBase.storeDefaultVariantId);
   useEffect(() => {
-    let spnc: string | null = null;
-    try { spnc = new URLSearchParams(window.location.search).get('spnc'); } catch {}
-    const next = variants.find((variant) => variant.id === selectedVariantId) ?? initialPurchaseVariant(displayBase, spnc, displayBase.storeDefaultVariantId);
-    setSelectedVariantId(next?.id ?? null);
-    setQty(next ? purchaseLimits(displayBase, next).minQty : 1);
-  }, [displayBase.id, displayBase.variants]);
-  useEffect(() => { setSelectedAddonIds([]); }, [product.id]);
+    setSelectedAddonIds([]);
+    setQty(1);
+  }, [product.id]);
 
   const wishlisted = isWishlisted(product.id, pdpStore);
-  const showVariantSelector = variants.length > 1 || displayBase.productType === 'variable';
-  const selectedVariant = variants.find((variant) => variant.id === selectedVariantId) ?? initialPurchaseVariant(displayBase, null, displayBase.storeDefaultVariantId);
+  const showVariantSelector = central
+    ? visibleVariants.length > 1 || displayBase.productSchema?.attributes.some(attribute => attribute.role === 'axis') === true
+    : variants.length > 1 || displayBase.productType === 'variable';
   const displayProduct = productForVariant(displayBase, selectedVariant);
   const { minQty, maxQty } = purchaseLimits(displayBase, selectedVariant);
+  const qty = Math.max(minQty, Math.min(quantity, maxQty));
   const purchase = resolvePurchase(displayBase, selectedVariant?.id);
   const outOfStock = !purchase;
   // FIX 14b: live buy-now price is (price + sum of selected addon
@@ -203,24 +220,30 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
   const handleSelectVariant = (id: string) => {
     const variant = variants.find((item) => item.id === id);
     if (!variant || !resolvePurchase(displayBase, id)) return;
-    setSelectedVariantId(id);
+    setVariantChoice({ productId: displayBase.id, id, linkedSpnc });
     const { minQty: min, maxQty: max } = purchaseLimits(displayBase, variant);
-    setQty((quantity) => Math.max(min, Math.min(quantity, max)));
+    setQty(Math.max(min, Math.min(qty, max)));
   };
   const related = (scopedStoreSlug ? scopedRelated ?? [] : products)
     .filter((p) => p.category === product.category && p.id !== product.id && isProductPublishedInStore(currentStore, p.id))
     .slice(0, 4);
 
-  const handleShare = () => {
-    if (navigator.clipboard) {
-      // Share the canonical product URL for THIS PDP's store scope,
-      // not the address bar: a scoped PDP reached through a legacy
-      // storeless path must still share the store's link, so the
-      // recipient lands in the same store at the same prices.
-      const url = window.location.origin + buildProductUrl(displayBase, scopedStoreSlug ?? undefined)
-        + (selectedVariant?.spnc ? `?spnc=${encodeURIComponent(selectedVariant.spnc)}` : '');
-      navigator.clipboard.writeText(url);
-      success('لینک کالا در حافظه کپی شد.');
+  const handleShare = async () => {
+    const url = window.location.origin + buildProductUrl(displayBase, scopedStoreSlug ?? undefined)
+      + (selectedVariant?.spnc ? `?spnc=${encodeURIComponent(selectedVariant.spnc)}` : '');
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: displayBase.title, url });
+        return;
+      } catch (failure) {
+        if (failure instanceof DOMException && failure.name === 'AbortError') return;
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      success('لینک کالا کپی شد.');
+    } catch {
+      error('اشتراک‌گذاری انجام نشد. می‌توانید نشانی صفحه را از نوار مرورگر کپی کنید.');
     }
   };
 
@@ -397,6 +420,191 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     </>
   );
 
+  const gallery = (
+    <ProductDetailGallery
+      mainImage={displayProduct.image}
+      images={displayProduct.images}
+      title={displayProduct.title}
+      discountPercent={displayProduct.discountPercent}
+      fashion={fashion}
+      central={central}
+      fallbackImage={displayBase.image}
+      saleEndsAt={displayProduct.saleTo}
+      saleStartsAt={displayProduct.saleFrom}
+    />
+  );
+  const selectionControls = (
+    <>
+      {showVariantSelector && selectedVariant && (
+        <div className={central ? 'central-pdp-options' : fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-3' : 'bg-white border border-slate-200 rounded-2xl p-3'}>
+          {central && <h3>انتخاب مدل کالا</h3>}
+          <ProductVariantSelector
+            product={displayBase}
+            variants={variants}
+            variantPrices={displayProduct.variantPrices}
+            selectedId={selectedVariant.id}
+            onSelect={handleSelectVariant}
+            storeCount={scopedStoreSlug ? 0 : displayProduct.storeCount}
+            theme={fashion ? 'fashion' : 'default'}
+          />
+        </div>
+      )}
+      {central && !showVariantSelector && displayBase.productType === 'variable' && selectedVariant && (
+        <p className="text-sm text-[#53665e]">مدل کالا <strong className="text-[#172d26]">{selectedVariant.variantName || selectedVariant.name}</strong></p>
+      )}
+      {detailAddons.length > 0 && (
+        <div className={central ? 'central-pdp-extras space-y-2' : fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-3 space-y-2' : 'bg-white border border-slate-200 rounded-2xl p-3 space-y-2'}>
+          <h3 className={fashion ? 'text-xs font-bold text-[#1c1c1a]' : 'text-xs font-bold text-slate-800'}>{displayBase.addonSectionTitle || 'محصولات مکمل'}{central && <span className="font-normal text-[#53665e]"> · اختیاری</span>}</h3>
+          {detailAddons.map((addon) => {
+            const checked = selectedAddonIds.includes(addon.id);
+            return (
+              <label key={addon.id} className={central ? 'central-pdp-addon' : fashion ? 'flex items-start gap-2 rounded-none border border-[#e5e0d8] px-3 py-2 cursor-pointer hover:bg-[#faf8f5]' : 'flex items-start gap-2 rounded-xl border border-slate-200 px-3 py-2 cursor-pointer hover:bg-slate-50'}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => setSelectedAddonIds((prev) => checked ? prev.filter((id) => id !== addon.id) : [...prev, addon.id])}
+                  className={central ? 'size-4 shrink-0 accent-[#164638]' : fashion ? 'w-4 h-4 mt-0.5 shrink-0 accent-[#1c1c1a]' : 'w-4 h-4 mt-0.5 shrink-0 accent-brand'}
+                />
+                <span className="flex-1 min-w-0">
+                  <span className={fashion ? 'block text-xs font-bold text-[#1c1c1a]' : 'block text-xs font-bold text-slate-800'}>{addon.title}</span>
+                  {addon.description ? <span className={fashion ? 'block text-[11px] text-[#737373]' : 'block text-[11px] text-slate-500'}>{addon.description}</span> : null}
+                </span>
+                <span className={fashion ? 'text-xs font-bold text-[#1c1c1a] shrink-0' : 'text-xs font-bold text-brand-deep shrink-0'}>+{formatPrice(addon.feePerUnit)} {central ? 'تومان' : 'ت'}</span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+      <BuyNowAddressModal
+        fashion={fashion}
+        open={buyNowModalOpen}
+        item={{ title: product.title, qty, totalPrice: buyNowUnit * qty, ...(selectedVariant ? { variantLabel: selectedVariant.name } : {}) }}
+        onClose={() => { setBuyNowModalOpen(false); clearDirectBuy(); }}
+        onConfirm={(address) => { setDirectBuyAddress(address); setBuyNowModalOpen(false); setIsCartOpen(true); }}
+      />
+      {/* Team 08 (D62): return-window badge, only when Team 03's
+          returnWindowEndsAt data is present on the product. */}
+      {product.returnWindowEndsAt !== undefined && (
+        <div>
+          <ReturnWindowBadge returnWindowEndsAt={product.returnWindowEndsAt} />
+        </div>
+      )}
+    </>
+  );
+
+  if (central) {
+    const available = !outOfStock && publishedInCurrentStore;
+    const canAddToCart = Boolean(purchase && cartQuantityAllowed(cart, purchase, qty));
+    const subtotal = formatPrice(buyNowUnit * qty);
+    const showQuantity = maxQty > minQty || minQty > 1;
+    const productIsInCart = cart.some(line => line.product.id === product.id);
+    const purchaseShortcut = () => {
+      purchaseRef.current?.focus({ preventScroll: true });
+      purchaseRef.current?.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+    };
+
+    return (
+      <main id="main-content" tabIndex={-1} className="central-pdp" dir="rtl">
+        <div className="central-pdp-shell">
+          <header className="central-pdp-toolbar">
+            <button type="button" onClick={onBack} className="central-pdp-back">
+              <ArrowRight size={18} aria-hidden="true" />
+              <span>بازگشت</span>
+            </button>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={handleShare} aria-label="اشتراک‌گذاری" className="central-pdp-icon">
+                <Share2 size={18} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                aria-label="علاقه‌مندی"
+                aria-pressed={wishlisted}
+                onClick={() => {
+                  toggleWishlist(product.id, pdpStore);
+                  if (wishlisted) info('از لیست علاقه‌مندی‌ها حذف شد.');
+                  else success('به لیست علاقه‌مندی‌ها اضافه شد.');
+                }}
+                className="central-pdp-icon"
+              >
+                <Heart size={18} fill={wishlisted ? 'currentColor' : 'none'} aria-hidden="true" />
+              </button>
+            </div>
+          </header>
+
+          <div className="central-pdp-grid">
+            <ProductDetailInfo product={displayProduct} central />
+            <div className="central-pdp-gallery">{gallery}</div>
+            <section
+              className="central-pdp-purchase"
+              aria-labelledby={purchaseId}
+              ref={purchaseRef}
+              tabIndex={-1}
+            >
+              <div className="central-pdp-price">
+                <div>
+                  <h2 id={purchaseId}>قیمت کالا</h2>
+                  {displayProduct.originalPrice > displayProduct.price && (
+                    <del>{formatPrice(displayProduct.originalPrice)} تومان</del>
+                  )}
+                  <strong>{formatPrice(displayProduct.price)} <small>تومان</small></strong>
+                </div>
+                <div className="central-pdp-stock" data-available={available} role="status">
+                  {available ? <PackageCheck size={16} aria-hidden="true" /> : <PackageX size={16} aria-hidden="true" />}
+                  {available ? 'موجود در انبار' : 'ناموجود'}
+                </div>
+              </div>
+              {selectionControls}
+              <div ref={buyBarRef} className="central-pdp-buy">
+                {available ? (
+                  <>
+                    {showQuantity && (
+                      <div className="central-pdp-quantity">
+                        <span>تعداد</span>
+                        <div className="central-pdp-stepper">
+                          <button type="button" onClick={() => setQty(Math.max(minQty, qty - 1))} disabled={qty <= minQty} aria-label="کاهش تعداد">
+                            <Minus size={16} aria-hidden="true" />
+                          </button>
+                          <output aria-label="تعداد انتخاب‌شده">{toPersianDigits(qty)}</output>
+                          <button type="button" onClick={() => setQty(Math.min(maxQty, qty + 1))} disabled={qty >= maxQty} aria-label="افزایش تعداد">
+                            <Plus size={16} aria-hidden="true" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    <div className="central-pdp-subtotal">
+                      <span>{selectedAddonIds.length > 0 ? 'جمع کالا و گزینه‌های انتخابی' : 'جمع کالا'}</span>
+                      <strong>{subtotal} تومان</strong>
+                    </div>
+                    <p className="central-pdp-shipping-note">هزینهٔ ارسال پس از انتخاب نشانی مشخص می‌شود.</p>
+                    <div className="central-pdp-actions">
+                      <button type="button" onClick={handleAddToCart} disabled={!canAddToCart} className="central-pdp-primary">
+                        <ShoppingCart size={18} aria-hidden="true" /> افزودن به سبد
+                      </button>
+                      <button type="button" onClick={handleBuyNow} className="central-pdp-secondary">
+                        <Zap size={17} aria-hidden="true" /> خرید فوری
+                      </button>
+                    </div>
+                    {productIsInCart && <button type="button" className="central-pdp-cart-link" onClick={() => setIsCartOpen(true)}>مشاهدهٔ سبد خرید</button>}
+                    {!canAddToCart && <p className="text-sm text-[#9e3434]" role="status">با احتساب تعداد داخل سبد، موجودی برای افزودن این تعداد کافی نیست.</p>}
+                  </>
+                ) : <p className="central-pdp-unavailable">در حال حاضر امکان خرید این گزینه وجود ندارد.</p>}
+              </div>
+              <ProductDetailAssurances product={displayProduct} central />
+            </section>
+          </div>
+          <ProductDetailTabs key={product.id} product={displayProduct} central />
+          <ProductDetailRelated products={related} fashion={false} central onOpen={openProductDetail} />
+        </div>
+        {available && !purchaseInView && (
+          <div className="central-pdp-mobile-buy lg:hidden">
+            <span><small>{selectedAddonIds.length > 0 ? 'جمع کالا و گزینه‌ها' : 'جمع کالا'}</small><strong>{subtotal} تومان</strong></span>
+            <button type="button" onClick={purchaseShortcut} className="central-pdp-primary">گزینه‌های خرید</button>
+          </div>
+        )}
+      </main>
+    );
+  }
+
   return (
     <div
       className={fashion ? 'flex-1 flex flex-col bg-[#faf8f5] text-[#1c1c1a] select-none pb-36 lg:pb-8' : 'flex-1 flex flex-col bg-white select-none pb-36 lg:pb-8'}
@@ -449,74 +657,14 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
           360-440px at lg), details left in RTL, stacked on mobile. */}
       <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(360px,440px)] xl:grid-cols-[minmax(0,620px)_minmax(400px,520px)] 2xl:grid-cols-[minmax(0,760px)_minmax(480px,640px)] lg:gap-8 xl:gap-16 lg:px-8 xl:px-10 2xl:px-12 lg:py-6 xl:justify-center">
       {/* Gallery */}
-      <div className="lg:self-stretch">
-      <ProductDetailGallery
-        mainImage={displayProduct.image}
-        images={displayProduct.images}
-        title={displayProduct.title}
-        discountPercent={displayProduct.discountPercent}
-        fashion={fashion}
-        fallbackImage={displayBase.image}
-        saleEndsAt={displayProduct.saleTo}
-        saleStartsAt={displayProduct.saleFrom}
-      />
-      </div>
+      <div className="lg:self-stretch">{gallery}</div>
 
       {/* Info column — live order: info (with tabs at its end) ->
           variant box -> buy bar. No sticky bottom bar on desktop. */}
       <div className="p-3.5 space-y-4 lg:p-0">
         <ProductDetailInfo product={displayProduct} fashion={fashion} selectedVariantId={selectedVariant?.id ?? null} />
         <ProductDetailTabs product={displayProduct} fashion={fashion} />
-        {showVariantSelector && selectedVariant && (
-          <div className={fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-3' : 'bg-white border border-slate-200 rounded-2xl p-3'}>
-            <ProductVariantSelector
-              product={displayBase}
-              variants={variants}
-              variantPrices={displayProduct.variantPrices}
-              selectedId={selectedVariant.id}
-              onSelect={handleSelectVariant}
-              storeCount={scopedStoreSlug ? 0 : displayProduct.storeCount}
-              theme={fashion ? 'fashion' : 'default'}
-            />
-          </div>
-        )}
-        {detailAddons.length > 0 && (
-          <div className={fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-3 space-y-2' : 'bg-white border border-slate-200 rounded-2xl p-3 space-y-2'}>
-            <h4 className={fashion ? 'text-xs font-bold text-[#1c1c1a]' : 'text-xs font-bold text-slate-800'}>{displayBase.addonSectionTitle || 'محصولات مکمل'}</h4>
-            {detailAddons.map((addon) => {
-              const checked = selectedAddonIds.includes(addon.id);
-              return (
-                <label key={addon.id} className={fashion ? 'flex items-start gap-2 rounded-none border border-[#e5e0d8] px-3 py-2 cursor-pointer hover:bg-[#faf8f5]' : 'flex items-start gap-2 rounded-xl border border-slate-200 px-3 py-2 cursor-pointer hover:bg-slate-50'}>
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => setSelectedAddonIds((prev) => checked ? prev.filter((id) => id !== addon.id) : [...prev, addon.id])}
-                    className={fashion ? 'w-4 h-4 mt-0.5 shrink-0 accent-[#1c1c1a]' : 'w-4 h-4 mt-0.5 shrink-0 accent-brand'}
-                  />
-                  <span className="flex-1 min-w-0">
-                    <span className={fashion ? 'block text-xs font-bold text-[#1c1c1a]' : 'block text-xs font-bold text-slate-800'}>{addon.title}</span>
-                    {addon.description ? <span className={fashion ? 'block text-[11px] text-[#737373]' : 'block text-[11px] text-slate-500'}>{addon.description}</span> : null}
-                  </span>
-                  <span className={fashion ? 'text-xs font-bold text-[#1c1c1a] shrink-0' : 'text-xs font-bold text-brand-deep shrink-0'}>+{formatPrice(addon.feePerUnit)} ت</span>
-                </label>
-              );
-            })}
-          </div>
-        )}
-        <BuyNowAddressModal
-          fashion={fashion}
-          open={buyNowModalOpen}
-          item={{ title: product.title, qty, totalPrice: buyNowUnit * qty, ...(selectedVariant ? { variantLabel: selectedVariant.name } : {}) }}
-          onClose={() => { setBuyNowModalOpen(false); clearDirectBuy(); }}
-          onConfirm={(address) => { setDirectBuyAddress(address); setBuyNowModalOpen(false); setIsCartOpen(true); }}
-        />
-        {/* Team 08 (D62): return-window badge, only when Team 03's
-            returnWindowEndsAt data is present on the product. */}
-        {product.returnWindowEndsAt !== undefined && (
-          <div>
-            <ReturnWindowBadge returnWindowEndsAt={product.returnWindowEndsAt} />
-          </div>
-        )}
+        {selectionControls}
         <div ref={buyBarRef} className={buyBarClasses}>
           {buyBarControls}
         </div>

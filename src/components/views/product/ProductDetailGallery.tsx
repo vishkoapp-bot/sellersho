@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { ZoomIn, X, Sparkles, Package, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ZoomIn, X, Package, ChevronLeft, ChevronRight } from 'lucide-react';
 import { toPersianDigits } from '../../../utils/formatters';
 import { SaleCountdown } from '../../common/SaleCountdown';
 import { FallbackImage } from '../../common/FallbackImage';
@@ -11,6 +11,7 @@ interface Props {
   title: string;
   discountPercent?: number;
   fashion?: boolean;
+  central?: boolean;
   // P0: when the variant image itself 404s, fall back to the product
   // image (passed by the PDP as displayBase.image).
   fallbackImage?: string;
@@ -26,6 +27,7 @@ export const ProductDetailGallery: React.FC<Props> = ({
   title,
   discountPercent = 0,
   fashion = false,
+  central = false,
   fallbackImage,
   saleEndsAt,
   saleStartsAt,
@@ -33,6 +35,9 @@ export const ProductDetailGallery: React.FC<Props> = ({
   const validMainImage = typeof mainImage === 'string' && mainImage.trim() ? mainImage : null;
   const [selectedImg, setSelectedImg] = useState(validMainImage);
   const [isZoomOpen, setIsZoomOpen] = useState(false);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const zoomButtonRef = useRef<HTMLButtonElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   // P1-14: true once every main-image candidate has failed — the zoom
   // button, counter and arrows only make sense with a loaded image.
   const [mainImageFailed, setMainImageFailed] = useState(false);
@@ -41,7 +46,7 @@ export const ProductDetailGallery: React.FC<Props> = ({
     (image): image is string => typeof image === 'string' && image.trim().length > 0
   );
   const currentIndex = selectedImg && gallery.indexOf(selectedImg) !== -1 ? gallery.indexOf(selectedImg) : 0;
-  const touchX = useRef<number | null>(null);
+  const swipeStart = useRef<{ x: number; y: number } | null>(null);
   const goNext = () => { if (gallery.length > 1) setSelectedImg(gallery[(currentIndex + 1) % gallery.length]); };
   const goPrev = () => { if (gallery.length > 1) setSelectedImg(gallery[(currentIndex - 1 + gallery.length) % gallery.length]); };
 
@@ -69,22 +74,21 @@ export const ProductDetailGallery: React.FC<Props> = ({
   );
 
   useEffect(() => {
-    if (!isZoomOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setIsZoomOpen(false);
-      else if (e.key === 'ArrowLeft') goNext();
-      else if (e.key === 'ArrowRight') goPrev();
+    const dialog = dialogRef.current;
+    if (!isZoomOpen || !dialog) return;
+    dialog.showModal();
+    closeButtonRef.current?.focus({ preventScroll: true });
+    return () => {
+      if (dialog.open) dialog.close();
+      zoomButtonRef.current?.focus();
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isZoomOpen, currentIndex, gallery.length]);
+  }, [isZoomOpen]);
 
   // Imageless products get a designed empty state, not the giant
   // aspect-square frame: a short surface panel with a small centred
   // «بدون تصویر» treatment (tile surface in fashion, slate in the
   // central design). With an image the frame is the usual square.
-  const hasImage = gallery.length > 0;
+  const hasImage = mainSrcs.length > 0;
   const frameClass = !hasImage
     ? fashion
       ? 'relative w-full h-44 lg:h-64 bg-[#f2f2f2] rounded-none border border-[#e5e0d8] flex flex-col items-center justify-center gap-2 overflow-hidden'
@@ -94,24 +98,36 @@ export const ProductDetailGallery: React.FC<Props> = ({
       : 'relative w-full aspect-square xl:max-h-[560px] 2xl:max-h-[620px] bg-white rounded-3xl border border-slate-200/90 p-4 flex items-center justify-center overflow-hidden shadow-xs group';
 
   const swipeHandlers = {
-    onTouchStart: (e: React.TouchEvent) => { touchX.current = e.touches[0]?.clientX ?? null; },
-    onTouchEnd: (e: React.TouchEvent) => {
-      if (touchX.current == null || gallery.length <= 1) return;
-      const dx = (e.changedTouches[0]?.clientX ?? touchX.current) - touchX.current;
-      if (Math.abs(dx) > 48) { if (dx < 0) goNext(); else goPrev(); }
-      touchX.current = null;
+    onTouchStart: (event: React.TouchEvent) => {
+      const touch = event.touches[0];
+      swipeStart.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
     },
+    onTouchEnd: (event: React.TouchEvent) => {
+      const start = swipeStart.current;
+      const touch = event.changedTouches[0];
+      swipeStart.current = null;
+      if (!start || !touch || gallery.length <= 1) return;
+      const dx = touch.clientX - start.x;
+      const dy = touch.clientY - start.y;
+      if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy)) {
+        if (dx < 0) goNext();
+        else goPrev();
+      }
+    },
+    onTouchCancel: () => { swipeStart.current = null; },
   };
 
   return (
-    <div className={fashion ? 'p-3.5 bg-[#faf8f5] border-b border-[#e5e0d8] lg:sticky lg:top-24' : 'p-3.5 bg-slate-50/70 border-b border-slate-100 lg:sticky lg:top-24'}>
+    <div className={central ? 'central-pdp-gallery-card' : fashion ? 'p-3.5 bg-[#faf8f5] border-b border-[#e5e0d8] lg:sticky lg:top-24' : 'p-3.5 bg-slate-50/70 border-b border-slate-100 lg:sticky lg:top-24'}>
       {/* Main Image Frame */}
-      <div className={frameClass} {...swipeHandlers}>
+      <div className={`${frameClass}${central ? ' central-pdp-gallery-frame' : ''}`} {...swipeHandlers}>
 
         {/* Zoom Button */}
-        {selectedImg && !mainImageFailed && (
+        {hasImage && !mainImageFailed && (
         <button
           type="button"
+          ref={zoomButtonRef}
+          aria-haspopup="dialog"
           onClick={() => setIsZoomOpen(true)}
           className={fashion ? 'absolute bottom-3 left-3 p-3 bg-white/90 hover:bg-white text-[#1c1c1a] rounded-none border border-[#e5e0d8] transition-all opacity-80 group-hover:opacity-100 active:scale-95' : 'absolute bottom-3 left-3 p-3 bg-white/90 hover:bg-white text-slate-700 rounded-xl shadow-xs border border-slate-200 transition-all opacity-80 group-hover:opacity-100 active:scale-95'}
           title="بزرگ‌نمایی تصویر"
@@ -154,6 +170,7 @@ export const ProductDetailGallery: React.FC<Props> = ({
           alt={title}
           className="w-full h-full object-contain transition-transform duration-300 group-hover:scale-105 cursor-zoom-in"
           loading="eager"
+          fetchPriority="high"
           onClick={() => setIsZoomOpen(true)}
           onLoad={() => setMainImageFailed(false)}
           onExhausted={() => setMainImageFailed(true)}
@@ -162,13 +179,13 @@ export const ProductDetailGallery: React.FC<Props> = ({
       </div>
 
       {/* Badges Row (live: flow row below the image) */}
+      {discountPercent > 0 && (
       <div className="flex items-center gap-1.5 flex-wrap mt-2.5 px-1">
-        {discountPercent > 0 && (
           <span className={fashion ? 'text-[10px] font-black bg-rose-500 text-white px-2.5 py-1 rounded-none' : 'text-[10px] font-black bg-rose-500 text-white px-2.5 py-1 rounded-full'}>
             {toPersianDigits(discountPercent)}٪ تخفیف ویژه
           </span>
-        )}
       </div>
+      )}
       {/* P1(c): sale countdown on its own line under the badges (390px
           is too narrow to sit next to the badge). */}
       {saleEndsAt && (
@@ -182,8 +199,10 @@ export const ProductDetailGallery: React.FC<Props> = ({
         <div className="flex gap-2 justify-center mt-2.5 overflow-x-auto no-scrollbar px-1 py-1">
           {gallery.map((im, idx) => (
             <button
-              key={idx}
+              key={im}
               type="button"
+              aria-label={`تصویر ${toPersianDigits(idx + 1)}`}
+              aria-pressed={selectedImg === im}
               onClick={() => setSelectedImg(im)}
               className={`relative w-12 h-12 lg:w-16 lg:h-16 ${fashion ? 'rounded-none' : 'rounded-2xl'} bg-white border p-1.5 shrink-0 transition-all ${
                 selectedImg === im
@@ -204,15 +223,23 @@ export const ProductDetailGallery: React.FC<Props> = ({
 
       {/* Lightbox Modal */}
       {isZoomOpen && createPortal(
-        <div
-          className="fixed inset-0 z-[70] bg-slate-950 flex flex-col justify-between p-4 select-none"
-          onClick={(e) => { if (!(e.target as HTMLElement).closest('img, button')) setIsZoomOpen(false); }}
+        <dialog
+          ref={dialogRef}
+          aria-label={`تصاویر ${title}`}
+          className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none border-0 bg-slate-950 p-4 select-none open:flex open:flex-col open:justify-between"
+          onCancel={(event) => { event.preventDefault(); setIsZoomOpen(false); }}
+          onClick={(event) => { if (event.target === event.currentTarget) setIsZoomOpen(false); }}
+          onKeyDown={(event) => {
+            if (event.key === 'ArrowLeft') { event.preventDefault(); goNext(); }
+            if (event.key === 'ArrowRight') { event.preventDefault(); goPrev(); }
+          }}
           {...swipeHandlers}
         >
           <div className="flex items-center justify-between text-white">
             <span className="text-xs font-bold truncate min-w-0 max-w-[280px] sm:max-w-[420px] lg:max-w-[560px]">{title}</span>
             <button
               type="button"
+              ref={closeButtonRef}
               onClick={() => setIsZoomOpen(false)}
               aria-label="بستن بزرگ‌نمایی"
               className="shrink-0 w-11 h-11 rounded-full bg-white text-slate-900 hover:bg-slate-100 flex items-center justify-center active:scale-95"
@@ -222,7 +249,7 @@ export const ProductDetailGallery: React.FC<Props> = ({
           </div>
 
           <div className="flex-1 relative flex items-center justify-center p-4">
-            {selectedImg && (
+            {hasImage && (
               <FallbackImage
                 srcs={mainSrcs}
                 alt={title}
@@ -267,7 +294,10 @@ export const ProductDetailGallery: React.FC<Props> = ({
             <div className="flex gap-2 justify-center overflow-x-auto no-scrollbar py-2">
               {gallery.map((im, idx) => (
                 <button
-                  key={idx}
+                  key={im}
+                  type="button"
+                  aria-label={`تصویر ${toPersianDigits(idx + 1)}`}
+                  aria-pressed={selectedImg === im}
                   onClick={() => setSelectedImg(im)}
                   className={`relative w-12 h-12 ${fashion ? 'rounded-none' : 'rounded-xl'} border p-1 shrink-0 ${
                     selectedImg === im
@@ -283,7 +313,7 @@ export const ProductDetailGallery: React.FC<Props> = ({
               ))}
             </div>
           )}
-        </div>,
+        </dialog>,
         document.body,
       )}
     </div>

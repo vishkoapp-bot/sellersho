@@ -170,6 +170,7 @@ export interface ProductContextType {
   hasMoreCatalog: boolean;
   catalogTotal: number;
   catalogLoadingMore: boolean;
+  catalogLoadMoreError: boolean;
 }
 
 // PERF-01: the server-side catalog filter. category/search come from
@@ -194,6 +195,8 @@ export const DEFAULT_CATALOG_FILTER: CatalogFilter = {
   brands: [],
   attributes: {},
 };
+
+const categoryScopedFilters: Partial<CatalogFilter> = { minPrice: null, maxPrice: null, brands: [], attributes: {} };
 
 const EMPTY_WISHLIST_IDS: string[] = [];
 
@@ -222,21 +225,6 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
   // a fresh request even when the same brand is clicked twice in a row.
   const [catalogBrandRequest, setCatalogBrandRequest] = useState<{ brand: string; nonce: number } | null>(null);
 
-  // Back/forward through a search/catalog URL re-reads the query from
-  // the URL (the router only sets the view; the filters live here).
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const syncFromUrl = () => {
-      const params = new URLSearchParams(window.location.search);
-      const path = window.location.pathname.replace(/\/+$/, '') || '/';
-      const isRoot = path === '/' || path === '/preview' || path.endsWith('/preview');
-      if (!isRoot) return;
-      if (params.get('q') !== null) setSearchQuery(params.get('q') || '');
-      if (params.get('category') !== null) setSelectedCategory(params.get('category') || 'all');
-    };
-    window.addEventListener('popstate', syncFromUrl);
-    return () => window.removeEventListener('popstate', syncFromUrl);
-  }, []);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [currentProductDetail, setCurrentProductDetail] = useState<Product | null>(null);
   // Per-store wishlists (owner doctrine: every dropshipper store is
@@ -468,6 +456,7 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
   const lastLoadedCatalog = useRef<{ products: Product[]; total: number }>({ products: [], total: 0 });
   const [hasMoreCatalog, setHasMoreCatalog] = useState(false);
   const [catalogLoadingMore, setCatalogLoadingMore] = useState(false);
+  const [catalogLoadMoreError, setCatalogLoadMoreError] = useState(false);
   const catalogCursorRef = useRef<string | null>(null);
   const catalogFilterKeyRef = useRef('');
   const catalogAbortRef = useRef<AbortController | null>(null);
@@ -505,6 +494,22 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
     setCatalogFilterState(DEFAULT_CATALOG_FILTER);
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const syncAfterHistory = () => {
+      const path = window.location.pathname.replace(/\/+$/, '') || '/';
+      if (path !== '/' && path !== '/preview' && !path.endsWith('/preview')) return;
+      const params = new URLSearchParams(window.location.search);
+      if (!params.has('q') && !params.has('category')) return;
+      const category = params.get('category') || 'all';
+      if (category !== selectedCategory) setCatalogFilter(categoryScopedFilters);
+      setSelectedCategory(category);
+      setSearchQuery(params.get('q') || '');
+    };
+    window.addEventListener('popstate', syncAfterHistory);
+    return () => window.removeEventListener('popstate', syncAfterHistory);
+  }, [selectedCategory, setCatalogFilter]);
+
   const fetchProducts = useCallback(async () => {
     if (isMockMode()) {
       setCatalogLoading(false);
@@ -520,6 +525,7 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
     setCatalogTotal(0);
     setCatalogLoading(true);
     setCatalogError(null);
+    setCatalogLoadMoreError(false);
     try {
       const page = await catalogApi.getProductsPage({
         category: catalogServerFilter.category,
@@ -570,6 +576,7 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
     if (catalogFilterKeyRef.current !== catalogFilterKey) return;
     catalogLoadingMoreRef.current = true;
     setCatalogLoadingMore(true);
+    setCatalogLoadMoreError(false);
     const requestId = catalogRequestIdRef.current;
     const cursor = catalogCursorRef.current;
     try {
@@ -602,7 +609,7 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
       // A4: a 400 here implies the stored filter was inverted (the
       // CatalogView guard prevents it) — map it like page 1.
       if (err?.status === 400) setCatalogPriceRangeError(true);
-      if (err?.name !== 'AbortError') console.warn('Failed to load more catalog products:', err?.message);
+      else if (err?.name !== 'AbortError') setCatalogLoadMoreError(true);
     } finally {
       catalogLoadingMoreRef.current = false;
       setCatalogLoadingMore(false);
@@ -644,8 +651,9 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
   };
 
   const openCatalogCategory = (categorySlug: string, query: string = '') => {
+    if (categorySlug !== selectedCategory || catalogBrandRequest) setCatalogFilter(categoryScopedFilters);
     setSelectedCategory(categorySlug);
-    setSearchQuery(query);
+    setSearchQuery(query.trim());
     setCatalogBrandRequest(null);
   };
 
@@ -746,6 +754,7 @@ export const ProductProvider: React.FC<{ children: ReactNode }> = ({ children })
     hasMoreCatalog,
     catalogTotal,
     catalogLoadingMore,
+    catalogLoadMoreError,
   };
 
   return <ProductContext.Provider value={value}>{children}</ProductContext.Provider>;

@@ -1,6 +1,8 @@
 import React from 'react';
 import { Product } from '../types';
-import { useStore } from '../context/StoreContext';
+import { buildProductUrl } from '../utils/routing';
+import { followStoreLink } from '../utils/followStoreLink';
+import { activeStoreSlugOf, useStore } from '../context/StoreContext';
 import { isProductPublishedInStore } from '../utils/storeAssortment';
 import { useToast } from '../context/ToastContext';
 import { Package, Plus } from 'lucide-react';
@@ -20,7 +22,7 @@ interface ProductCardProps {
 }
 
 export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = true }) => {
-  const { openProductDetail, addToCart, formatPrice, toPersianDigits, currentStore, cart } = useStore();
+  const { openProductDetail, addToCart, formatPrice, toPersianDigits, currentStore, routeStoreSlug, cart } = useStore();
   const published = isProductPublishedInStore(currentStore, product.id);
   // Card display price = the default variant's triple (owner decision, see utils/cardPrice).
   const displayPrice = cardPriceOf(product);
@@ -44,10 +46,8 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
 
   return (
     <div
-      onClick={() => openProductDetail(product)}
       data-testid="product-item"
-      id="product_item"
-      className="cv-card w-full bg-white rounded-[12px] border border-[#e2e5ee] overflow-hidden hover:shadow-md transition-shadow duration-200 flex flex-col cursor-pointer select-none group h-full"
+      className="cv-card relative w-full bg-white rounded-[12px] border border-[#e2e5ee] overflow-hidden hover:shadow-md transition-shadow duration-200 flex flex-col cursor-pointer select-none group h-full"
     >
       {/* 1. Image Container (Square, Rounded Top, Overflow Hidden) */}
       <div className="relative w-full aspect-square bg-[#f8fafc] overflow-hidden rounded-t-[12px] flex items-center justify-center">
@@ -67,7 +67,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
 
         {/* Requirement 23: Non-original Authenticity Badge */}
                 {displayPrice.discountPercent > 0 && (
-          <div className="absolute top-2 right-2 z-10">
+          <div className="pointer-events-none absolute top-2 right-2 z-10">
             <CampaignDiscountBadge
               campaignName={product.campaignName}
               discountPercent={displayPrice.discountPercent}
@@ -77,7 +77,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
         )}
 
         {product.isOriginal === false && (
-          <div className="absolute top-2 left-2 z-10 bg-amber-500 text-white font-extrabold text-[9px] px-1.5 py-0.5 rounded shadow-xs">
+          <div className="pointer-events-none absolute top-2 left-2 z-10 bg-amber-500 text-white font-extrabold text-[9px] px-1.5 py-0.5 rounded shadow-xs">
             غیر اصل
           </div>
         )}
@@ -93,7 +93,8 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
             className="text-[12px] font-normal text-[#252a3c] line-clamp-2 min-h-[2.5em] lg:min-h-12 block mt-1 mb-2 leading-tight"
             title={product.title}
           >
-            {product.title}
+            <a className="product-title-link" href={buildProductUrl(product, activeStoreSlugOf({ currentStore, routeStoreSlug }) ?? undefined)}
+              onClick={event => followStoreLink(event, () => openProductDetail(product))}>{product.title}</a>
           </p>
         </div>
 
@@ -159,8 +160,8 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
                     if (handleQuickAdd()) success(`«${product.title}» به سبد خرید اضافه شد.`);
                   }}
                   disabled={!available || !published}
-                  title={!published ? 'در این فروشگاه عرضه نمی‌شود' : available ? 'افزودن به سبد خرید' : 'ناموجود'}
-                  className="w-10 h-10 lg:w-11 lg:h-11 rounded-lg bg-[#5d44f8] hover:bg-[#4a33d8] disabled:bg-slate-100 text-white disabled:text-slate-400 flex items-center justify-center shadow-xs transition-all active:scale-90 shrink-0"
+                  aria-label={!published ? 'در این فروشگاه عرضه نمی‌شود' : !available ? 'ناموجود' : product.productType === 'variable' ? `انتخاب مدل ${product.title}` : `افزودن ${product.title} به سبد خرید`}
+                  className="relative z-[3] w-11 h-11 rounded-lg bg-[#5d44f8] hover:bg-[#4a33d8] disabled:bg-slate-100 text-white disabled:text-slate-400 flex items-center justify-center shadow-xs transition-all active:scale-90 shrink-0"
                 >
                   <Plus className="w-5 h-5 stroke-[2.5]"  strokeWidth={1.5}/>
                 </button>
@@ -173,8 +174,8 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
                     if (handleQuickAdd()) success(`«${product.title}» به سبد خرید اضافه شد.`);
                   }}
                   disabled={!available || !published}
-                  title={!published ? 'در این فروشگاه عرضه نمی‌شود' : available ? 'افزودن به سبد خرید' : 'ناموجود'}
-                  className="px-2 py-1.5 rounded-lg bg-[#007dfa] hover:bg-blue-600 disabled:bg-slate-100 text-white disabled:text-slate-400 flex items-center gap-1 shadow-xs transition-all active:scale-90 shrink-0 text-[10px] font-bold"
+                  aria-label={!published ? 'در این فروشگاه عرضه نمی‌شود' : !available ? 'ناموجود' : product.productType === 'variable' ? `انتخاب مدل ${product.title}` : `افزودن ${product.title} به سبد خرید`}
+                  className="relative z-[3] min-h-11 px-2 py-1.5 rounded-lg bg-[#007dfa] hover:bg-blue-600 disabled:bg-slate-100 text-white disabled:text-slate-400 flex items-center gap-1 shadow-xs transition-all active:scale-90 shrink-0 text-[10px] font-bold"
                 >
                   <Plus className="w-3.5 h-3.5 stroke-[2.5]"  strokeWidth={1.5}/>
                   <span>افزودن به سبد خرید</span>

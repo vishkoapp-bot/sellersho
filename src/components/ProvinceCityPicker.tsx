@@ -63,6 +63,7 @@ interface ProvinceCityPickerProps {
   inputStyle?: React.CSSProperties;
   provinceId?: string;
   cityId?: string;
+  labelClassName?: string;
   onProvinceNodeChange?: (node: GeoItem | null) => void;
   onCityNodeChange?: (node: GeoItem | null) => void;
 }
@@ -76,6 +77,7 @@ export const ProvinceCityPicker: React.FC<ProvinceCityPickerProps> = ({
   inputStyle,
   provinceId,
   cityId,
+  labelClassName,
   onProvinceNodeChange,
   onCityNodeChange,
 }) => {
@@ -289,6 +291,15 @@ export const ProvinceCityPicker: React.FC<ProvinceCityPickerProps> = ({
         className={inputClassName}
         style={inputStyle}
       />
+    );
+  }
+
+  if (labelClassName) {
+    return (
+      <>
+        <div className="min-w-0"><label className={labelClassName} htmlFor={provinceId}>استان</label>{provinceControl}</div>
+        <div className="min-w-0"><label className={labelClassName} htmlFor={cityId}>شهر</label>{cityControl}</div>
+      </>
     );
   }
 

@@ -29,7 +29,7 @@ identities[700] = { ...identities[700], mobile: '09121112233', role: 'seller', c
 const identity = () => identities[Number(tokenStore.getToken()?.replace('fixture-', '') || 0)];
 const dto = (i: number) => ({ id: `order-${i}`, orderNumber: `CANARY-${i}`, customerFullName: i === 20 ? 'Different recipient' : 'Same Name', customerPhone: i === 20 ? '09999999999' : identities[i].mobile, customerAddress: `PRIVATE-ADDRESS-${i}`, customerCity: 'City', customerProvince: 'Province', customerPostalCode: `POST-${i}`, items: [], status: 'processing', storeId: `store-${i % 10}`, trackingCode: `TRACK-${i}`, payableAmount: 100, totalAmount: 100 });
 authApi.getMe = async () => ({ ...identity(), userId: identity().id });
-storeApi.getAllStores = async () => Array.from({ length: 10 }, (_, i) => ({ id: `store-${i}`, name: `Store ${i}`, slug: `store-${i}` }) as any);
+storeApi.getAllStores = async () => Array.from({ length: 10 }, (_, i) => ({ id: `store-${i}`, name: `Store ${i}`, slug: i === 0 ? 'central' : `store-${i}`, ownerType: i === 0 ? 'central' : 'dropshipper' }) as any);
 storeApi.getOwnedStores = async () => [{ id: 'store-0', name: 'Store 0', slug: 'store-0' }] as any;
 authApi.sendOTP = async () => ({ success: true, mobile: '09121112233', expiresIn: 120, message: 'Synthetic OTP' });
 authApi.verifyOTP = async (mobile) => {

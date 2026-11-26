@@ -1,6 +1,8 @@
 import React, { useRef, useState } from "react";
 import { Product } from "../types";
-import { useStore } from "../context/StoreContext";
+import { buildProductUrl } from '../utils/routing';
+import { followStoreLink } from '../utils/followStoreLink';
+import { activeStoreSlugOf, useStore } from "../context/StoreContext";
 import { isProductPublishedInStore } from '../utils/storeAssortment';
 import { useToast } from "../context/ToastContext";
 import { Package, Plus } from "lucide-react";
@@ -22,7 +24,7 @@ interface DealProductCardProps {
 // at stock <= 0, so the failed path is unreachable here and only the
 // success toast is reachable, matching live in every reachable state.
 export const DealProductCard: React.FC<DealProductCardProps> = ({ product }) => {
-  const { openProductDetail, addToCart, formatPrice, toPersianDigits, currentStore, cart } = useStore();
+  const { openProductDetail, addToCart, formatPrice, toPersianDigits, currentStore, routeStoreSlug, cart } = useStore();
   const published = isProductPublishedInStore(currentStore, product.id);
   // Card display price = the default variant's triple (owner decision, see utils/cardPrice).
   const displayPrice = cardPriceOf(product);
@@ -57,9 +59,8 @@ export const DealProductCard: React.FC<DealProductCardProps> = ({ product }) => 
   };
   return (
     <div
-      onClick={() => openProductDetail(product)}
       data-testid="product-item"
-      className="w-full h-[172px] lg:h-auto lg:min-h-[200px] shrink-0 self-center bg-white rounded-[12px] border border-[#e2e5ee] overflow-hidden hover:shadow-md transition-all duration-200 flex cursor-pointer select-none group"
+      className="central-deal-card relative w-full h-[172px] lg:h-auto lg:min-h-[200px] shrink-0 self-center bg-white rounded-[12px] border border-[#e2e5ee] overflow-hidden hover:shadow-md transition-all duration-200 flex cursor-pointer select-none group"
     >
       <div className="relative w-[112px] lg:w-[160px] xl:w-[180px] shrink-0 bg-[#f8fafc] overflow-hidden flex items-center justify-center">
         {product.image && !imageFailed ? (
@@ -82,7 +83,8 @@ export const DealProductCard: React.FC<DealProductCardProps> = ({ product }) => 
             className="text-[13px] lg:text-sm font-semibold text-[#252a3c] leading-[1.6] line-clamp-2"
             title={product.title}
           >
-            {product.title}
+            <a className="product-title-link" href={buildProductUrl(product, activeStoreSlugOf({ currentStore, routeStoreSlug }) ?? undefined)}
+              onClick={event => followStoreLink(event, () => openProductDetail(product))}>{product.title}</a>
           </p>
           {product.isOriginal === false && (
             <div className="flex mt-1">
@@ -124,8 +126,8 @@ export const DealProductCard: React.FC<DealProductCardProps> = ({ product }) => 
                 if (handleQuickAdd()) success("«" + product.title + "» به سبد خرید اضافه شد.");
               }}
               disabled={!available || !published}
-              title={!published ? "در این فروشگاه عرضه نمی‌شود" : available ? "افزودن به سبد خرید" : "ناموجود"}
-              className="relative w-10 h-10 rounded-lg bg-[#5d44f8] hover:bg-[#4a33d8] disabled:bg-slate-100 text-white disabled:text-slate-400 flex items-center justify-center shadow-xs transition-all active:scale-90 shrink-0"
+              aria-label={!published ? "در این فروشگاه عرضه نمی‌شود" : available ? "افزودن به سبد خرید" : "ناموجود"}
+              className="relative z-[3] w-11 h-11 rounded-lg bg-[#5d44f8] hover:bg-[#4a33d8] disabled:bg-slate-100 text-white disabled:text-slate-400 flex items-center justify-center shadow-xs transition-all active:scale-90 shrink-0"
             >
               <span aria-hidden="true" className="absolute -inset-[2px]" />
               <Plus className="w-4 h-4 stroke-[2.5]"  strokeWidth={1.5}/>

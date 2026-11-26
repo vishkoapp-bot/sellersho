@@ -1,575 +1,438 @@
-import { remainingCatalogCount } from '../../utils/catalogRemaining';
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { catalogApi } from '../../services/catalogApi';
-import { isMockMode } from '../../services/apiClient';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ArrowLeft, ArrowRight, ArrowUpDown, Check, ChevronDown, ChevronLeft, LayoutGrid, PackageX,
+  RotateCcw, SlidersHorizontal, X,
+} from 'lucide-react';
 import { useStore, activeStoreSlugOf } from '../../context/StoreContext';
+import { DEFAULT_CATALOG_FILTER } from '../../context/ProductContext';
+import { catalogApi, type FacetAttribute, type FacetBrand } from '../../services/catalogApi';
+import { isMockMode } from '../../services/apiClient';
+import type { Category } from '../../types';
+import { remainingCatalogCount } from '../../utils/catalogRemaining';
+import { normalizePersianText, pathForView } from '../../utils/routing';
 import { ProductCard } from '../ProductCard';
 import { PriceRangeSlider, PRICE_RANGE_ERROR_MESSAGE } from '../PriceRangeSlider';
-import {
-  ArrowRight, RotateCcw, ArrowUpDown,
-  PackageX, ChevronDown, Check
-} from 'lucide-react';
+
+const pageWidth = 'mx-auto w-full max-w-[1360px] px-4 sm:px-6 lg:px-8';
+const control = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-[#d5e0d7] bg-white px-3 text-sm font-bold text-[#164638] hover:bg-[#edf4ee] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#164638]';
+const primary = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#164638] px-4 text-sm font-bold text-white hover:bg-[#215849] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#164638]';
+const grid = 'grid grid-cols-2 gap-3 max-[359px]:grid-cols-1 sm:grid-cols-3 xl:grid-cols-4';
+const categoryFilter = { minPrice: null, maxPrice: null, brands: [], attributes: {} };
+
+const sortOptions = [
+  ['featured', 'پیشنهادی'],
+  ['newest', 'جدیدترین'],
+  ['discount', 'بیشترین تخفیف'],
+  ['cheapest', 'کمترین قیمت'],
+  ['expensive', 'بیشترین قیمت'],
+] as const;
 
 export const CatalogView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const {
-    products,
-    selectedCategory,
-    setSelectedCategory,
-    searchQuery,
-    setSearchQuery,
-    toPersianDigits,
-    formatPrice,
-    categories,
-    catalogLoading,
-    catalogError,
-    catalogPriceRangeError,
-    loadMoreCatalog,
-    hasMoreCatalog,
-    catalogTotal,
-    catalogLoadingMore,
-    setCatalogFilter,
-    openCatalogCategory,
-    catalogBrandRequest,
-    clearCatalogBrand,
-    setActiveView,
-    currentStore,
-    routeStoreSlug,
+    products, selectedCategory, searchQuery, toPersianDigits, formatPrice, categories,
+    catalogFilter = DEFAULT_CATALOG_FILTER, catalogLoading, catalogError, catalogPriceRangeError,
+    fetchCatalogProducts, loadMoreCatalog, hasMoreCatalog, catalogTotal, catalogLoadingMore, catalogLoadMoreError,
+    setCatalogFilter, openCatalogCategory, catalogBrandRequest, clearCatalogBrand,
+    setActiveView, currentStore, routeStoreSlug,
   } = useStore();
 
-  // If a store context is somehow active while this central catalog
-  // is on screen, sidebar category clicks must not keep the shopper
-  // in the central assortment: they take the same store-aware
-  // channel as every other category entry point and land on the
-  // store's own storefront with the category applied. With no store
-  // context this is exactly the local filter it has always been.
   const storeSlug = activeStoreSlugOf({ routeStoreSlug, currentStore });
-  const handleSelectCategory = (slug: string) => {
-    if (storeSlug) openCatalogCategory(slug);
-    else setSelectedCategory(slug);
-  };
-
-  // A4: the ONE reset handler for the header reset and both empty-state
-  // resets. The header reset used to omit price + brands + attrs; the
-  // empty-state resets omitted brands + attrs (and clearCatalogBrand).
-  // All three are now identical by construction.
-  const resetAllFilters = useCallback(() => {
-    setSelectedCategory('all');
-    setSearchQuery('');
-    clearCatalogBrand();
-    setOnlyInStock(false);
-    setOnlyOriginal(false);
-    setPriceMin('');
-    setPriceMax('');
-    setSelectedBrands([]);
-    setSelectedAttrs({});
-    setSortBy('featured');
-  }, [clearCatalogBrand, setSelectedCategory, setSearchQuery]);
-
-  // Self-guard: this view is the CENTRAL catalogue. If it mounts
-  // while a store context is active (a history/URL leftover —
-  // every in-app entry point now routes in-store shoppers to the
-  // storefront), rendering it would show the central assortment
-  // at central prices inside that store's session. Bounce once to
-  // the store's own storefront instead. Central mounts (no store
-  // context) never fire this.
-  const storeGuardFiredRef = useRef(false);
-  useEffect(() => {
-    if (storeSlug && !storeGuardFiredRef.current) {
-      storeGuardFiredRef.current = true;
-      setActiveView('seller_storefront', { storeSlug });
-    }
-  }, [storeSlug, setActiveView]);
-
-  const [sortBy, setSortBy] = useState<'featured' | 'cheapest' | 'expensive' | 'discount' | 'newest'>('featured');
-  const [onlyInStock, setOnlyInStock] = useState(false);
-  const [onlyOriginal, setOnlyOriginal] = useState(false);
-  const [priceMin, setPriceMin] = useState('');
-  const [priceMax, setPriceMax] = useState('');
   const liveMode = !isMockMode();
-  // FIX 17: live's catalog tree expands per slug (bundle E(slug)),
-  // and a fresh category page shows the current category's
-  // subcategories EXPANDED (browser evidence). The old single
-  // expandedCategory started null, so nothing was ever expanded
-  // on load. The set below auto-expands the selected category
-  // plus its ancestors whenever categories/selection change.
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const filterButton = useRef<HTMLButtonElement>(null);
   const [expandedSlugs, setExpandedSlugs] = useState<Set<string>>(new Set());
-  const toggleExpanded = (slug: string) => setExpandedSlugs((prev) => { const next = new Set(prev); if (next.has(slug)) next.delete(slug); else next.add(slug); return next; });
-  useEffect(() => {
-    if (selectedCategory === 'all') return;
-    const path: string[] = [];
-    const guard = new Set<string>();
-    let cur = categories.find((c) => c.slug === selectedCategory);
-    while (cur && !guard.has(cur.slug)) { guard.add(cur.slug); path.push(cur.slug); cur = cur.parentId ? categories.find((c) => c.id === cur!.parentId) : undefined; }
-    if (path.length > 0) setExpandedSlugs((prev) => { const next = new Set(prev); path.forEach((s) => next.add(s)); return next; });
-  }, [categories, selectedCategory]);
-  // FIX 14b: live's catalog fetches category brands + attributes when
-  // a category is selected (live bundle) and renders the sections
-  // only when non-empty; selections reset on category change.
-  const [facetBrands, setFacetBrands] = useState<{ brand: string; count: number }[]>([]);
-  const [facetAttrs, setFacetAttrs] = useState<import('../../services/catalogApi').FacetAttribute[]>([]);
-  const [selectedBrands, setSelectedBrands] = useState<string[]>([]);
-  const [selectedAttrs, setSelectedAttrs] = useState<Record<number, number[]>>({});
-  // PERF-01: in live mode the filters/sort/price go to the SERVER
-  // (ProductContext page-1 + show-more); the list below renders the
-  // loaded pages as-is. Mock mode keeps the old client-side path
-  // (the whole mock list is local). setCatalogFilter is value-equal
-  // guarded, so pushing identical values never refetches.
-  useEffect(() => {
-    if (!liveMode) return;
-    const min = priceMin === '' ? null : Number(priceMin);
-    const max = priceMax === '' ? null : Number(priceMax);
-    // A4: never fire a fetch with an inverted range. The slider never
-    // commits one, so this is defence-in-depth for any other writer
-    // (incl. the setPriceMin/setPriceMax race): the previous valid
-    // filter stays live and the grid keeps its results.
-    if (min !== null && max !== null && min > max) return;
-    setCatalogFilter({
-      sort: sortBy,
-      inStockOnly: onlyInStock,
-      onlyOriginal,
-      minPrice: min,
-      maxPrice: max,
-      brands: selectedBrands,
-      attributes: selectedAttrs,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveMode, sortBy, onlyInStock, onlyOriginal, priceMin, priceMax, selectedBrands, selectedAttrs]);
+  const [serverBounds, setServerBounds] = useState<{ category: string; minPrice: number; maxPrice: number } | null>(null);
+  const [facetSchema, setFacetSchema] = useState<{ category: string; brands: FacetBrand[]; attrs: FacetAttribute[] } | null>(null);
+  // Keep observed choices visible when a selected facet narrows the results.
+  const [observed, setObserved] = useState<{ category: string; brands: Set<string>; values: Set<number> } | null>(null);
 
-  useEffect(() => {
-    // FIX 15: a custom price range must not stick across categories --
-    // the slider defaults to the newly selected category's own bounds.
-    setPriceMin('');
-    setPriceMax('');
-    setSelectedBrands([]);
-    setSelectedAttrs({});
-    if (selectedCategory === 'all') {
-      setFacetBrands([]);
-      setFacetAttrs([]);
+  const hierarchy = useMemo(() => {
+    const byId = new Map(categories.map(category => [category.id, category]));
+    const bySlug = new Map(categories.map(category => [category.slug, category]));
+    const byParent = new Map<string | null, Category[]>();
+    for (const category of categories) {
+      const parent = category.parentId && byId.has(category.parentId) ? category.parentId : null;
+      const children = byParent.get(parent) ?? [];
+      children.push(category);
+      byParent.set(parent, children);
     }
+    const path: Category[] = [];
+    const seen = new Set<string>();
+    let current = bySlug.get(selectedCategory);
+    while (current && !seen.has(current.id)) {
+      seen.add(current.id);
+      path.unshift(current);
+      current = current.parentId ? byId.get(current.parentId) : undefined;
+    }
+    const selected = bySlug.get(selectedCategory);
+    const descendants = new Set<string>();
+    const walk = (category: Category) => {
+      if (descendants.has(category.slug)) return;
+      descendants.add(category.slug);
+      byParent.get(category.id)?.forEach(walk);
+    };
+    if (selected) walk(selected);
+    return { byParent, selected, path, descendants };
+  }, [categories, selectedCategory]);
+
+  useEffect(() => {
+    if (storeSlug) setActiveView('seller_storefront', { storeSlug });
+    // Only react to a scope transition. StoreContext recreates the navigation callback.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCategory]);
-  // FIX 71: a PDP brand click lands here with a fresh nonce; apply it as
-  // the brand filter (all categories). Declared AFTER the category-reset
-  // effect so it wins on the mount where both run.
-  useEffect(() => {
-    if (catalogBrandRequest) setSelectedBrands([catalogBrandRequest.brand]);
-  }, [catalogBrandRequest]);
-  useEffect(() => {
-    if (selectedCategory === 'all') return;
-    let on = true;
-    catalogApi.getCategoryBrands(selectedCategory).then((brands) => {
-      if (!on) return;
-      const counts = new Map<string, number>();
-      products.forEach((p) => {
-        if (p.category === selectedCategory && p.brand) counts.set(p.brand, (counts.get(p.brand) || 0) + 1);
-      });
-      setFacetBrands(brands
-        .map((b) => ({ brand: b.titleFa, count: counts.get(b.titleFa) || 0 }))
-        .filter((b) => b.brand !== '' && b.brand !== 'بدون برند' && b.count > 0));
-    }).catch(() => { if (on) setFacetBrands([]); });
-    catalogApi.getCategoryAttributes(selectedCategory).then((res) => {
-      if (!on) return;
-      const attrs = res?.attributes ?? [];
-      // Live keeps only values present in the category products'
-      // attributeValues; candidate products carry none yet, so groups
-      // stay hidden until approval picks exist -- exactly like live
-      // hides empty groups.
-      const present = new Map<number, Set<number>>();
-      products.forEach((p) => {
-        if (p.category !== selectedCategory) return;
-        (p.attributeValues ?? []).forEach((av) => {
-          if (!present.has(av.attributeId)) present.set(av.attributeId, new Set());
-          present.get(av.attributeId)!.add(av.valueId);
-        });
-      });
-      setFacetAttrs(attrs.map((a) => ({ ...a, values: a.values.filter((v) => present.get(a.id)?.has(v.id)) })).filter((a) => a.values.length > 0));
-    }).catch(() => { if (on) setFacetAttrs([]); });
-    return () => { on = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCategory, products]);
+  }, [storeSlug]);
 
-  // FIX 14: live sidebar price controls default to the server
-  // price bounds (GET /products/price-bounds), scoped to the selected
-  // category (FIX 15: e.g. gold-silver: 5,280,000-63,800,000) while
-  // search (category 'all') keeps the full global range. PERF-01: no
-  // client fallback — the loaded pages are not the full range, so a
-  // client min/max from 24 items would be wrong; the slider hides
-  // until the server bounds arrive.
-  const [serverBounds, setServerBounds] = useState<{ minPrice: number; maxPrice: number } | null>(null);
   useEffect(() => {
-    let on = true;
-    setServerBounds(null);
-    catalogApi.getPriceBounds(selectedCategory === 'all' ? {} : { category: selectedCategory }).then((b) => { if (on) setServerBounds(b); }).catch(() => {});
-    return () => { on = false; };
-  }, [selectedCategory]);
-  const dataMin = serverBounds?.minPrice ?? 0;
-  const dataMax = serverBounds?.maxPrice ?? 0;
-  const effMin = priceMin === '' ? dataMin : Number(priceMin);
-  const effMax = priceMax === '' ? dataMax : Number(priceMax);
+    if (hierarchy.path.length) {
+      setExpandedSlugs(previous => new Set([...previous, ...hierarchy.path.map(category => category.slug)]));
+    }
+  }, [hierarchy.path]);
 
-  // PERF-01: mock mode keeps the old client-side filter/sort over the
-  // whole mock list. Live mode renders the server-filtered pages
-  // as-is — re-filtering or re-sorting loaded pages client-side would
-  // scramble page order (featured) and hide the server total.
-  // Facet counts above still derive from the loaded pages (documented
-  // limitation: a brand/attribute with no loaded product hides until
-  // its page loads).
-  let mockFiltered = products;
-  if (!liveMode) mockFiltered = products.filter((p) => {
-    const matchesCategory = selectedCategory === 'all' || p.category === selectedCategory;
-    const matchesSearch = !searchQuery || 
-      p.title.includes(searchQuery) || 
-      p.description.includes(searchQuery);
-    const matchesStock = !onlyInStock || (p.stock || 0) > 0;
-    const matchesOriginal = !onlyOriginal || p.isOriginal === true;
-    
-    let matchesPrice = true;
-    if (priceMin !== '' && p.price < Number(priceMin)) matchesPrice = false;
-    if (priceMax !== '' && p.price > Number(priceMax)) matchesPrice = false;
+  useEffect(() => {
+    if (catalogBrandRequest) setCatalogFilter({ ...categoryFilter, brands: [catalogBrandRequest.brand] });
+  }, [catalogBrandRequest, setCatalogFilter]);
 
-    const matchesBrand = selectedBrands.length === 0 || (p.brand !== undefined && selectedBrands.includes(p.brand));
-    const matchesAttrs = Object.entries(selectedAttrs).every(([attrId, valueIds]) => {
-      if (valueIds.length === 0) return true;
-      const aid = Number(attrId);
-      return (p.attributeValues ?? []).some((av) => av.attributeId === aid && valueIds.includes(av.valueId));
+  useEffect(() => {
+    if (storeSlug || !liveMode) return;
+    let active = true;
+    catalogApi.getPriceBounds({ category: selectedCategory }).then(bounds => {
+      if (active) setServerBounds({ ...bounds, category: selectedCategory });
+    }).catch(() => {
+      if (active) setServerBounds(null);
     });
-    return matchesCategory && matchesSearch && matchesStock && matchesOriginal && matchesPrice && matchesBrand && matchesAttrs;
-  });
+    if (selectedCategory !== 'all') {
+      void Promise.all([
+        catalogApi.getCategoryBrands(selectedCategory).catch(() => []),
+        catalogApi.getCategoryAttributes(selectedCategory).catch(() => null),
+      ]).then(([brands, result]) => {
+        if (active) setFacetSchema({ category: selectedCategory, brands: Array.isArray(brands) ? brands : [], attrs: Array.isArray(result?.attributes) ? result.attributes : [] });
+      });
+    }
+    return () => { active = false; };
+  }, [liveMode, selectedCategory, storeSlug]);
 
-  if (!liveMode) {
-    mockFiltered = [...mockFiltered].sort((a, b) => {
-      if (sortBy === 'cheapest') return a.price - b.price;
-      if (sortBy === 'expensive') return b.price - a.price;
-      if (sortBy === 'discount') return b.discountPercent - a.discountPercent;
-      // FIX 12: 'newest' keeps the API order, which is already
-      // newest-first (list ids are creation timestamps, desc).
-      if (sortBy === 'newest') return 0;
+  useEffect(() => {
+    if (selectedCategory === 'all' || catalogLoading || catalogError || catalogPriceRangeError) return;
+    setObserved(previous => {
+      const sameCategory = previous?.category === selectedCategory;
+      const brands = new Set(sameCategory ? previous.brands : []);
+      const values = new Set(sameCategory ? previous.values : []);
+      for (const product of products) {
+        if (!hierarchy.descendants.has(product.category)) continue;
+        if (product.brand && product.brand !== 'بدون برند') brands.add(product.brand);
+        for (const attribute of product.attributeValues ?? []) values.add(attribute.valueId);
+      }
+      if (sameCategory && brands.size === previous.brands.size && values.size === previous.values.size) return previous;
+      return { category: selectedCategory, brands, values };
+    });
+  }, [products, selectedCategory, hierarchy.descendants, catalogLoading, catalogError, catalogPriceRangeError]);
+
+  const { sort, inStockOnly, onlyOriginal, minPrice, maxPrice, brands, attributes } = catalogFilter;
+  const priceSelected = minPrice !== null || maxPrice !== null;
+  const filterCount = Number(inStockOnly) + Number(onlyOriginal) + Number(priceSelected) +
+    brands.length + Object.values(attributes).reduce((sum, values) => sum + values.length, 0);
+  const hasSelection = filterCount > 0 || sort !== 'featured' || selectedCategory !== 'all' || Boolean(searchQuery);
+  const availableBrands = facetSchema?.category === selectedCategory && observed?.category === selectedCategory
+    ? [...new Set(facetSchema.brands.map(brand => brand.titleFa || brand.titleEn).filter(brand => observed.brands.has(brand) || brands.includes(brand)))]
+    : [];
+  const availableAttrs = facetSchema?.category === selectedCategory && observed?.category === selectedCategory
+    ? facetSchema.attrs.map(attr => ({ ...attr, values: attr.values.filter(value => observed.values.has(value.id) || attributes[attr.id]?.includes(value.id)) }))
+      .filter(attr => attr.values.length > 0)
+    : [];
+  const currentBounds = serverBounds?.category === selectedCategory
+    ? serverBounds
+    : !liveMode && products.length
+      ? { minPrice: products.reduce((price, product) => Math.min(price, product.price), Infinity), maxPrice: products.reduce((price, product) => Math.max(price, product.price), 0) }
+      : null;
+
+  const visible = useMemo(() => {
+    if (liveMode) return products;
+    const query = normalizePersianText(searchQuery.trim()).toLowerCase();
+    const matches = products.filter(product => (
+      (selectedCategory === 'all' || product.category === selectedCategory) &&
+      (!query || normalizePersianText(`${product.title} ${product.description}`).toLowerCase().includes(query)) &&
+      (!inStockOnly || product.stock > 0) && (!onlyOriginal || product.isOriginal === true) &&
+      (minPrice === null || product.price >= minPrice) && (maxPrice === null || product.price <= maxPrice) &&
+      (!brands.length || (product.brand !== undefined && brands.includes(product.brand))) &&
+      Object.entries(attributes).every(([id, values]) => !values.length ||
+        product.attributeValues?.some(attribute => attribute.attributeId === Number(id) && values.includes(attribute.valueId)))
+    ));
+    if (sort === 'newest') return matches;
+    return matches.sort((a, b) => {
+      if (sort === 'cheapest') return a.price - b.price;
+      if (sort === 'expensive') return b.price - a.price;
+      if (sort === 'discount') return b.discountPercent - a.discountPercent;
       return (b.salesCount || 0) - (a.salesCount || 0);
     });
-  }
-  const filtered = liveMode ? (catalogLoading ? [] : products) : mockFiltered;
-  const showSkeleton = catalogLoading && filtered.length === 0;
-  const hideFilters = !catalogLoading && filtered.length === 0 && !catalogPriceRangeError;
-  const remaining = remainingCatalogCount(catalogTotal, filtered.length);
-  const shownTotal = liveMode ? catalogTotal : filtered.length;
+  }, [products, liveMode, searchQuery, selectedCategory, inStockOnly, onlyOriginal, minPrice, maxPrice, brands, attributes, sort]);
 
-  const activeCategoryObj = categories.find(c => c.slug === selectedCategory);
-  const activeBrand = catalogBrandRequest && selectedBrands.includes(catalogBrandRequest.brand)
-    ? catalogBrandRequest.brand
-    : null;
-  const titleText = searchQuery
-    ? `جستجو: «${searchQuery}»`
-    : activeBrand
-    ? `برند: «${activeBrand}»`
-    : activeCategoryObj ? activeCategoryObj.title : 'کاتالوگ جامع کالاها';
+  const showSkeleton = catalogLoading && visible.length === 0;
+  const total = liveMode ? catalogTotal : visible.length;
+  const remaining = remainingCatalogCount(catalogTotal, visible.length);
+  const title = searchQuery.trim() ? `نتایج جستجوی «${searchQuery}»` : catalogBrandRequest && brands.includes(catalogBrandRequest.brand)
+    ? `کالاهای برند ${catalogBrandRequest.brand}` : hierarchy.selected?.title ?? 'کاتالوگ جامع کالاها';
+  const closeFilters = () => {
+    if (!filtersOpen) return;
+    setFiltersOpen(false);
+    filterButton.current?.focus();
+  };
+  const chooseCategory = (slug: string) => {
+    closeFilters();
+    if (slug !== selectedCategory) openCatalogCategory(slug, searchQuery);
+  };
+  const resetFilters = () => {
+    clearCatalogBrand();
+    setCatalogFilter(DEFAULT_CATALOG_FILTER);
+    if (selectedCategory !== 'all' || searchQuery) openCatalogCategory('all');
+  };
+  const removeBrand = (brand: string) => {
+    if (catalogBrandRequest?.brand === brand) clearCatalogBrand();
+    setCatalogFilter({ brands: brands.filter(value => value !== brand) });
+  };
+  const toggleAttribute = (id: number, value: number) => {
+    const current = attributes[id] ?? [];
+    const next = { ...attributes };
+    const updated = current.includes(value) ? current.filter(item => item !== value) : [...current, value];
+    if (updated.length) next[id] = updated;
+    else delete next[id];
+    setCatalogFilter({ attributes: next });
+  };
+  const toggleTree = (slug: string) => setExpandedSlugs(previous => {
+    const next = new Set(previous);
+    if (next.has(slug)) next.delete(slug);
+    else next.add(slug);
+    return next;
+  });
 
-  // Central-paint guard: the store-guard effect above bounces to the
-  // storefront, but effects run AFTER the first paint -- without this
-  // return the central assortment (at central prices) flashes for one
-  // frame inside a dropshipper session, and a product the store does
-  // not carry (e.g. a newly approved product in 0 assortments) appears
-  // and then vanishes when the scoped storefront list replaces it.
-  // Render nothing while a store context is active; the effect still
-  // performs the navigation. This sits after every hook above -- an
-  // earlier return would break hook order.
-  if (storeSlug) return null;
-
-  return (
-    <div className="flex-1 flex flex-col bg-white select-none pb-20 lg:pb-8">
-      <header className="lg:static bg-white border-b border-slate-200 px-3 lg:px-8 xl:px-10 2xl:px-12 py-2 lg:py-3 flex items-center gap-2">
-        <button onClick={onBack} className="p-1 rounded-lg hover:bg-slate-100 text-slate-700">
-          <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
-        </button>
-        <span className="hidden lg:block lg:text-lg xl:text-xl font-bold text-slate-900 truncate">{titleText}</span>
-      </header>
-
-      <div className="lg:grid lg:grid-cols-[240px_minmax(0,1fr)] lg:gap-6 lg:px-8 xl:px-10 2xl:px-12">
-        <div className="p-3 lg:p-0 lg:pt-6 lg:col-span-2 border-b border-slate-100 lg:border-0 space-y-2">
-        {catalogError && (
-          <div className="rounded-xl bg-rose-50 border border-rose-100 px-3 py-2 text-[11px] text-rose-700">
-            {catalogError}
-          </div>
-        )}
-        {catalogLoading && (
-          <div className="h-2 rounded-full bg-slate-100 animate-pulse" aria-label="در حال بارگذاری کاتالوگ" />
-        )}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1 text-xs lg:text-lg xl:text-xl text-slate-500">
-            <span className="font-bold text-slate-900">{titleText}</span>
-            {!showSkeleton && <span className="text-[10px] lg:text-xs text-slate-400">({toPersianDigits(shownTotal)})</span>}
-          </div>
-          {(onlyInStock || onlyOriginal || priceMin !== '' || priceMax !== '' || selectedCategory !== 'all' || searchQuery || selectedBrands.length > 0 || Object.keys(selectedAttrs).length > 0) && (
-            <button
-              onClick={resetAllFilters}
-              className="text-[10px] lg:text-xs text-rose-500 font-bold bg-rose-50 px-2 py-0.5 min-h-[36px] rounded-lg flex items-center gap-1"
-            >
-              <RotateCcw className="w-3 h-3"  strokeWidth={1.5}/>
-              <span>حذف فیلترها</span>
+  const renderCategory = (category: Category, depth = 0): React.ReactNode => {
+    const children = hierarchy.byParent.get(category.id) ?? [];
+    const isExpanded = expandedSlugs.has(category.slug);
+    const selected = selectedCategory === category.slug;
+    return (
+      <li key={category.id}>
+        <div className="flex items-stretch gap-1">
+          <button type="button" aria-pressed={selected} onClick={() => chooseCategory(category.slug)}
+            className={`min-h-11 min-w-0 flex-1 rounded-lg px-2 text-start text-sm transition-colors focus-visible:outline-[#164638] ${selected ? 'bg-[#e5efe6] font-bold text-[#164638]' : 'text-[#40574d] hover:bg-[#f2f5ef]'}`}>
+            {category.title}
+          </button>
+          {children.length > 0 && depth < 2 && (
+            <button type="button" aria-expanded={isExpanded} aria-label={`زیردسته‌های ${category.title}`}
+              onClick={() => toggleTree(category.slug)} className={`${control} aspect-square px-0`}>
+              <ChevronDown size={16} aria-hidden className={isExpanded ? 'rotate-180' : ''} />
             </button>
           )}
         </div>
-      </div>
-
-        {/* Desktop sidebar filters, like live's catalogue page */}
-        {/* FIX 17: live catalog aside (bundle u3): continuous flow,
-            NOT separate spaced cards. Aside: pt-2 lg:pt-0 lg:sticky
-            lg:top-32 lg:self-start lg:space-y-5, NO hidden class (only
-            headings hide on mobile, so filters render on mobile too),
-            h2 "فیلترها", category flow with "همه", expandable tree,
-            toggles + price box + sort in one flow row, facets plain.
-            Grid column (240px) comes from the parent grid, not the
-            aside -- do not add a width class to the aside. */}
-        <aside className="pt-2 lg:pt-0 lg:sticky lg:top-32 lg:self-start">
-          <div hidden={hideFilters} className="lg:space-y-5">
-          <h2 className="hidden lg:block text-sm font-extrabold text-slate-900">فیلترها</h2>
-          <div>
-            <h3 className="hidden lg:block text-xs font-bold text-slate-500 mb-2">دسته‌بندی</h3>
-            <div className="flex gap-1.5 overflow-x-auto lg:overflow-visible lg:flex-wrap lg:flex-col lg:items-stretch no-scrollbar px-3 lg:px-0 py-0.5 text-[11px] lg:text-sm">
-              <button
-                onClick={() => handleSelectCategory('all')}
-                className={`px-3 py-1 min-h-[36px] lg:min-h-[40px] inline-flex items-center justify-center lg:justify-start rounded-xl font-bold shrink-0 transition-all ${selectedCategory === 'all' ? 'bg-brand text-white shadow-2xs' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-              >
-                همه
-              </button>
-              {categories.filter((cat) => !cat.parentId).map((cat) => (
-                <CatalogCategoryNode
-                  key={cat.id}
-                  node={cat}
-                  categories={categories}
-                  selectedCategory={selectedCategory}
-                  setSelectedCategory={handleSelectCategory}
-                  expandedSlugs={expandedSlugs}
-                  toggleExpanded={toggleExpanded}
-                  onViewTree={() => setActiveView('categories_tree')}
-                />
-              ))}
-            </div>
-            {expandedSlugs.size > 0 && (
-              <div className="lg:hidden px-3 pt-1 space-y-1">
-                {categories.filter((cat) => !cat.parentId && expandedSlugs.has(cat.slug)).map((cat) => (
-                  <div key={cat.id}>
-                    {categories.filter((c) => c.parentId === cat.id).map((child) => (
-                      <CatalogCategoryNode key={child.id} node={child} categories={categories}
-                        selectedCategory={selectedCategory} setSelectedCategory={handleSelectCategory}
-                        expandedSlugs={expandedSlugs} toggleExpanded={toggleExpanded}
-                        depth={1} onViewTree={() => setActiveView('categories_tree')} />
-                    ))}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-          <div className="px-3 lg:px-0 py-2 lg:py-0 bg-slate-50 lg:bg-transparent border-b border-slate-200/80 lg:border-0 flex items-start justify-between gap-1 lg:flex-col lg:items-stretch lg:gap-4 text-[10px] lg:text-sm">
-            <div className="flex flex-wrap items-center gap-1.5 overflow-x-auto lg:overflow-visible lg:flex-col lg:items-stretch lg:gap-2 no-scrollbar min-w-0">
-              <button
-                type="button"
-                onClick={() => setOnlyInStock((v) => !v)}
-                className={`px-2 py-1 min-h-[36px] lg:min-h-[40px] rounded-lg font-bold flex items-center gap-1 shrink-0 lg:w-full ${onlyInStock ? 'bg-brand text-white' : 'bg-white border border-slate-200 text-slate-600'}`}
-              >
-                {onlyInStock && <Check className="w-3 h-3"  strokeWidth={1.5}/>}
-                <span>موجود</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setOnlyOriginal((v) => !v)}
-                className={`px-2 py-1 min-h-[36px] lg:min-h-[40px] rounded-lg font-bold flex items-center gap-1 shrink-0 lg:w-full ${onlyOriginal ? 'bg-brand text-white shadow-2xs' : 'bg-white border border-slate-200 text-slate-600'}`}
-              >
-                {onlyOriginal && <Check className="w-3 h-3"  strokeWidth={1.5}/>}
-                <span>فقط کالای اصل</span>
-              </button>
-              {dataMax > dataMin && (
-                <div className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-2">
-                  <PriceRangeSlider
-                    boundMin={dataMin}
-                    boundMax={dataMax}
-                    value={[effMin, effMax]}
-                    showHeader={false}
-                    serverRangeError={catalogPriceRangeError}
-                    onChange={([nextMin, nextMax]) => {
-                      if (nextMin === dataMin && nextMax === dataMax) {
-                        setPriceMin('');
-                        setPriceMax('');
-                      } else {
-                        setPriceMin(String(nextMin));
-                        setPriceMax(String(nextMax));
-                      }
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-            <div className="flex items-center gap-1 shrink-0 lg:flex-col lg:items-stretch">
-              <span className="hidden lg:block text-xs font-bold text-slate-500">مرتب‌سازی</span>
-              <ArrowUpDown className="w-3 h-3 text-slate-400 lg:hidden"  strokeWidth={1.5}/>
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-                className="px-2 py-1 min-h-[36px] lg:min-h-[40px] rounded-lg font-bold bg-white border border-slate-200 text-slate-600 text-[11px] lg:text-sm outline-hidden lg:w-full"
-              >
-                <option value="featured">پیشنهادی</option>
-                <option value="newest">جدیدترین</option>
-                <option value="discount">بیشترین تخفیف</option>
-                <option value="cheapest">ارزان‌ترین</option>
-                <option value="expensive">گران‌ترین</option>
-              </select>
-            </div>
-          </div>
-          {selectedCategory !== 'all' && (facetBrands.length > 0 || facetAttrs.length > 0) && (
-            <div className="px-3 lg:px-0 py-2 lg:py-0 space-y-4">
-              {facetBrands.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-bold text-slate-500 mb-2">برند</h3>
-                  <div className="space-y-1">
-                    {facetBrands.map(({ brand, count }) => (
-                      <label key={brand} className="flex items-center gap-2 min-h-[32px] px-2 py-1 rounded-lg hover:bg-slate-50 cursor-pointer text-[11px] lg:text-sm text-slate-600">
-                        <input type="checkbox" checked={selectedBrands.includes(brand)} onChange={() => setSelectedBrands((prev) => prev.includes(brand) ? prev.filter((b) => b !== brand) : [...prev, brand])} className="w-4 h-4 shrink-0 accent-brand" />
-                        <span className="flex-1 font-medium">{brand}</span>
-                        <span className="text-[10px] text-slate-400">({toPersianDigits(count)})</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {facetAttrs.map((attr) => (
-                <div key={attr.id}>
-                  <h3 className="text-xs font-bold text-slate-500 mb-2">{attr.title}</h3>
-                  <div className="space-y-1">
-                    {attr.values.map((v) => (
-                      <label key={v.id} className="flex items-center gap-2 min-h-[32px] px-2 py-1 rounded-lg hover:bg-slate-50 cursor-pointer text-[11px] lg:text-sm text-slate-600">
-                        <input type="checkbox" checked={(selectedAttrs[attr.id] ?? []).includes(v.id)} onChange={() => setSelectedAttrs((prev) => {
-                          const cur = prev[attr.id] ?? [];
-                          const next = cur.includes(v.id) ? cur.filter((id) => id !== v.id) : [...cur, v.id];
-                          const out = { ...prev };
-                          if (next.length === 0) delete out[attr.id]; else out[attr.id] = next;
-                          return out;
-                        })} className="w-4 h-4 shrink-0 accent-brand" />
-                        <span className="flex-1 font-medium">{v.titleFa || v.titleEn}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          </div>
-        </aside>
-        <div className="p-3 lg:p-0">
-        {showSkeleton ? (
-          <div aria-hidden="true" className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2.5 lg:gap-4 xl:gap-5">
-            {Array.from({ length: 6 }, (_, index) => (
-              <div key={index} className="aspect-[3/4] animate-pulse rounded-2xl bg-slate-100" />
-            ))}
-          </div>
-        ) : filtered.length === 0 ? (
-          catalogPriceRangeError ? (
-            <div className="bg-white rounded-2xl p-6 text-center border border-slate-100 space-y-2">
-              <p role="alert" className="text-[11px] text-rose-600 font-bold">{PRICE_RANGE_ERROR_MESSAGE}</p>
-              <div className="flex items-center justify-center gap-2 pt-1">
-                <button
-                  onClick={resetAllFilters}
-                  className="py-1.5 px-3 bg-[#5d44f8] text-white font-bold text-[11px] rounded-xl inline-flex items-center gap-1.5"
-                >
-                  <RotateCcw className="w-3 h-3"  strokeWidth={1.5}/>
-                  <span>حذف فیلترها</span>
-                </button>
-              </div>
-            </div>
-          ) : (
-          <div className="bg-white rounded-2xl p-6 text-center border border-slate-100 space-y-2">
-            <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mx-auto"><PackageX className="w-8 h-8 text-slate-400"  strokeWidth={1.5}/></div>
-            <h3 className="text-xs font-bold text-slate-800">کالایی یافت نشد</h3>
-            <div className="flex items-center justify-center gap-2 pt-1">
-              <button
-                onClick={resetAllFilters}
-                className="py-1.5 px-3 bg-[#5d44f8] text-white font-bold text-[11px] rounded-xl inline-flex items-center gap-1.5"
-              >
-                <RotateCcw className="w-3 h-3"  strokeWidth={1.5}/>
-                <span>حذف فیلترها</span>
-              </button>
-              <button
-                onClick={resetAllFilters}
-                className="py-1.5 px-3 bg-slate-100 text-slate-700 font-bold text-[11px] rounded-xl inline-flex items-center gap-1.5"
-              >
-                <span>مشاهده همه محصولات</span>
-              </button>
-            </div>
-          </div>
-          )
-        ) : (
-          <>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2.5 lg:gap-4 xl:gap-5">
-              {filtered.map((product) => (
-                <ProductCard key={product.id} product={product} />
-              ))}
-            </div>
-            {liveMode && hasMoreCatalog && remaining > 0 && (
-              <button
-                onClick={() => { void loadMoreCatalog(); }}
-                disabled={catalogLoadingMore}
-                className="w-full mt-3 py-2.5 bg-white border border-brand/30 text-brand-deep font-bold text-[11px] lg:text-sm rounded-xl shadow-xs hover:bg-brand-soft transition-colors disabled:opacity-60"
-              >
-                {catalogLoadingMore ? 'در حال بارگذاری…' : `نمایش بیشتر (${toPersianDigits(remaining)} کالای دیگر)`}
-              </button>
-            )}
-          </>
+        {isExpanded && children.length > 0 && depth < 2 && (
+          <ul className="ms-2 mt-1 space-y-1 border-s border-[#d5e0d7] ps-2">
+            {children.map(child => renderCategory(child, depth + 1))}
+          </ul>
         )}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// FIX 17: live catalog tree (bundle u3) -- depth-aware classes:
-// L0 root chip (rounded-xl, slate-100) + chevron px-2/min-h-40;
-// L1 child (rounded-lg, slate-50) + chevron px-1.5/min-h-36;
-// L2 leaves are plain text-[12px] buttons; when a L2 node has
-// children, a "مشاهده همهٔ زیردسته‌ها" button navigates to the
-// categories tree view. Expansion is a per-slug set (bundle E).
-const CatalogCategoryNode: React.FC<{
-  node: any;
-  categories: any[];
-  selectedCategory: string;
-  setSelectedCategory: (s: string) => void;
-  expandedSlugs: Set<string>;
-  toggleExpanded: (slug: string) => void;
-  depth?: number;
-  onViewTree: () => void;
-}> = ({ node, categories, selectedCategory, setSelectedCategory, expandedSlugs, toggleExpanded, depth = 0, onViewTree }) => {
-  const children = categories.filter((c) => c.parentId === node.id);
-  const expanded = expandedSlugs.has(node.slug);
-  if (depth >= 2) {
-    return (
-      <button onClick={() => setSelectedCategory(node.slug)} className={`block w-full px-2.5 py-1 min-h-[32px] text-right rounded-lg text-[12px] font-medium transition-all ${selectedCategory === node.slug ? 'bg-brand text-white font-bold' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'}`}>{node.title}</button>
+      </li>
     );
-  }
-  const isRoot = depth === 0;
-  const hasGrandchildren = children.some((ch) => categories.some((c) => c.parentId === ch.id));
+  };
+
+  // Prevent a central price/assortment flash while restoring a scoped store.
+  if (storeSlug) return null;
+
+  const subcategories = hierarchy.byParent.get(hierarchy.selected?.id ?? null) ?? [];
+  const parentCategories = hierarchy.path.slice(0, -1);
   return (
-    <div className="shrink-0 lg:shrink lg:w-full">
-      <div className="flex items-stretch gap-0.5">
-        <button onClick={() => setSelectedCategory(node.slug)} className={isRoot ? `flex-1 px-2.5 lg:px-3.5 py-1 min-h-[36px] lg:min-h-[40px] inline-flex items-center justify-center lg:justify-start rounded-xl font-medium shrink-0 transition-all ${selectedCategory === node.slug ? 'bg-brand text-white font-bold' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}` : `flex-1 px-2.5 py-1 min-h-[36px] inline-flex items-center justify-start rounded-lg font-medium transition-all text-right ${selectedCategory === node.slug ? 'bg-brand text-white font-bold' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}>{node.title}</button>
-        {children.length > 0 && (
-          <button
-            type="button"
-            aria-label={`زیردسته‌های ${node.title}`}
-            aria-expanded={expanded}
-            onClick={() => toggleExpanded(node.slug)}
-            className={isRoot ? 'inline-flex items-center justify-center px-2 min-h-[40px] rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200 transition-all shrink-0' : 'inline-flex items-center justify-center px-1.5 min-h-[36px] rounded-lg bg-slate-50 text-slate-600 hover:bg-slate-100 transition-all shrink-0'}
-          >
-            <ChevronDown className={`${isRoot ? 'w-4 h-4' : 'w-3.5 h-3.5'} transition-transform ${expanded ? 'rotate-180' : ''}`}  strokeWidth={1.5}/>
-          </button>
-        )}
-      </div>
-      {expanded && children.length > 0 && (
-        <div className={isRoot ? 'hidden lg:block mr-3 mt-1 space-y-1 border-r-2 border-slate-100 pr-2' : 'mr-3 mt-0.5 space-y-0.5 border-r-2 border-slate-100 pr-2'}>
-          {children.map((child) => (
-            <CatalogCategoryNode key={child.id} node={child} categories={categories} selectedCategory={selectedCategory} setSelectedCategory={setSelectedCategory} expandedSlugs={expandedSlugs} toggleExpanded={toggleExpanded} depth={depth + 1} onViewTree={onViewTree} />
-          ))}
-          {depth === 1 && hasGrandchildren && (
-            <button type="button" onClick={onViewTree} className="block w-full px-2.5 py-1 min-h-[32px] text-right rounded-lg text-[12px] font-bold text-brand hover:bg-brand-soft transition-all">مشاهده همهٔ زیردسته‌ها</button>
+    <main id="main-content" tabIndex={-1} dir="rtl" className="flex-1 bg-[#f8f6ef] pb-12 text-[#172d26]">
+      <header className="border-b border-[#dce5d9] bg-[#edf2e9]">
+        <div className={`${pageWidth} py-4 sm:py-7`}>
+          <nav aria-label="مسیر صفحه" className="mb-2 flex flex-wrap items-center gap-x-1.5 text-xs font-bold text-[#40574d]">
+            <a href="/" onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); onBack(); } }}
+              className="inline-flex min-h-11 items-center rounded-md px-1 hover:underline focus-visible:outline-[#164638]">
+              <ArrowRight size={16} className="me-1.5" aria-hidden /> خانه
+            </a>
+            {hierarchy.selected && (
+              <>
+                <ChevronLeft size={13} aria-hidden />
+                <button type="button" onClick={() => chooseCategory('all')} className="min-h-11 rounded-md px-1 hover:underline focus-visible:outline-[#164638]">همهٔ کالاها</button>
+              </>
+            )}
+            {parentCategories.map(category => (
+              <React.Fragment key={category.id}>
+                <ChevronLeft size={13} aria-hidden />
+                <button type="button" onClick={() => chooseCategory(category.slug)} className="min-h-11 rounded-md px-1 hover:underline focus-visible:outline-[#164638]">{category.title}</button>
+              </React.Fragment>
+            ))}
+          </nav>
+          <h1 className="wrap-anywhere text-2xl leading-snug font-black sm:text-4xl">{title}</h1>
+          <p className="mt-1.5 min-h-5 text-sm font-medium text-[#506357]" role="status">
+            {showSkeleton ? 'در حال بارگذاری کاتالوگ…' : catalogError ? 'به‌روزرسانی نتایج انجام نشد' : `${toPersianDigits(total)} کالا`}
+          </p>
+          {!!subcategories.length && (
+            <nav aria-label={hierarchy.selected ? 'زیردسته‌ها' : 'دسته‌ها'} className="mt-3 -mb-1 flex gap-2 overflow-x-auto py-1">
+              {subcategories.slice(0, 8).map(category => (
+                <a key={category.id} href={pathForView('catalog', { searchQuery, categorySlug: category.slug })}
+                  onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); chooseCategory(category.slug); } }}
+                  className={`${control} shrink-0 whitespace-nowrap`}>{category.title}<ChevronLeft size={14} aria-hidden /></a>
+              ))}
+              {subcategories.length > 8 && <button type="button" onClick={() => setActiveView('categories_tree')} className={`${control} shrink-0`}>همهٔ دسته‌بندی‌ها</button>}
+            </nav>
           )}
         </div>
-      )}
-    </div>
+      </header>
+
+      <div className={`${pageWidth} pt-4 lg:grid lg:grid-cols-[250px_minmax(0,1fr)] lg:gap-x-6 lg:pt-7`}>
+        <div className="mb-3 flex flex-wrap items-center gap-2 lg:col-start-2 lg:row-start-1">
+          <button ref={filterButton} type="button" aria-expanded={filtersOpen} aria-controls="catalog-filters"
+            onClick={() => setFiltersOpen(open => !open)} className={`${control} lg:hidden`}>
+            <SlidersHorizontal size={17} aria-hidden /> فیلترها
+            {filterCount > 0 && <span className="rounded-full bg-[#efc771] px-2 py-0.5 text-xs text-[#172d26]">{toPersianDigits(filterCount)}</span>}
+          </button>
+          <label className={`${control} min-w-0 flex-1 justify-start gap-1 lg:flex-none`}>
+            <ArrowUpDown size={16} aria-hidden />
+            <span className="sr-only">مرتب‌سازی کالاها</span>
+            <select value={sort} onChange={event => setCatalogFilter({ sort: event.target.value as typeof sort })}
+              className="min-h-11 min-w-0 flex-1 bg-transparent py-1 ps-1 pe-2 text-sm focus-visible:outline-[#164638]">
+              {sortOptions.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
+            </select>
+          </label>
+          {hasSelection && (
+            <button type="button" onClick={resetFilters} className={`${control} w-full sm:w-auto lg:ms-auto`}>
+              <RotateCcw size={16} aria-hidden /> حذف فیلترها
+            </button>
+          )}
+        </div>
+
+        <aside id="catalog-filters" aria-label="فیلترهای کاتالوگ"
+          className={`${filtersOpen ? 'block' : 'hidden'} mb-4 min-w-0 self-start rounded-2xl border border-[#dce5d9] bg-white p-3.5 lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:mb-0 lg:block`}>
+          <div className="mb-2 flex items-center justify-between border-b border-[#e1e8de] pb-2">
+            <h2 className="flex items-center gap-2 text-base font-black"><SlidersHorizontal size={17} aria-hidden /> فیلترها</h2>
+            <button type="button" aria-label="بستن فیلترها" className={`${control} lg:hidden`} onClick={closeFilters}><X size={18} aria-hidden /></button>
+          </div>
+          <fieldset className="space-y-1 border-b border-[#e1e8de] pb-3">
+            <legend className="py-2 text-sm font-extrabold">وضعیت کالا</legend>
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm hover:bg-[#edf4ee]">
+              <input type="checkbox" checked={inStockOnly} onChange={event => setCatalogFilter({ inStockOnly: event.target.checked })} className="size-4 accent-[#164638]" />
+              فقط کالاهای موجود
+            </label>
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm hover:bg-[#edf4ee]">
+              <input type="checkbox" checked={onlyOriginal} onChange={event => setCatalogFilter({ onlyOriginal: event.target.checked })} className="size-4 accent-[#164638]" />
+              فقط کالاهای اصل
+            </label>
+          </fieldset>
+          {currentBounds && currentBounds.maxPrice > currentBounds.minPrice && (
+            <div className="border-b border-[#e1e8de] py-3 [&_input[type=text]]:min-h-11">
+              <h3 className="mb-2 text-sm font-extrabold">محدودهٔ قیمت</h3>
+              <PriceRangeSlider
+                key={selectedCategory}
+                boundMin={currentBounds.minPrice}
+                boundMax={currentBounds.maxPrice}
+                value={minPrice !== null && maxPrice !== null && minPrice > maxPrice ? [currentBounds.minPrice, currentBounds.maxPrice] : [minPrice ?? currentBounds.minPrice, maxPrice ?? currentBounds.maxPrice]}
+                showHeader={false}
+                serverRangeError={catalogPriceRangeError && filtersOpen}
+                onChange={([nextMin, nextMax]) => {
+                  setCatalogFilter(nextMin === currentBounds.minPrice && nextMax === currentBounds.maxPrice
+                    ? { minPrice: null, maxPrice: null }
+                    : { minPrice: nextMin, maxPrice: nextMax });
+                }}
+              />
+            </div>
+          )}
+          {availableBrands.length > 0 && (
+            <fieldset className="border-b border-[#e1e8de] pb-2">
+              <legend className="py-2 text-sm font-extrabold">برند</legend>
+              {availableBrands.map(brand => (
+                <label key={brand} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm hover:bg-[#edf4ee]">
+                  <input type="checkbox" checked={brands.includes(brand)} className="size-4 accent-[#164638]" onChange={() => {
+                    if (brands.includes(brand)) removeBrand(brand);
+                    else setCatalogFilter({ brands: [...brands, brand] });
+                  }} />
+                  {brand}
+                </label>
+              ))}
+            </fieldset>
+          )}
+          {availableAttrs.map(attr => (
+            <fieldset key={attr.id} className="border-b border-[#e1e8de] pb-2">
+              <legend className="py-2 text-sm font-extrabold">{attr.title}</legend>
+              {attr.values.map(value => (
+                <label key={value.id} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 text-sm hover:bg-[#edf4ee]">
+                  <input type="checkbox" checked={attributes[attr.id]?.includes(value.id) ?? false}
+                    className="size-4 accent-[#164638]" onChange={() => toggleAttribute(attr.id, value.id)} />
+                  {value.titleFa || value.titleEn}
+                </label>
+              ))}
+            </fieldset>
+          ))}
+          <div className="pt-3">
+            <h3 className="mb-2 text-sm font-extrabold">دسته‌بندی کالاها</h3>
+            <ul className="space-y-1">
+              <li><button type="button" aria-pressed={selectedCategory === 'all'} onClick={() => chooseCategory('all')}
+                className={`flex min-h-11 w-full items-center gap-1.5 rounded-lg px-2 text-start text-sm focus-visible:outline-[#164638] ${selectedCategory === 'all' ? 'bg-[#e5efe6] font-bold text-[#164638]' : 'text-[#40574d] hover:bg-[#f2f5ef]'}`}>
+                {selectedCategory === 'all' && <Check size={15} aria-hidden />} همه
+              </button></li>
+              {(hierarchy.byParent.get(null) ?? []).map(category => renderCategory(category))}
+            </ul>
+            <button type="button" onClick={() => setActiveView('categories_tree')} className={`${control} mt-3 w-full`}>
+              <LayoutGrid size={16} aria-hidden /> همهٔ دسته‌بندی‌ها
+            </button>
+          </div>
+          <button type="button" onClick={closeFilters} className={`${primary} mt-3 w-full lg:hidden`}>نمایش کالاها</button>
+        </aside>
+
+        <section aria-label="نتایج کاتالوگ" aria-busy={catalogLoading || catalogLoadingMore}
+          className="min-w-0 scroll-mt-28 lg:col-start-2 lg:row-start-2">
+          {(inStockOnly || onlyOriginal || priceSelected || brands.length > 0 || Object.keys(attributes).length > 0) && (
+            <ul aria-label="فیلترهای فعال" className="mb-3 flex flex-wrap gap-2 text-xs">
+              {inStockOnly && <FilterChip label="کالاهای موجود" onRemove={() => setCatalogFilter({ inStockOnly: false })} />}
+              {onlyOriginal && <FilterChip label="کالاهای اصل" onRemove={() => setCatalogFilter({ onlyOriginal: false })} />}
+              {priceSelected && <FilterChip label={[minPrice != null ? `از ${formatPrice(minPrice)}` : '', maxPrice != null ? `تا ${formatPrice(maxPrice)}` : '', 'تومان'].filter(Boolean).join(' ')}
+                onRemove={() => setCatalogFilter({ minPrice: null, maxPrice: null })} />}
+              {brands.map(brand => <FilterChip key={brand} label={brand} onRemove={() => removeBrand(brand)} />)}
+              {availableAttrs.flatMap(attr => attr.values.filter(value => attributes[attr.id]?.includes(value.id))
+                .map(value => <FilterChip key={`${attr.id}:${value.id}`} label={`${attr.title}، ${value.titleFa || value.titleEn}`} onRemove={() => toggleAttribute(attr.id, value.id)} />))}
+            </ul>
+          )}
+          {catalogError && (
+            <div data-testid="catalog-load-error" role="alert" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#ead6c4] bg-[#fff5e9] p-3 text-sm font-bold text-[#743905]">
+              <span>{visible.length ? 'بارگذاری نتایج تازه انجام نشد. نتایج قبلی نمایش داده می‌شود.' : 'بارگذاری کالاها انجام نشد.'}</span>
+              <button type="button" onClick={() => void fetchCatalogProducts()} className={control}><RotateCcw size={16} aria-hidden /> تلاش دوباره</button>
+            </div>
+          )}
+          {catalogPriceRangeError && (!filtersOpen || !currentBounds || currentBounds.maxPrice <= currentBounds.minPrice) && (
+            <p data-testid="price-range-error" role="alert" className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-bold text-rose-800">{PRICE_RANGE_ERROR_MESSAGE}</p>
+          )}
+          {showSkeleton ? (
+            <div aria-hidden className={grid}>
+              {Array.from({ length: 8 }, (_, index) => <div key={index} className="aspect-[3/4] rounded-2xl border border-[#dce5d9] bg-[#e9eee3] motion-safe:animate-pulse" />)}
+            </div>
+          ) : visible.length === 0 && !catalogError && !catalogPriceRangeError ? (
+            <div className="rounded-2xl border border-[#dce5d9] bg-white px-4 py-12 text-center sm:py-20">
+              <div className="mx-auto mb-3 grid size-14 place-items-center rounded-2xl bg-[#edf4ee] text-[#164638]"><PackageX size={26} aria-hidden /></div>
+              <h2 className="text-lg font-black">کالایی یافت نشد</h2>
+              <p className="mt-1 text-sm leading-7 text-[#506357]">{searchQuery ? 'عبارت دیگری جستجو کنید یا همهٔ کالاها را ببینید.' : filterCount ? 'فیلترها را تغییر دهید تا کالاهای بیشتری ببینید.' : 'برای پیدا کردن کالا، دستهٔ دیگری را انتخاب کنید.'}</p>
+              <button type="button" onClick={resetFilters} className={`${primary} mt-4`}>مشاهده همه محصولات <ArrowLeft size={16} aria-hidden /></button>
+            </div>
+          ) : visible.length > 0 && (
+            <>
+              <div className={`${grid} [&_.cv-card]:rounded-2xl [&_.cv-card]:border-[#e1e7dc] [&_.cv-card:hover]:border-[#a9beaf] [&_.cv-card>div:first-child]:bg-[#f1f4ed] [&_.cv-card>div:nth-child(2)]:p-3 [&_[data-testid=product-name]]:font-semibold [&_.cv-card_button:not(:disabled)]:bg-[#164638]`}>
+                {visible.map(product => <ProductCard key={product.id} product={product} />)}
+              </div>
+              {liveMode && hasMoreCatalog && remaining > 0 && !catalogError && !catalogPriceRangeError && (
+                <div className="mt-5 flex flex-col items-center gap-2">
+                  {catalogLoadMoreError && <p role="alert" className="text-sm font-semibold text-[#743905]">بارگذاری کالاهای بیشتر انجام نشد.</p>}
+                  <button type="button" onClick={() => void loadMoreCatalog()} disabled={catalogLoadingMore} className={`${control} w-full disabled:opacity-60 sm:w-auto`}>
+                    {catalogLoadingMore ? 'در حال بارگذاری…' : catalogLoadMoreError ? 'تلاش دوباره برای کالاهای بیشتر' : `نمایش بیشتر (${toPersianDigits(remaining)} کالای دیگر)`}
+                    <ChevronDown size={16} aria-hidden />
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      </div>
+    </main>
   );
 };
+
+const FilterChip: React.FC<{ label: string; onRemove: () => void }> = ({ label, onRemove }) => (
+  <li>
+    <button type="button" aria-label={`حذف فیلتر ${label}`} onClick={onRemove}
+      className="inline-flex min-h-11 items-center gap-2 rounded-full border border-[#ccdccc] bg-[#e9f0e7] px-3 font-bold text-[#164638] hover:bg-white focus-visible:outline-2 focus-visible:outline-[#164638]">
+      {label} <X size={14} aria-hidden />
+    </button>
+  </li>
+);

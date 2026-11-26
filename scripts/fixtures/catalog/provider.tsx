@@ -57,12 +57,12 @@ function Probe() {
   const store = useStore();
   const [show, setShow] = useState(false);
   h.state = () => ({ slug: store.currentStore.slug, view: store.activeView, products: store.products.length, loading: store.catalogLoading, priceRangeError: store.catalogPriceRangeError });
-  h.select = (slug: string) => store.setCurrentStore(stores.find(value => value.slug === slug));
+  h.select = (slug: string) => store.setActiveView('seller_storefront', { storeSlug: slug });
   h.open = () => { h.paints = []; store.setActiveView('catalog'); setShow(true); };
   // A4: bypass the CatalogView effect guard and push a filter straight into
   // the store (simulates a stale bundle / external client for A8).
   h.forceFilter = (patch: { minPrice?: number | null; maxPrice?: number | null }) => store.setCatalogFilter(patch);
-  h.navigateCatalog = () => store.setActiveView('catalog');
+  h.navigateCatalog = () => store.openCatalogCategory('women-tee-shirts');
   useLayoutEffect(() => {
     if (show) h.paints.push({ rows: document.querySelectorAll('[data-testid="product-item"]').length,
       heading: document.body.textContent?.includes('کاتالوگ جامع کالاها') || false, view: store.activeView });

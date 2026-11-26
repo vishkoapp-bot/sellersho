@@ -37,7 +37,7 @@ test('warehouse OTP opens the requested section when a staff capability is activ
 
 test('the public warehouse entry opens the guarded warehouse route', () =>
   visit('/', 390, async page => {
-    await clickText(page, 'ورود عملیات انبار');
+    await clickText(page, 'ورود عملیات انبار', 'a');
     await page.waitForSelector('#warehouse-mobile', { visible: true });
     assert.equal(new URL(page.url()).pathname, '/warehouse');
     assert.equal(await page.$('#warehouse-main'), null);

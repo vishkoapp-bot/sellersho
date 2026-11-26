@@ -1,5 +1,7 @@
 @import "vazirmatn/Vazirmatn-font-face.css";
 @import "tailwindcss";
+@import "./components/central-store.css";
+@import "./components/views/product/centralPdp.css";
 
 @theme {
   --font-sans: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
@@ -23,7 +25,7 @@
     box-sizing: border-box;
     -webkit-tap-highlight-color: transparent;
   }
-  
+
   html, body {
     font-family: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     direction: rtl;
@@ -205,40 +207,6 @@ body:has([data-panel-workspace]) [data-toast-stack] {
 @media (min-width: 1024px) { .page-gutter { padding-inline: 32px; } }
 @media (min-width: 1280px) { .page-gutter { padding-inline: 40px; } }
 @media (min-width: 1536px) { .page-gutter { padding-inline: 48px; } }
-
-/* FIX 14: live 1240px centred frame at >=1280px (live CSS patch:
-   page-gutter padding calc((100vw - 1240px)/2) on main, header and footer). */
-@media (min-width: 1280px) {
-  .homepage-shell > header > div { padding-left: calc((100vw - 1240px)/2) !important; padding-right: calc((100vw - 1240px)/2) !important; }
-  .homepage-shell > footer { padding-left: calc((100vw - 1240px)/2) !important; padding-right: calc((100vw - 1240px)/2) !important; }
-  .homepage-main { padding-left: calc((100vw - 1240px)/2); padding-right: calc((100vw - 1240px)/2); }
-  /* FIX 16: Fix 15's negative-margin hero bleed is REMOVED. The served
-     bundle contained it, yet the browser still measured a contained
-     hero, so the mechanism was not robust. The hero now lives OUTSIDE
-     the gutter-padded .homepage-main (App.tsx homepage branch), which
-     is live's own banner-reorder model (2026-11-02 patch: full-width
-     child of main, padding-inline:0, no negative margins, no vw
-     hacks) -- full-bleed becomes structural, not calc-dependent.
-     Storefront heroes are a different component and unaffected. */
-  /* FIX 16: live caps the deals band to 1240px centred
-     (#Campaign_Home{max-width:1240px;margin-inline:auto} in the live
-     CSS patch). The candidate band sat inside the gutter-padded main
-     AND kept mx-8/10/12, so it was 96px narrower than live's
-     (388..1532 vs 340..1580 at 1920px) -- exactly the re-check's
-     slightly narrower, more left margin. The ID rule overrides the
-     mx utilities, so the band fills the 1240px main content box. */
-  #Campaign_Home { max-width: 1240px; margin-inline: auto; }
-  /* FIX 16: nested gutters inside the capped band must NOT use the
-     viewport calc (live patch). */
-  #Campaign_Home .page-gutter { padding-inline: 20px; }
-  /* FIX 16: live's menu inner rows get the 1240 gutter at >=1280px
-     (header.z-40 [role=menu]>div in the live CSS patch). The menu
-     outer itself must NOT take the header gutter padding that the
-     Fix 14 rule gives every direct header div child. */
-  .homepage-shell > header > div[role="menu"] { padding-left: 0 !important; padding-right: 0 !important; }
-  .homepage-shell > header > div[role="menu"] > div { padding-left: calc((100vw - 1240px)/2); padding-right: calc((100vw - 1240px)/2); }
-  .homepage-main > section { padding-left: 0 !important; padding-right: 0 !important; }
-}
 
 /* FIX 21: live desktop-tidy CSS patch, rule (c): locked 1:1 product
    images, object-fit cover on desktop. The dist ships product images

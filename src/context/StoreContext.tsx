@@ -1,5 +1,5 @@
 import { useSellerOnboardingDraft } from './SellerOnboardingContext';
-import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useLayoutEffect, useRef, ReactNode } from 'react';
 import { SearchX, ArrowRight } from 'lucide-react';
 import { 
   Store, 
@@ -28,7 +28,7 @@ import { isMockMode } from '../services/apiClient';
 import { storeApi } from '../services/storeApi';
 import { catalogApi } from '../services/catalogApi';
 import { mapBackendProduct } from './ProductContext';
-import { parsePathname, buildProductUrl, pathForView, isSellerDashboardTab } from '../utils/routing';
+import { parsePathname, buildProductUrl, pathForView, isSellerDashboardTab, CENTRAL_STORE_SLUG, isStoreScopeSlug } from '../utils/routing';
 import { mockStores } from '../data/mockData';
 
 // Sibling Context Hooks
@@ -175,46 +175,34 @@ export interface StoreState {
   openStorefront: (slug?: string) => void;
 }
 
+const completePublicStore = (store: Store, slug: string): Store => ({
+  ...store,
+  id: store.id || `store-${slug}`,
+  slug,
+  name: store.name || slug,
+  ownerType: store.ownerType || 'dropshipper',
+  ownerName: store.ownerName || '',
+  tagline: store.tagline || '',
+  profitMarginPercent: store.profitMarginPercent || 0,
+  description: store.description || '',
+  activeCategories: store.activeCategories || [],
+  totalSales: store.totalSales || 0,
+  monthlyRevenueEstimate: store.monthlyRevenueEstimate || 0,
+});
+
 const StoreContext = createContext<StoreState | undefined>(undefined);
 
 export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChildren?: boolean }> = ({ children, allowUnselectedChildren = false }) => {
-  const { products, openProductDetail, currentProductDetail, setSearchQuery, setSelectedCategory, clearCatalogBrand, setWishlistScope } = useProducts();
+  const { products, openProductDetail, currentProductDetail, setSearchQuery, setSelectedCategory, clearCatalogBrand, resetCatalogFilter, setWishlistScope } = useProducts();
   const { sellerSession } = useAuth();
   const onboardingDraft = useSellerOnboardingDraft();
   const [stores, setStores] = useState<Store[]>([]);
-  const [currentStore, setCurrentStore] = useState<Store | null>(null);
+  const [selectedStore, setCurrentStore] = useState<Store | null>(null);
+  const [centralStore, setCentralStore] = useState<Store | null>(null);
+  const [ownerStoreLoadedFor, setOwnerStoreLoadedFor] = useState<string | null>(null);
+  const [reloadStores, setReloadStores] = useState(0);
+  const [resolvedShop, setResolvedShop] = useState<Store | null>(null);
   const cart = useCart();
-  // Fix72: the visible cart follows the session store. Switching
-  // stores switches the cart; other stores' carts are preserved
-  // inside CartContext (live's map + active-store-id model).
-  useEffect(() => {
-    if (currentStore?.id) cart.setActiveCartStore(currentStore.id);
-  }, [currentStore?.id]);
-  // Discovery state (search query / selected category / pending
-  // brand request) lives in ProductContext and is shared by every
-  // store, so without a reset it bleeds across store boundaries:
-  // a query typed in one store would filter another store's — or
-  // the central — floor, and a category picked in store A would
-  // pre-filter store B. Reset it whenever the active store's slug
-  // actually changes (store→store, store→central, central→store).
-  // The first observed slug only arms the tracker: a cold load
-  // keeps its ?q= query, and same-store navigation — which writes
-  // this state deliberately via openCatalogCategory /
-  // openCatalogBrand — never changes the slug, so it never fires.
-  const prevStoreSlugRef = useRef<string | null>(null);
-  useEffect(() => {
-    const slug = currentStore?.slug ?? null;
-    if (!slug) return;
-    if (prevStoreSlugRef.current === null) {
-      prevStoreSlugRef.current = slug;
-      return;
-    }
-    if (prevStoreSlugRef.current === slug) return;
-    prevStoreSlugRef.current = slug;
-    setSearchQuery('');
-    setSelectedCategory('all');
-    clearCatalogBrand();
-  }, [currentStore?.slug]);
   const [storesLoading, setStoresLoading] = useState(true);
   const [storeStatuses, setStoreStatuses] = useState<{ [storeId: string]: 'active' | 'suspended' }>({
     'central-store': 'active',
@@ -234,10 +222,10 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
     }
     if (parsed.view === 'seller_storefront') return { view: parsed.view as ActiveView, slug: parsed.slug, unsubscribe: parsed.unsubscribe, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
     if (parsed.view === 'product_detail') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: parsed.id, spnNumber: parsed.spnNumber, spnc: parsed.spnc, storeSlug: parsed.storeSlug ?? null };
-    if (parsed.view === 'customer_profile' || parsed.view === 'customer_orders') {
+    if (parsed.view === 'customer_profile' || parsed.view === 'customer_orders' || parsed.view === 'customer_wishlist') {
       return { view: parsed.view, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: parsed.storeSlug ?? null };
     }
-    if (parsed.view === 'static_page') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: parsed.staticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
+    if (parsed.view === 'static_page') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: parsed.staticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: parsed.storeSlug ?? null };
     if (parsed.view === 'seller_dashboard') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: parsed.sellerTab, productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
     if (parsed.view === 'dashboard' || parsed.view === 'catalog') return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
     return { view: parsed.view as ActiveView, slug: null, unsubscribe: false, staticKey: 'about' as StaticPageKey, sellerTab: 'overview', productId: undefined, spnNumber: undefined, spnc: undefined, storeSlug: null };
@@ -259,45 +247,37 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
   );
   const [routeProductPending, setRouteProductPending] = useState<boolean>(initialRouteState.view === 'product_detail');
   const [routeProductInvalid, setRouteProductInvalid] = useState<boolean>(false);
-  // Store scope of the current product route. Store product URLs
-  // (/store/<slug>/product/<id>) carry the scope in the path and seed
-  // it here on cold load; a product opened from inside a storefront
-  // on the legacy bare path records the store's slug here too.
-  // Without a scope the PDP falls back to the ambient currentStore
-  // (the central store by default) and the click silently leaves the
-  // store. Set by storefront product opens, re-derived from the URL
-  // (history state as fallback) on popstate, cleared by any
-  // navigation that is not a scoped product open.
-  const [routeStoreSlug, setRouteStoreSlug] = useState<string | null>(
-    initialRouteState.storeSlug,
-  );
+  const [routeStoreSlug, setRouteStoreSlug] = useState<string | null>(initialRouteState.storeSlug);
   const resolvedStorefrontSlugRef = useRef<string | null>(null);
-
-  // Per-store wishlist scope: ProductContext's wishlist follows the
-  // store the shopper is inside - the routed store of a store-scoped
-  // PDP (routeStoreSlug) when one is open, else the session store -
-  // the same resolution the PDP scopes by, mirroring the cart's
-  // active-store sync above. wishlistIds, the profile count and the
-  // wishlist view all read the scoped list only.
-  const wishlistScopeStore = routeStoreSlug
-    ? stores.find((s) => s.slug === routeStoreSlug) ??
-      (currentStore?.slug === routeStoreSlug ? currentStore : null)
-    : currentStore;
+  const [routeStoreInvalid, setRouteStoreInvalid] = useState(false);
+  const publicShopSlug = routeStoreSlug ?? (activeView === 'seller_storefront' ? storefrontSlug : null);
+  const scopedShop = publicShopSlug
+    ? (resolvedShop?.slug === publicShopSlug ? resolvedShop : stores.find(store => store.slug === publicShopSlug))
+    : undefined;
+  // Public buyer routes use their URL's store. Keep the seller's private
+  // selection separate so loading a public store never switches the dashboard.
+  const managementView = activeView === 'seller_dashboard' || allowUnselectedChildren;
+  const requiredOwnerStore = !allowUnselectedChildren && managementView && sellerSession?.status === 'active' ? sellerSession.storeId : null;
+  const waitingForOwnerStore = Boolean(requiredOwnerStore && ownerStoreLoadedFor !== requiredOwnerStore);
+  const currentStore = requiredOwnerStore
+    ? waitingForOwnerStore ? null : selectedStore
+    : (managementView ? selectedStore : scopedShop) ?? centralStore;
+  useLayoutEffect(() => {
+    if (!currentStore) return;
+    cart.setActiveCartStore(currentStore.id);
+    setWishlistScope(currentStore.id, currentStore.slug);
+  }, [currentStore?.id, currentStore?.slug]);
+  const discoveryScope = publicShopSlug ?? CENTRAL_STORE_SLUG;
+  const previousDiscoveryScope = useRef(discoveryScope);
   useEffect(() => {
-    if (wishlistScopeStore?.id && wishlistScopeStore.slug) {
-      setWishlistScope(wishlistScopeStore.id, wishlistScopeStore.slug);
-    }
-  }, [wishlistScopeStore?.id, wishlistScopeStore?.slug]);
-  const routeStoreResolveRef = useRef<string | null>(null);
-  // P0-2: terminal failure of the routed-store resolve (unknown or
-  // suspended slug) — the PDP renders the invalid-store view instead
-  // of silently keeping the central store.
-  const [routeStoreInvalid, setRouteStoreInvalid] = useState<boolean>(false);
-  // P0-2: loadStores' setCurrentStore updater runs inside an effect
-  // that does not depend on routeStoreSlug, so it reads the slug from
-  // this ref (mirrored on every change) instead of a stale closure.
-  const routeStoreSlugRef = useRef<string | null>(routeStoreSlug);
-  useEffect(() => { routeStoreSlugRef.current = routeStoreSlug; }, [routeStoreSlug]);
+    if (previousDiscoveryScope.current === discoveryScope) return;
+    previousDiscoveryScope.current = discoveryScope;
+    const params = new URLSearchParams(window.location.search);
+    setSearchQuery(params.get('q') || '');
+    setSelectedCategory(params.get('category') || 'all');
+    clearCatalogBrand();
+    resetCatalogFilter();
+  }, [discoveryScope]);
   // P0-2: the store scope the currently installed routed product was
   // resolved with (null = unscoped central). The already-resolved
   // guard must compare scope too, or bibi -> sepehr on the same
@@ -305,7 +285,7 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
   const routeProductScopeRef = useRef<string | null | undefined>(undefined);
   // P0-2: resolved = no route scope, or the routed store is the
   // current store, or its resolve failed terminally (invalid view).
-  const routeStoreResolved = !routeStoreSlug || currentStore?.slug === routeStoreSlug || routeStoreInvalid;
+  const routeStoreResolved = !routeStoreSlug || Boolean(scopedShop) || routeStoreInvalid;
 
   type NavigationState = {
     activeView: ActiveView;
@@ -318,14 +298,24 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
   };
 
   const setActiveView = (view: ActiveView, navigation: Partial<NavigationState> = {}) => {
-    setActiveViewState(view);
-    const accountPage = view === 'customer_profile' || view === 'customer_orders';
-    const accountStore = accountPage
-      ? navigation.storeSlug ?? routeStoreSlug ?? (currentStore?.ownerType === 'dropshipper' ? currentStore.slug : undefined)
-      : undefined;
+    const accountPage = view === 'customer_profile' || view === 'customer_orders' || view === 'customer_wishlist';
+    const scopedPage = accountPage || view === 'static_page';
+    const pageStore = scopedPage ? navigation.storeSlug ?? publicShopSlug ?? undefined : undefined;
+    const ownShopSlug = activeView === 'seller_dashboard' ? selectedStore?.slug : undefined;
+    const nextShopSlug = navigation.storeSlug ?? ownShopSlug ?? publicShopSlug;
+    const storefrontTarget = isStoreScopeSlug(nextShopSlug) && nextShopSlug !== centralStore?.slug ? nextShopSlug : null;
+    const targetView = view === 'seller_storefront' && !storefrontTarget ? 'customer' : view;
+    setActiveViewState(targetView);
+    if (targetView === 'customer' && activeView !== 'customer') {
+      setSearchQuery('');
+      setSelectedCategory('all');
+      clearCatalogBrand();
+      resetCatalogFilter();
+    }
     if (view === 'seller_storefront') {
-      const slug = navigation.storeSlug || storefrontSlug || currentStore?.slug || null;
+      const slug = storefrontTarget;
       setStorefrontSlug(slug);
+      setStorefrontLoading(Boolean(slug));
       setStorefrontUnsubscribeSlug(null);
       setStorefrontInvalid(false);
       setStorefrontResolved(false);
@@ -349,8 +339,8 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
       // the scope the opener set untouched.
       if (navigation.storeSlug !== undefined) setRouteStoreSlug(navigation.storeSlug);
       else if (navigation.productId) setRouteStoreSlug(null);
-    } else if (accountPage) {
-      setRouteStoreSlug(accountStore ?? null);
+    } else if (scopedPage) {
+      setRouteStoreSlug(pageStore ?? null);
     } else {
       setRouteStoreSlug(null);
     }
@@ -361,9 +351,7 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
       // (which the preview build prefixes) instead.
       let path = pathForView(view);
       if (view === 'seller_storefront') {
-        const slug = navigation.storeSlug || storefrontSlug || currentStore?.slug;
-        // Live pushState: opening a storefront writes /store/<slug>.
-        path = slug ? pathForView(view, { storeSlug: slug }) : '/';
+        path = pathForView(view, { storeSlug: storefrontTarget ?? undefined });
       } else if (view === 'product_detail') {
         const product = navigation.productId
           ? products.find((item) => item.id === navigation.productId)
@@ -383,9 +371,9 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
           ? buildProductUrl(product ?? { id: navigation.productId }, scopeSlug ?? undefined)
           : '/';
       } else if (accountPage) {
-        path = pathForView(view, { storeSlug: accountStore });
+        path = pathForView(view, { storeSlug: pageStore });
       } else if (view === 'static_page') {
-        path = pathForView(view, { staticPageKey: navigation.staticPageKey || staticPageKey });
+        path = pathForView(view, { staticPageKey: navigation.staticPageKey || staticPageKey, storeSlug: pageStore });
       } else if (view === 'seller_dashboard') {
         path = pathForView(view, { sellerTab: navigation.sellerTab || sellerDashboardTab });
       } else if (view === 'dashboard') {
@@ -397,12 +385,16 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
       } else if (view === 'not_found') {
         path = window.location.pathname + window.location.search;
       }
-      const nextState: NavigationState = { activeView: view, ...navigation };
+      const nextState: NavigationState = { ...navigation, activeView: targetView };
       window.history.pushState(nextState, '', path);
     }
   };
 
   const openStorefront = (slug?: string) => {
+    if ((slug || currentStore?.slug) === CENTRAL_STORE_SLUG) {
+      setActiveView('customer');
+      return;
+    }
     setActiveView('seller_storefront', slug ? { storeSlug: slug } : {});
   };
 
@@ -425,18 +417,10 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
       // Live router: back/forward re-parses the pathname (plus tab and
       // static-page params); stored history state is only a fallback.
       const parsed = parsePathname(window.location.pathname, window.location.search);
-      // The product route's store scope lives in the URL
-      // (/store/<slug>/product/...); legacy entries written before
-      // store-carrying URLs carry it in the history state instead.
-      // The URL wins; the state is only the fallback. Restore the
-      // scope for product entries, clear it for everything else.
-      setRouteStoreSlug(
-        parsed.view === 'product_detail' || parsed.view === 'customer_profile' || parsed.view === 'customer_orders'
-          ? (parsed.storeSlug ?? (event.state as NavigationState | null)?.storeSlug ?? null)
-          : null,
-      );
+      setRouteStoreSlug('storeSlug' in parsed ? parsed.storeSlug ?? null : null);
       if (parsed.view === 'seller_storefront') {
         setStorefrontSlug(parsed.slug);
+        setStorefrontLoading(!parsed.unsubscribe);
         setStorefrontUnsubscribeSlug(parsed.unsubscribe ? parsed.slug : null);
         setStorefrontInvalid(false);
         setStorefrontResolved(false);
@@ -463,7 +447,7 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
         return;
       }
       if (parsed.view === 'dashboard' || parsed.view === 'supplier_dashboard' || parsed.view === 'warehouse_panel' || parsed.view === 'admin_panel' || parsed.view === 'catalog' ||
-        parsed.view === 'customer_profile' || parsed.view === 'customer_orders') {
+        parsed.view === 'customer_profile' || parsed.view === 'customer_orders' || parsed.view === 'customer_wishlist' || parsed.view === 'categories_tree') {
         setActiveViewState(parsed.view);
         return;
       }
@@ -525,88 +509,35 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
     return null;
   });
 
-  // ISO-E: seller-session loss must not leave the previous seller store
-  // as currentStore. loadStores below preserves a previous store whenever
-  // it is still in the fetched list, and for a logged-out / role-switched
-  // session it fetches the PUBLIC list - which contains the previous
-  // seller store - so the old store (with its pricing overrides and
-  // builder config) stayed selected after logout. Clear it the moment the
-  // seller session goes from a store to none; the next loadStores pass
-  // then falls back to the ordinary anonymous/public default instead of
-  // resurrecting the previous seller store. Cart state is NOT touched
-  // here (Fix72 owns the cart). Storefront resolution for an explicitly
-  // opened /store/<slug> URL still sets currentStore from that slug.
-  const prevSellerStoreIdRef = useRef<string | null | undefined>(undefined);
-  useEffect(() => {
-    const storeId = sellerSession?.storeId ?? null;
-    if (prevSellerStoreIdRef.current === undefined) {
-      prevSellerStoreIdRef.current = storeId;
-      return;
-    }
-    if (prevSellerStoreIdRef.current !== null && storeId === null) {
-      setCurrentStore(null);
-    }
-    prevSellerStoreIdRef.current = storeId;
-  }, [sellerSession?.storeId]);
-
   useEffect(() => {
     let cancelled = false;
-
     const loadStores = async () => {
       try {
-        const loadedStores = isMockMode()
-          ? mockStores
-          : sellerSession?.status === 'active'
-            ? await storeApi.getOwnedStores()
-            : await storeApi.getAllStores();
+        const publicStores = isMockMode() ? Promise.resolve(mockStores) : storeApi.getAllStores();
+        const ownedStores = !isMockMode() && sellerSession?.status === 'active' ? storeApi.getOwnedStores() : publicStores;
+        const [publicResult, ownedResult] = await Promise.allSettled([publicStores, ownedStores]);
         if (cancelled) return;
 
-        const availableStores = Array.isArray(loadedStores) ? loadedStores : [];
-        setStores(availableStores);
-        setCurrentStore((previous) => {
-          if (previous) {
-            const fresh = availableStores.find((store) => store.id === previous.id);
-            // FIX 79: a storefront-resolved store carries no signedContractVersion
-            // (the public single-store response omits it); keeping it verbatim
-            // would pin the seller reconfirm gate to undefined -> 1 forever.
-            // Fill the owner-private field from the fresh owned store when present.
-            if (fresh) return { ...previous, signedContractVersion: fresh.signedContractVersion ?? previous.signedContractVersion };
-          }
-          if (sellerSession?.storeId) {
-            const sellerStore = availableStores.find((store) => store.id === sellerSession.storeId);
-            if (sellerStore) return sellerStore;
-          }
-          // P0-2: the URL route the user is ON wins over a stored
-          // referral and over the [0] default — a cold store PDP must
-          // install its own store before the first paint, not central.
-          const routeSlug = routeStoreSlugRef.current;
-          if (routeSlug) {
-            const routeStore = availableStores.find((store) => store.slug === routeSlug);
-            if (routeStore) return routeStore;
-            // The slug names a store outside this list (owned-list
-            // session, or an unknown slug): never fall through to
-            // [0]/central while the resolve effect is still fetching
-            // it — keep the previous store so the PDP gate holds.
-            return previous;
-          }
-          if (referredStoreSlug) {
-            const referredStore = availableStores.find((store) => store.slug === referredStoreSlug);
-            if (referredStore) return referredStore;
-          }
-          return availableStores[0] || null;
+        const publicList = publicResult.status === 'fulfilled' && Array.isArray(publicResult.value) ? publicResult.value : [];
+        const available = ownedResult.status === 'fulfilled' && Array.isArray(ownedResult.value) ? ownedResult.value : [];
+        const platformStore = publicList.find(store => store.ownerType === 'central' || store.slug === CENTRAL_STORE_SLUG)
+          ?? await storeApi.getStoreBySlug(CENTRAL_STORE_SLUG).catch(() => null);
+        if (cancelled) return;
+        if (platformStore) setCentralStore(platformStore);
+        setStores(available);
+        setOwnerStoreLoadedFor(sellerSession?.storeId ?? null);
+        setCurrentStore(previous => {
+          if (!sellerSession?.storeId) return allowUnselectedChildren ? previous : null;
+          return available.find(store => store.id === previous?.id) ??
+            available.find(store => store.id === sellerSession.storeId) ?? null;
         });
-      } catch (error) {
-        if (!cancelled) console.warn('Failed to fetch stores:', error);
       } finally {
         if (!cancelled) setStoresLoading(false);
       }
     };
-
-    loadStores();
-    return () => {
-      cancelled = true;
-    };
-  }, [referredStoreSlug, sellerSession?.storeId, sellerSession?.status]);
+    void loadStores();
+    return () => { cancelled = true; };
+  }, [sellerSession?.storeId, sellerSession?.status, allowUnselectedChildren, reloadStores]);
 
   const setReferredStoreSlug = (slug: string | null) => {
     setReferredStoreSlugState(slug);
@@ -647,43 +578,7 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
       .then((resolved: any) => {
         if (cancelled) return;
         resolvedStorefrontSlugRef.current = storefrontSlug;
-        const merged: Store = {
-          id: resolved.id || `store-${storefrontSlug}`,
-          name: resolved.name || storefrontSlug,
-          slug: resolved.slug || storefrontSlug,
-          ownerType: resolved.ownerType || 'dropshipper',
-          ownerName: resolved.ownerName || '',
-          tagline: resolved.tagline || '',
-          shortDescription: resolved.shortDescription,
-          logo: resolved.logo,
-          profitMarginPercent: resolved.profitMarginPercent || 0,
-          description: resolved.description || '',
-          activeCategories: resolved.activeCategories || [],
-          totalSales: resolved.totalSales || 0,
-          monthlyRevenueEstimate: resolved.monthlyRevenueEstimate || 0,
-          activeProductIds: resolved.activeProductIds,
-          selectedNicheIds: resolved.selectedNicheIds,
-          sellerDealsWidgetConfig: resolved.sellerDealsWidgetConfig,
-          status: resolved.status,
-          ownerPhone: resolved.ownerPhone,
-          templateId: resolved.templateId,
-          templateConfig: resolved.templateConfig,
-          builderWidgets: resolved.builderWidgets,
-          centralDealsFilter: resolved.centralDealsFilter,
-          centralDealsProductIds: resolved.centralDealsProductIds,
-        };
-        // FIX 79: the public single-store response never carries the
-        // owner-private signedContractVersion, so a plain merge dropped it
-        // from currentStore; the seller reconfirm gate then read
-        // undefined -> 1 < latest and re-prompted on every login even
-        // though the DB already held the current version. Keep the
-        // previous value when the merged store is the same store.
-        setCurrentStore((previous) => ({
-          ...merged,
-          signedContractVersion:
-            resolved.signedContractVersion ??
-            (previous && previous.id === merged.id ? previous.signedContractVersion : undefined),
-        }));
+        setResolvedShop(completePublicStore(resolved, storefrontSlug));
         setStorefrontSuspended(resolved.status === 'suspended');
         setStorefrontResolved(true);
         setStorefrontLoading(false);
@@ -695,7 +590,7 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
         // with a minimal store instead of the generic invalid page.
         if (error?.status === 404 && typeof error?.message === 'string' && error.message.toLowerCase().includes('suspended')) {
           resolvedStorefrontSlugRef.current = storefrontSlug;
-          setCurrentStore({
+          setResolvedShop({
             id: `store-${storefrontSlug}`,
             name: storefrontSlug,
             slug: storefrontSlug,
@@ -720,113 +615,24 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
     return () => { cancelled = true; };
   }, [activeView, storefrontSlug, storefrontUnsubscribeSlug]);
 
-  // In-store PDP: while a store-scoped product route is shown, the
-  // scoped store must BE the current store — the PDP frames itself,
-  // prices itself (detail fetch with ?storeSlug) and validates
-  // publication against currentStore, so a central currentStore would
-  // silently turn the page into the central store's PDP. Resolve the
-  // slug (loaded list first, public endpoint as fallback) with the
-  // same merged shape the storefront resolver installs.
   useEffect(() => {
-    if (!routeStoreSlug || (activeView !== 'product_detail' && activeView !== 'customer_profile' && activeView !== 'customer_orders')) {
-      routeStoreResolveRef.current = null;
-      setRouteStoreInvalid(false);
-      return;
-    }
-    if (currentStore?.slug === routeStoreSlug) {
-      setRouteStoreInvalid(false);
-      return;
-    }
-    // P0-2: the in-list check runs BEFORE the ref guard — when the
-    // store list arrives it must install the store even if an earlier
-    // run already stamped the ref and its fetch was cancelled by that
-    // arrival. The ref is stamped only when a fetch actually starts.
-    const inList = stores.find((s) => s.slug === routeStoreSlug);
-    if (inList) {
-      setRouteStoreInvalid(false);
-      setCurrentStore(inList);
-      return;
-    }
-    // M6 (round 2): recoverable resolve — if currentStore has since
-    // changed to a store whose slug is NOT the route slug (the
-    // seller-session branch of loadStores re-ran mid-browse), the
-    // stamped ref must not wedge this effect: clear it (and the
-    // invalid flag) so the fetch below re-runs. The slug guard in
-    // the .then below is kept, so the verified P0-2 race fix is
-    // preserved; only the stuck-ref state is re-armed.
-    if (routeStoreResolveRef.current === routeStoreSlug && currentStore && currentStore.slug !== routeStoreSlug) {
-      routeStoreResolveRef.current = null;
-      setRouteStoreInvalid(false);
-    }
-    if (routeStoreResolveRef.current === routeStoreSlug) return;
-    routeStoreResolveRef.current = routeStoreSlug;
     setRouteStoreInvalid(false);
+    if (!routeStoreSlug || scopedShop) return;
+    let cancelled = false;
     storeApi.getStoreBySlug(routeStoreSlug)
-      .then((resolved: any) => {
-        // P0-2: slug-guarded, not run-guarded — a re-run caused by the
-        // store list arriving must not cancel this fetch; only a slug
-        // change (or leaving the PDP) abandons it.
-        if (routeStoreResolveRef.current !== routeStoreSlug || !resolved) return;
-        setCurrentStore((previous) => {
-          if (previous?.slug === routeStoreSlug) return previous;
-          return {
-            id: resolved.id || `store-${routeStoreSlug}`,
-            name: resolved.name || routeStoreSlug,
-            slug: resolved.slug || routeStoreSlug,
-            ownerType: resolved.ownerType || 'dropshipper',
-            ownerName: resolved.ownerName || '',
-            tagline: resolved.tagline || '',
-            shortDescription: resolved.shortDescription,
-            logo: resolved.logo,
-            profitMarginPercent: resolved.profitMarginPercent || 0,
-            description: resolved.description || '',
-            activeCategories: resolved.activeCategories || [],
-            totalSales: resolved.totalSales || 0,
-            monthlyRevenueEstimate: resolved.monthlyRevenueEstimate || 0,
-            activeProductIds: resolved.activeProductIds,
-            selectedNicheIds: resolved.selectedNicheIds,
-            sellerDealsWidgetConfig: resolved.sellerDealsWidgetConfig,
-            status: resolved.status,
-            ownerPhone: resolved.ownerPhone,
-            templateId: resolved.templateId,
-            templateConfig: resolved.templateConfig,
-            builderWidgets: resolved.builderWidgets,
-            centralDealsFilter: resolved.centralDealsFilter,
-            centralDealsProductIds: resolved.centralDealsProductIds,
-          } as Store;
-        });
+      .then(resolved => {
+        if (cancelled) return;
+        if (!resolved) {
+          setRouteStoreInvalid(true);
+          return;
+        }
+        setResolvedShop(completePublicStore(resolved, routeStoreSlug));
       })
       .catch(() => {
-        if (routeStoreResolveRef.current !== routeStoreSlug) return;
-        // P0-2: terminal failure (unknown/suspended slug) — never
-        // leave central as currentStore under another store's slug.
-        // routeStoreResolved flips true and the PDP renders the
-        // invalid-store view.
-        setRouteStoreInvalid(true);
+        if (!cancelled) setRouteStoreInvalid(true);
       });
-    // No cleanup cancellation: the slug guard above owns abandonment.
-  }, [activeView, routeStoreSlug, currentStore?.slug, stores]);
-
-  // Canonical store-product URL: a scoped PDP reached through a
-  // legacy storeless path (a pre-existing history entry whose state
-  // carries the scope) rewrites its address bar ONCE to
-  // /store/<slug>/product/... so the copyable/shareable URL names
-  // the store. The history state and query (?spnc=) are preserved;
-  // the pathname check makes it fire at most once per landing. A
-  // bare /product/<id> with NO scope is never rewritten - it stays
-  // the central PDP forever.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (activeView !== 'product_detail' || !routeStoreSlug || !currentProductDetail) return;
-    const canonical = buildProductUrl(currentProductDetail, routeStoreSlug);
-    if (window.location.pathname.replace(/\/+$/, '') === canonical.replace(/\/+$/, '')) return;
-    if (!/^\/product\//.test(window.location.pathname)) return;
-    window.history.replaceState(
-      window.history.state,
-      '',
-      canonical + window.location.search + window.location.hash,
-    );
-  }, [activeView, routeStoreSlug, currentProductDetail]);
+    return () => { cancelled = true; };
+  }, [routeStoreSlug, scopedShop]);
 
   // Team 08 (D46): routed product resolve. Uses Team 04's server spn
   // lookup (catalogApi.getProductBySpn) for /product/spn-<n>/ URLs and
@@ -1287,7 +1093,7 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
     openStorefront,
   };
 
-  if (storesLoading) {
+  if (storesLoading || waitingForOwnerStore) {
     return (
       <StoreContext.Provider value={value}>
         <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 text-center">
@@ -1340,7 +1146,11 @@ const [staticPageKey, setStaticPageKey] = useState<StaticPageKey>(initialRouteSt
       <StoreContext.Provider value={value}>
         {allowUnselectedChildren ? children : (
           <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 text-center">
-            <div className="text-sm text-slate-500">هیچ فروشگاهی برای نمایش انتخاب نشده است.</div>
+            <div className="space-y-3">
+              <p role="alert" className="text-sm text-slate-700">بارگذاری فروشگاه انجام نشد.</p>
+              <button type="button" onClick={() => { setStoresLoading(true); setReloadStores(value => value + 1); }}
+                className="min-h-11 rounded-xl bg-[#164638] px-4 text-sm font-bold text-white">تلاش دوباره</button>
+            </div>
           </div>
         )}
       </StoreContext.Provider>
@@ -1486,6 +1296,7 @@ export const useStore = (): StoreContextType => {
     niches: prod.niches,
     catalogLoading: prod.catalogLoading,
     catalogError: prod.catalogError,
+    fetchCatalogProducts: prod.fetchProducts,
     catalogPriceRangeError: prod.catalogPriceRangeError,
     // PERF-01: paged catalog passthrough (page 1 + show-more).
     catalogFilter: prod.catalogFilter,
@@ -1495,6 +1306,7 @@ export const useStore = (): StoreContextType => {
     hasMoreCatalog: prod.hasMoreCatalog,
     catalogTotal: prod.catalogTotal,
     catalogLoadingMore: prod.catalogLoadingMore,
+    catalogLoadMoreError: prod.catalogLoadMoreError,
     searchQuery: prod.searchQuery,
     setSearchQuery: prod.setSearchQuery,
     selectedCategory: prod.selectedCategory,
@@ -1510,12 +1322,7 @@ export const useStore = (): StoreContextType => {
       // store, so the slug is threaded through the navigation state;
       // without it the PDP defaults to the central store's frame,
       // pricing and back target.
-      const scopedSlug =
-        store.activeView === 'seller_storefront' && store.currentStore?.ownerType === 'dropshipper'
-          ? store.currentStore.slug
-          : store.activeView === 'product_detail'
-            ? store.routeStoreSlug
-            : null;
+      const scopedSlug = activeStoreSlugOf(store);
       store.setActiveView(
         'product_detail',
         scopedSlug ? { productId: product.id, storeSlug: scopedSlug } : { productId: product.id },

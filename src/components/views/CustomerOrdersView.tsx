@@ -5,12 +5,50 @@ import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { Order } from '../../types';
 import { orderApi, CustomerReturnDto, ReturnDestinationInfo, OrderRefundSummary } from '../../services/orderApi';
-import { ArrowRight, Package, Truck, CheckCircle2, Clock, Copy, Printer, AlertCircle } from 'lucide-react';
+import { Package, Truck, CheckCircle2, Clock, Copy, Printer, AlertCircle, RotateCcw } from 'lucide-react';
+import { CustomerAccountLayout } from './CustomerProfileView';
+
+const orderFilters = [
+  { id: 'all', label: 'همه' },
+  { id: 'pending', label: 'در انتظار پرداخت' },
+  { id: 'processing', label: 'در حال آماده‌سازی' },
+  { id: 'shipped', label: 'ارسال‌شده' },
+  { id: 'delivered', label: 'تحویل‌شده' },
+  { id: 'cancelled', label: 'لغوشده' },
+  { id: 'delivery_disputed', label: 'در حال پیگیری' },
+] as const;
+const processingStatuses = ['processing', 'picking', 'picked', 'packed'];
+const deliveredStatuses = ['delivered', 'delivered_confirmed', 'delivered_unconfirmed'];
+const returnStatuses: Record<string, string> = {
+  pending: 'در انتظار بررسی', awaiting_return_test: 'در انتظار بررسی', approved: 'تأیید شده',
+  rejected: 'رد شده', packed: 'بسته‌بندی شده', pickup_pending: 'آمادهٔ تحویل', postal_pending: 'آمادهٔ ارسال',
+  in_transit: 'در مسیر', received: 'دریافت شده', received_pending_qc: 'در حال بررسی کالا',
+  completed: 'تکمیل شده', qc_failed: 'در بررسی کالا رد شد', cancelled: 'لغو شده',
+};
+
+const accountDate = (value: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}/.test(value)) return value;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString('fa-IR', { day: 'numeric', month: 'long', year: 'numeric' });
+};
 
 export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
-  const { currentStore, setTrackingOrder, setIsTrackingModalOpen, formatPrice, toPersianDigits, confirmOrderDelivery, disputeOrderDelivery, busyOrderId } = useStore();
+  const { currentStore, routeStoreSlug, openCatalogCategory, setTrackingOrder, setIsTrackingModalOpen, formatPrice, toPersianDigits, confirmOrderDelivery, disputeOrderDelivery, busyOrderId } = useStore();
   const { success, error: toastError } = useToast();
   const { orders, fetchMyOrders } = useOrders();
+  const central = !routeStoreSlug && currentStore?.ownerType !== 'dropshipper';
+  const [showReturns, setShowReturns] = useState(() => typeof window !== 'undefined' && window.location.hash === '#returns');
+  const [loading, setLoading] = useState(true);
+  const [returnsError, setReturnsError] = useState(false);
+  const [returnsLoading, setReturnsLoading] = useState(true);
+  const [returnsReload, setReturnsReload] = useState(0);
+  const returnModalRef = useRef<HTMLDialogElement>(null);
+  const showSection = (returns: boolean) => {
+    setShowReturns(returns);
+    const url = new URL(window.location.href);
+    url.hash = returns ? 'returns' : '';
+    window.history.replaceState(window.history.state, '', url);
+  };
   const [myReturns, setMyReturns] = useState<CustomerReturnDto[]>([]);
   const [returnModalOrder, setReturnModalOrder] = useState<Order | null>(null);
   const [returnSelected, setReturnSelected] = useState<Record<string, boolean>>({});
@@ -21,17 +59,36 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
   const returnQuoteSeq = useRef(0);
   const [returnShippingCost, setReturnShippingCost] = useState<number | null>(null);
   const [returnBusy, setReturnBusy] = useState(false);
+  const [quoteState, setQuoteState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [quoteRetry, setQuoteRetry] = useState(0);
   const [confirmingCancelId, setConfirmingCancelId] = useState<string | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancellationResults, setCancellationResults] = useState<Record<string,OrderRefundSummary>>({});
 
   useEffect(() => {
     let active = true;
-    void fetchMyOrders();
-    orderApi.getMyReturns().then((rows) => { if (active) setMyReturns(rows); }).catch(() => { if (active) setMyReturns([]); });
-    return () => { active = false; ++returnQuoteSeq.current; };
+    fetchMyOrders().finally(() => { if (active) setLoading(false); });
+    const syncSection = () => setShowReturns(window.location.hash === '#returns');
+    window.addEventListener('popstate', syncSection);
+    window.addEventListener('hashchange', syncSection);
+    return () => {
+      active = false;
+      ++returnQuoteSeq.current;
+      window.removeEventListener('popstate', syncSection);
+      window.removeEventListener('hashchange', syncSection);
+    };
   }, []);
-  const [filter, setFilter] = useState<'all' | 'processing' | 'shipped' | 'delivered'>('all');
+  useEffect(() => {
+    let active = true;
+    setReturnsError(false);
+    setReturnsLoading(true);
+    orderApi.getMyReturns()
+      .then((rows) => { if (active) setMyReturns(rows); })
+      .catch(() => { if (active) setReturnsError(true); })
+      .finally(() => { if (active) setReturnsLoading(false); });
+    return () => { active = false; };
+  }, [returnsReload]);
+  const [filter, setFilter] = useState<typeof orderFilters[number]['id']>('all');
 
   // The authenticated backend selects ownership by immutable user ID. Recipient
   // names and phones are editable shipping details, never ownership selectors.
@@ -52,11 +109,13 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
   // cancellable statuses; return is offered for delivered_confirmed
   // orders inside their return window (the backend enforces the
   // window too, so an unknown window still shows the button).
-  const cancellableStatuses = ['pending', 'processing', 'picking', 'picked', 'packed'];
+  const cancellableStatuses = ['pending', ...processingStatuses];
   const canCancel = (o: Order) => cancellableStatuses.includes(o.status);
   const returnDaysLeft = (o: Order): number | null => {
     if (!o.returnWindowEndsAt) return null;
-    return Math.ceil((new Date(o.returnWindowEndsAt).getTime() - Date.now()) / 86400000);
+    const remaining = Date.parse(o.returnWindowEndsAt) - Date.now();
+    if (!Number.isFinite(remaining)) return null;
+    return remaining <= 0 ? -1 : Math.ceil(remaining / 86400000);
   };
   const canReturn = (o: Order) => {
     if (o.status !== 'delivered_confirmed') return false;
@@ -94,37 +153,37 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
     setReturnPrepaid(false);
     setReturnDestination(null);
     setReturnShippingCost(null);
-    const ids = ord.items.filter((it) => it.orderItemId).map((it) => ({ order_item_id: it.orderItemId as string }));
-    if (ids.length > 0) {
-      orderApi.requestReturnQuote(ord.id, ids).then((q) => setReturnShippingCost(q.totalFareToman)).catch(() => {});
-    }
   };
 
-  // The return destination is DERIVED by the backend from the
-  // shipment origins of the selected items (owner rule, Oct 28 2026)
-  // — never typed by the customer. Re-quote whenever the selection
-  // changes so the fare estimate and the destination both describe
-  // the selected set; the created return confirms the same
-  // destination in the success message.
+  useEffect(() => {
+    if (returnModalOrder && returnModalRef.current && !returnModalRef.current.open) returnModalRef.current.showModal();
+  }, [returnModalOrder]);
+
+  // Only a quote for the selected lines may display a destination or fare.
   useEffect(() => {
     if (!returnModalOrder) return;
-    const ids = Object.entries(returnSelected)
-      .filter(([, v]) => v)
-      .map(([id]) => ({ order_item_id: id }));
-    if (ids.length === 0) {
-      setReturnDestination(null);
-      return;
-    }
     const seq = ++returnQuoteSeq.current;
-    orderApi.requestReturnQuote(returnModalOrder.id, ids).then((q) => {
-      if (returnQuoteSeq.current !== seq) return;
-      setReturnShippingCost(q.totalFareToman);
-      setReturnDestination(q.destination ?? null);
-    }).catch(() => {});
-  }, [returnSelected, returnModalOrder]);
+    const items = Object.entries(returnSelected)
+      .filter(([, selected]) => selected)
+      .map(([id]) => ({ order_item_id: id }));
+    setReturnDestination(null);
+    setReturnShippingCost(null);
+    setQuoteState(items.length > 0 ? 'loading' : 'idle');
+    if (items.length > 0) {
+      orderApi.requestReturnQuote(returnModalOrder.id, items).then((quote) => {
+        if (returnQuoteSeq.current !== seq) return;
+        setReturnShippingCost(quote.totalFareToman);
+        setReturnDestination(quote.destination ?? null);
+        setQuoteState('ready');
+      }).catch(() => {
+        if (returnQuoteSeq.current === seq) setQuoteState('error');
+      });
+    }
+    return () => { ++returnQuoteSeq.current; };
+  }, [returnSelected, returnModalOrder, quoteRetry]);
 
   const submitReturn = async () => {
-    if (!returnModalOrder) return;
+    if (!returnModalOrder || (returnPrepaid && quoteState !== 'ready')) return;
     const items = Object.entries(returnSelected)
       .filter(([, v]) => v)
       .map(([id]) => ({ order_item_id: id, qty: Math.max(1, returnQty[id] || 1) }));
@@ -149,8 +208,8 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
       success(`درخواست مرجوعی با موفقیت ثبت شد.${destLabel}`);
       setReturnModalOrder(null);
       await fetchMyOrders();
-      const rs = await orderApi.getMyReturns().catch(() => []);
-      setMyReturns(rs);
+      setReturnsReload(value => value + 1);
+      showSection(true);
     } catch (e: any) {
       toastError(e?.message || 'ثبت مرجوعی انجام نشد.');
     } finally {
@@ -158,20 +217,44 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
     }
   };
 
-  const filtered = storeOrders.filter((o) => {
-    if (filter === 'all') return true;
-    if (filter === 'delivered') return o.status === 'delivered' || o.status === 'delivered_confirmed' || o.status === 'delivered_unconfirmed';
-    return o.status === filter;
-  });
+  const matchesFilter = (status: Order['status'], activeFilter: typeof filter) => {
+    if (activeFilter === 'all') return true;
+    if (activeFilter === 'delivered') return deliveredStatuses.includes(status);
+    if (activeFilter === 'processing') return processingStatuses.includes(status);
+    return status === activeFilter;
+  };
+  const filtered = storeOrders.filter((order) => matchesFilter(order.status, filter));
+  const visibleFilters = orderFilters.filter((entry) =>
+    entry.id === filter || storeOrders.some((order) => matchesFilter(order.status, entry.id)),
+  );
+  const printOrder = (event: React.MouseEvent<HTMLButtonElement>) => {
+    const article = event.currentTarget.closest('article');
+    if (!article) return;
+    article.setAttribute('data-customer-order-print', '');
+    const reset = () => article.removeAttribute('data-customer-order-print');
+    window.addEventListener('afterprint', reset, { once: true });
+    try { window.print(); } catch {
+      window.removeEventListener('afterprint', reset);
+      reset();
+      toastError('پنجرهٔ چاپ باز نشد.');
+    }
+  };
 
-  const copyTracking = (code: string) => {
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(code);
-      success(`کد رهگیری ${code} کپی شد.`);
+  const copyTracking = async (code: string) => {
+    try {
+      await navigator.clipboard.writeText(code);
+      success('کد رهگیری کپی شد.');
+    } catch {
+      toastError('کپی خودکار در دسترس نیست. می‌توانید کد را دستی کپی کنید.');
     }
   };
 
   const getBadge = (status: Order['status']) => {
+    if (status === 'pending' || status === 'cancelled' || status === 'delivery_disputed') {
+      return <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-800">
+        {status === 'pending' ? 'در انتظار پرداخت' : status === 'cancelled' ? 'لغوشده' : 'در حال پیگیری تحویل'}
+      </span>;
+    }
     if (status === 'delivered' || status === 'delivered_confirmed') {
       return <span className="bg-emerald-50 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 border border-emerald-200"><CheckCircle2 className="w-3 h-3 text-emerald-600"  strokeWidth={1.5}/>تحویل قطعی شد</span>;
     }
@@ -185,74 +268,90 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-[#f8fafc] select-none pb-20">
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 px-3.5 py-2.5 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <button onClick={onBack} className="p-1 rounded-lg hover:bg-slate-100 text-slate-700">
-            <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
-          </button>
-          <h1 className="text-xs font-bold text-slate-900">سفارش‌های من</h1>
-        </div>
-        <span className="text-[10px] font-mono text-slate-400">
-          {toPersianDigits(filtered.length)} سفارش
-        </span>
-      </header>
-
-      {/* Tabs */}
-      <div className="flex bg-white border-b border-slate-200 p-2 gap-1 overflow-x-auto no-scrollbar text-xs">
-        {[
-          { id: 'all', label: 'همه' },
-          { id: 'processing', label: 'در حال پردازش' },
-          { id: 'shipped', label: 'ارسال شده' },
-          { id: 'delivered', label: 'تحویل شده' },
-        ].map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setFilter(t.id as any)}
-            className={`py-1 px-3 rounded-xl font-bold transition-colors ${
-              filter === t.id ? 'bg-[#007dfa] text-white shadow-2xs' : 'text-slate-600 hover:bg-slate-100'
-            }`}
-          >
-            {t.label}
+    <CustomerAccountLayout title="سفارش‌های من" onBack={onBack} central={central}>
+      <style>{`@media print {
+        body:has([data-customer-order-print]) *:not(:has([data-customer-order-print])):not([data-customer-order-print], [data-customer-order-print] *) { display: none !important; }
+        body:has([data-customer-order-print]), body *:has([data-customer-order-print]) { display: block !important; min-height: 0 !important; }
+        [data-customer-order-print] { border: 0 !important; box-shadow: none !important; }
+      }`}</style>
+      <nav aria-label="سفارش و مرجوعی" className="mb-4 flex gap-2 rounded-xl bg-[var(--account-soft)] p-1.5 sm:mb-6 sm:w-fit">
+        {[{ returns: false, label: 'سفارش‌ها', icon: Package }, { returns: true, label: 'مرجوعی‌های من', icon: RotateCcw }].map(({ returns, label, icon: Icon }) => (
+          <button key={label} type="button" aria-pressed={returns === showReturns} onClick={() => showSection(returns)}
+            className={`flex min-h-11 flex-1 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold sm:flex-none sm:px-5 ${returns === showReturns ? 'bg-white text-[var(--account-accent)] shadow-xs' : 'text-slate-700 hover:bg-white/70'}`}>
+            <Icon className="size-4 shrink-0" aria-hidden="true" /> {label}
           </button>
         ))}
-      </div>
+      </nav>
 
-      {/* FIX 5: live "my returns" view, compact form. */}
-      {storeReturns.length > 0 && (
-        <div className="mx-3.5 mt-3 bg-white rounded-2xl border border-slate-200/90 p-3 space-y-2 text-xs">
-          <h2 className="font-bold text-slate-800">مرجوعی‌های من</h2>
-          {storeReturns.map((r) => (
-            <div key={r.id} className="flex justify-between gap-2 border-t border-slate-100 pt-1.5">
-              <span className="text-slate-600 truncate">{r.reason || '—'}</span>
-              <span className="text-slate-500 shrink-0">{r.status}</span>
+      {showReturns ? (
+        <section id="returns" aria-labelledby="customer-returns-heading" className="space-y-3">
+          <h2 id="customer-returns-heading" className="text-base font-extrabold sm:text-xl">مرجوعی‌های من</h2>
+          {returnsError && (
+            <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+              دریافت وضعیت مرجوعی انجام نشد.
+              <button type="button" className="min-h-11 font-bold underline" onClick={() => setReturnsReload(value => value + 1)}>تلاش دوباره</button>
             </div>
-          ))}
-        </div>
-      )}
-
-      {/* List */}
-      <div className="p-3.5 space-y-2.5">
-        {filtered.length === 0 ? (
-          <div className="bg-white rounded-2xl p-8 text-center border border-slate-200 space-y-2">
-            <Package className="w-8 h-8 text-slate-400 mx-auto"  strokeWidth={1.5}/>
-            <h3 className="text-xs font-bold text-slate-700">سفارشی در این وضعیت یافت نشد</h3>
+          )}
+          {storeReturns.length === 0 && !loading && !returnsLoading && !returnsError && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-7">
+              <p className="font-bold">درخواستی برای مرجوعی ثبت نکرده‌اید.</p>
+              <p className="mt-1 text-sm leading-7 text-slate-600">برای کالای قابل مرجوعی، سفارش تحویل‌شده را باز کنید.</p>
+              <button type="button" onClick={() => { setFilter('delivered'); showSection(false); }} className="mt-2 min-h-11 text-sm font-bold text-[var(--account-accent)] hover:underline">مشاهدهٔ سفارش‌های تحویل‌شده</button>
+            </div>
+          )}
+          {storeReturns.length > 0 && <ul className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+            {storeReturns.map((record) => (
+              <li key={record.id} className="flex flex-wrap items-center justify-between gap-3 p-4 sm:p-5">
+                <div className="min-w-0">
+                  <p className="break-words text-sm font-bold">{record.reason || 'درخواست مرجوعی'}</p>
+                  <p className="mt-1 text-xs text-slate-600">سفارش <bdi className="font-semibold">{storeOrders.find(order => order.id === record.orderId)?.orderNumber}</bdi>{record.createdAt && <> · {accountDate(record.createdAt)}</>}</p>
+                </div>
+                <span className="rounded-full bg-[var(--account-soft)] px-3 py-1 text-xs font-bold text-[var(--account-accent)]">{returnStatuses[record.status] ?? 'در حال پیگیری'}</span>
+              </li>
+            ))}
+          </ul>}
+          {(loading || returnsLoading) && storeReturns.length === 0 && !returnsError && <p role="status" className="text-sm text-slate-600">در حال دریافت مرجوعی‌ها…</p>}
+        </section>
+      ) : (
+      <>
+        {storeOrders.length > 0 && (
+          <div aria-label="فیلتر وضعیت سفارش" className="mb-4 flex flex-wrap items-center gap-2">
+            {visibleFilters.map((entry) => (
+              <button key={entry.id} type="button" aria-pressed={filter === entry.id} onClick={() => setFilter(entry.id)}
+                className={`min-h-11 rounded-full border px-3.5 text-xs font-bold sm:px-4 sm:text-sm ${filter === entry.id ? 'border-[var(--account-accent)] bg-[var(--account-accent)] text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-[var(--account-soft)]'}`}>
+                {entry.label}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className={`grid gap-3 ${central ? 'lg:grid-cols-2 lg:gap-4' : ''}`}>
+        {loading && filtered.length === 0 ? (
+          <p role="status" className="col-span-full rounded-2xl border border-slate-200 bg-white p-5 text-sm text-slate-700">در حال دریافت سفارش‌ها…</p>
+        ) : filtered.length === 0 ? (
+          <div className="col-span-full rounded-2xl border border-slate-200 bg-white p-6 text-center sm:p-9">
+            <Package className="mx-auto mb-3 size-8 text-[var(--account-accent)]" aria-hidden="true" />
+            <h2 className="font-extrabold">{filter === 'all' ? 'هنوز سفارشی در این فروشگاه ندارید' : 'سفارشی در این وضعیت یافت نشد'}</h2>
+            {filter === 'all' && openCatalogCategory ? (
+              <button type="button" onClick={() => openCatalogCategory('all')} className="mt-3 inline-flex min-h-11 items-center rounded-xl bg-[var(--account-accent)] px-4 text-sm font-bold text-white">مشاهده محصولات</button>
+            ) : filter !== 'all' && (
+              <button type="button" onClick={() => setFilter('all')} className="mt-2 min-h-11 text-sm font-bold text-[var(--account-accent)] hover:underline">دیدن همه سفارش‌ها</button>
+            )}
           </div>
         ) : (
           filtered.map((ord) => (
-            <div key={ord.id} className="bg-white rounded-2xl border border-slate-200/90 p-3 shadow-2xs space-y-2 text-xs">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
+            <article key={ord.id} className="min-w-0 space-y-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm sm:p-5">
+              <div className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 pb-3">
                 <div>
-                  <span className="font-mono font-black text-slate-800">{ord.orderNumber}</span>
-                  <span className="text-[10px] text-slate-400 block">{ord.createdAt}</span>
+                  <h2 className="font-extrabold text-slate-900">سفارش <bdi className="select-text">{ord.orderNumber}</bdi></h2>
+                  <time className="mt-1 block text-xs text-slate-600">{accountDate(ord.createdAt)}</time>
                 </div>
                 {getBadge(ord.status)}
               </div>
 
-              <div className="bg-slate-50 p-2 rounded-xl text-[11px] space-y-1">
+              <div className="space-y-2 rounded-xl bg-slate-50 p-3 text-sm">
                 {ord.items.map((item, idx) => (
                   <div key={idx} className="flex justify-between items-center">
-                    <span className="text-slate-700 truncate">{item.product.title}</span>
+                    <span className="text-slate-700 min-w-0 break-words">{item.product.title}</span>
                     <span className="text-slate-500 font-bold shrink-0 mr-2">{toPersianDigits(item.quantity)} عدد</span>
                   </div>
                 ))}
@@ -267,12 +366,15 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
                   <span className="text-slate-400 text-[10px] block">مبلغ فاکتور:</span>
                   <strong className="text-slate-900">{formatPrice(ord.payableAmount)} تومان</strong>
                 </div>
-                <div className="text-left font-mono text-blue-600 font-bold flex items-center gap-1">
-                  <span>{ord.trackingCode}</span>
-                  <button onClick={() => copyTracking(ord.trackingCode)} className="p-0.5 text-slate-400">
-                    <Copy className="w-3 h-3"  strokeWidth={1.5}/>
-                  </button>
-                </div>
+                {ord.trackingCode && (
+                  <div className="flex items-center gap-1 text-[var(--account-accent)]">
+                    <bdi className="select-text font-bold">{ord.trackingCode}</bdi>
+                    <button type="button" aria-label="کپی کد رهگیری" onClick={() => void copyTracking(ord.trackingCode)}
+                      className="grid size-11 place-items-center rounded-lg hover:bg-[var(--account-soft)]">
+                      <Copy className="size-4" aria-hidden="true" />
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Requirement 4: Delivery Confirmation & Dispute Triggers */}
@@ -289,10 +391,10 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
                       onClick={async () => {
                         try {
                           await confirmOrderDelivery(ord.id);
-                          success('تحویل مرسوله تایید شد. مهلت ۷ روزه مرجوعی آغاز شد؛ سود فروشنده پس از پایان مهلت آزاد می‌شود.');
+                          success('تحویل مرسوله تأیید شد. از امروز ۷ روز برای ثبت درخواست مرجوعی فرصت دارید.');
                         } catch (e: any) { toastError(e?.message || 'تأیید تحویل انجام نشد.'); }
                       }}
-                      className="py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] rounded-lg transition-colors flex items-center justify-center gap-1 shadow-2xs disabled:opacity-50"
+                      className="min-h-11 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] rounded-lg transition-colors flex items-center justify-center gap-1 shadow-2xs disabled:opacity-50"
                     >
                       <CheckCircle2 className="w-3.5 h-3.5"  strokeWidth={1.5}/>
                       <span>کالا را دریافت کردم</span>
@@ -306,7 +408,7 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
                           success(res?.id ? `گزارش عدم دریافت کالا ثبت شد (شماره پیگیری: ${res.id}). سفارش تا بررسی پشتیبانی، تأیید خودکار نمی‌شود.` : 'گزارش عدم دریافت کالا ثبت شد و سفارش در صف پیگیری قرار گرفت.');
                         } catch (e: any) { toastError(e?.message || 'ثبت گزارش عدم دریافت انجام نشد.'); }
                       }}
-                      className="py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] rounded-lg border border-rose-200 transition-colors flex items-center justify-center gap-1 disabled:opacity-50"
+                      className="min-h-11 px-3 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] rounded-lg border border-rose-200 transition-colors flex items-center justify-center gap-1 disabled:opacity-50"
                     >
                       <AlertCircle className="w-3.5 h-3.5"  strokeWidth={1.5}/>
                       <span>هنوز دریافت نکرده‌ام</span>
@@ -339,7 +441,7 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
                 <div className="p-2 bg-emerald-50 border border-emerald-200/80 rounded-xl text-[10px] text-emerald-800 flex items-center justify-between">
                   <div className="flex items-center gap-1 font-bold">
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600"  strokeWidth={1.5}/>
-                    <span>دریافت کالا توسط شما تایید شد. مهلت ۷ روزه مرجوعی آغاز شد؛ تسویه پس از پایان مهلت انجام می‌شود.</span>
+                    <span>دریافت کالا را تأیید کردید.</span>
                   </div>
                   {ord.confirmedAt && (
                     <span className="text-[9px] text-slate-400 font-mono">{ord.confirmedAt}</span>
@@ -347,79 +449,99 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100">
+              <div className="grid grid-cols-2 gap-2 border-t border-slate-100 pt-3 sm:flex sm:flex-wrap">
                 <button
                   onClick={() => { setTrackingOrder(ord); setIsTrackingModalOpen(true); }}
-                  className="py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold text-[11px] rounded-xl flex items-center justify-center gap-1"
+                  className="min-h-11 px-3 bg-[var(--account-soft)] hover:brightness-95 text-[var(--account-accent)] font-bold text-[11px] rounded-xl flex items-center justify-center gap-1"
                 >
                   <Truck className="w-3.5 h-3.5"  strokeWidth={1.5}/><span>رهگیری</span>
                 </button>
                 <button
-                  onClick={() => window.print()}
-                  className="py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] rounded-xl flex items-center justify-center gap-1"
+                  type="button"
+                  onClick={printOrder}
+                  className="min-h-11 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] rounded-xl flex items-center justify-center gap-1"
                 >
                   <Printer className="w-3.5 h-3.5"  strokeWidth={1.5}/><span>چاپ فاکتور</span>
                 </button>
                 {canCancel(ord) && (
                   <button
-                    onClick={() => { if (confirmingCancelId === ord.id) void doCancel(ord); else setConfirmingCancelId(ord.id); }}
+                    type="button"
+                    aria-expanded={confirmingCancelId === ord.id}
+                    onClick={() => setConfirmingCancelId(ord.id)}
                     disabled={cancelBusy}
-                    className="py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] rounded-xl flex items-center justify-center gap-1 border border-rose-200 disabled:opacity-50"
+                    className="min-h-11 px-3 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] rounded-xl flex items-center justify-center gap-1 border border-rose-200 disabled:opacity-50"
                   >
-                    <span>{confirmingCancelId === ord.id ? 'آیا از لغو این سفارش اطمینان دارید؟ این عمل قابل بازگشت نیست — برای تأیید دوباره بزنید' : 'لغو سفارش'}</span>
+                    <span>لغو سفارش</span>
                   </button>
                 )}
                 {canReturn(ord) && (
                   <button
                     onClick={() => openReturnModal(ord)}
-                    className="py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 font-bold text-[11px] rounded-xl flex items-center justify-center gap-1 border border-amber-200"
+                    className="min-h-11 px-3 bg-amber-50 hover:bg-amber-100 text-amber-800 font-bold text-[11px] rounded-xl flex items-center justify-center gap-1 border border-amber-200"
                   >
                     <span>ثبت مرجوعی</span>
                   </button>
                 )}
               </div>
-            </div>
+              {confirmingCancelId === ord.id && (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-rose-900" role="group" aria-label="تأیید لغو سفارش">
+                  <p className="text-sm font-semibold">سفارش لغو شود؟ این تغییر قابل بازگشت نیست.</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button type="button" disabled={cancelBusy} onClick={() => void doCancel(ord)}
+                      className="min-h-11 rounded-lg bg-rose-800 px-3 text-xs font-bold text-white disabled:opacity-50">
+                      {cancelBusy ? 'در حال لغو…' : 'تأیید لغو سفارش'}
+                    </button>
+                    <button type="button" disabled={cancelBusy} onClick={() => setConfirmingCancelId(null)}
+                      className="min-h-11 rounded-lg border border-rose-200 bg-white px-3 text-xs font-bold">انصراف</button>
+                  </div>
+                </div>
+              )}
+            </article>
           ))
         )}
       </div>
+      </>
+      )}
 
-      {/* FIX 5: return form — live shape (order_item_id + prepaid).
-          The destination is not asked anymore: the backend derives
-          it from the shipment origins (owner rule, Oct 28 2026) and
-          it is shown read-only from the quote response. The backend
-          enforces the delivered_confirmed status and the return
-          window. */}
       {returnModalOrder && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-[480px] w-full p-4 space-y-3 text-xs max-h-[90vh] overflow-y-auto">
-            <h3 className="font-bold text-slate-800">ثبت مرجوعی — {returnModalOrder.orderNumber}</h3>
+        <dialog ref={returnModalRef} aria-labelledby="customer-return-title" onCancel={(event) => { event.preventDefault(); if (!returnBusy) setReturnModalOrder(null); }}
+          className="fixed inset-0 m-auto max-h-[calc(100dvh-1.5rem)] w-[calc(100%-1.5rem)] max-w-xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 text-sm shadow-2xl backdrop:bg-slate-950/60 sm:p-6">
+          <div className="space-y-4">
+            <h3 id="customer-return-title" className="font-extrabold text-slate-900">ثبت مرجوعی برای سفارش <bdi>{returnModalOrder.orderNumber}</bdi></h3>
+            <p className="text-slate-600">کالاهای مرجوعی و تعداد هر کدام را انتخاب کنید.</p>
             <div className="space-y-2">
               {returnModalOrder.items.filter((it) => it.orderItemId).map((it) => {
                 const id = it.orderItemId as string;
                 return (
-                  <div key={id} className="flex items-center gap-2 bg-slate-50 rounded-xl p-2">
+                  <div key={id} className="flex flex-wrap items-center gap-2 rounded-xl bg-slate-50 p-2">
                     <input
                       type="checkbox"
+                      id={`return-line-${id}`}
                       checked={!!returnSelected[id]}
+                      className="size-5 accent-[var(--account-accent)]"
+                      disabled={returnBusy}
                       onChange={(e) => setReturnSelected((prev) => ({ ...prev, [id]: e.target.checked }))}
                     />
-                    <span className="flex-1 truncate text-slate-700">{it.product.title}</span>
+                    <label htmlFor={`return-line-${id}`} className="flex min-h-11 min-w-32 flex-1 cursor-pointer items-center text-slate-700">{it.product.title}</label>
                     <input
                       type="number"
                       min={1}
                       max={it.quantity}
                       value={returnQty[id] || 1}
                       onChange={(e) => setReturnQty((prev) => ({ ...prev, [id]: Math.min(it.quantity, Math.max(1, parseInt(e.target.value, 10) || 1)) }))}
-                      className="w-14 border rounded-lg p-1 text-center"
+                      aria-label={`تعداد ${it.product.title}`}
+                      disabled={returnBusy || !returnSelected[id]}
+                      className="min-h-11 w-16 rounded-lg border border-slate-300 p-1 text-center disabled:opacity-50"
                     />
                     <span className="text-slate-400">از {toPersianDigits(it.quantity)} عدد</span>
                   </div>
                 );
               })}
             </div>
-            <input
-              className="w-full border rounded-xl p-2"
-              placeholder="دلیل مرجوعی"
+            <label className="block font-bold" htmlFor="customer-return-reason">دلیل مرجوعی</label>
+            <textarea id="customer-return-reason" rows={3} disabled={returnBusy}
+              className="w-full rounded-xl border border-slate-300 p-3 text-base"
+              placeholder="در چند جمله دلیل مرجوعی را توضیح دهید"
               value={returnReason}
               onChange={(e) => setReturnReason(e.target.value)}
             />
@@ -435,31 +557,39 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
                 )}
               </div>
             )}
-            <label className="flex items-center gap-2 text-slate-700">
-              <input type="checkbox" checked={returnPrepaid} onChange={(e) => setReturnPrepaid(e.target.checked)} />
+            <label className="flex min-h-11 items-center gap-2 text-slate-700">
+              <input type="checkbox" className="size-5 accent-[var(--account-accent)]" disabled={returnBusy} checked={returnPrepaid} onChange={(e) => setReturnPrepaid(e.target.checked)} />
               <span>هزینه ارسال مرجوعی را پیش‌پرداخت می‌کنم</span>
             </label>
-            {returnShippingCost !== null && (
-              <p className="text-[11px] text-slate-500">هزینه ارسال مرجوعی (برآورد): {formatPrice(returnShippingCost)} تومان</p>
-            )}
+            <div aria-live="polite" className="text-xs text-slate-700">
+              {quoteState === 'loading' && <p>در حال محاسبهٔ هزینهٔ ارسال مرجوعی…</p>}
+              {quoteState === 'error' && (
+                <div className="flex flex-wrap items-center gap-x-3 text-amber-900">
+                  <p>برآورد هزینهٔ ارسال دریافت نشد.</p>
+                  <button type="button" disabled={returnBusy} onClick={() => setQuoteRetry(value => value + 1)} className="min-h-11 font-bold underline">تلاش دوباره</button>
+                </div>
+              )}
+              {quoteState === 'ready' && returnShippingCost !== null && <p>برآورد هزینهٔ ارسال مرجوعی {formatPrice(returnShippingCost)} تومان</p>}
+            </div>
             <div className="flex gap-2">
               <button
                 onClick={() => void submitReturn()}
-                disabled={returnBusy}
-                className="flex-1 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl disabled:opacity-50"
+                disabled={returnBusy || (returnPrepaid && quoteState !== 'ready')}
+                className="min-h-11 flex-1 rounded-xl bg-[var(--account-accent)] px-4 font-bold text-white disabled:opacity-50"
               >
                 {returnBusy ? 'در حال ثبت...' : 'ثبت درخواست مرجوعی'}
               </button>
               <button
                 onClick={() => setReturnModalOrder(null)}
-                className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl"
+                disabled={returnBusy}
+                className="min-h-11 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl"
               >
                 انصراف
               </button>
             </div>
           </div>
-        </div>
+        </dialog>
       )}
-    </div>
+    </CustomerAccountLayout>
   );
 };

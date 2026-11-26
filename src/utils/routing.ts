@@ -127,15 +127,17 @@ export function parseSpnSegment(segment: string): number | null {
 export type ParsedRoute =
   | { view: 'admin_panel' }
   | { view: 'catalog'; query?: string; category?: string }
+  | { view: 'categories_tree' }
+  | { view: 'supplier_landing' | 'dropshipper_landing' }
   | { view: 'customer' }
-  | { view: 'customer_profile' | 'customer_orders'; storeSlug?: string }
+  | { view: 'customer_profile' | 'customer_orders' | 'customer_wishlist'; storeSlug?: string }
   | { view: 'supplier_dashboard' }
   | { view: 'warehouse_panel' }
   | { view: 'dashboard' }
   | { view: 'seller_dashboard'; sellerTab: SellerDashboardTab }
   | { view: 'seller_storefront'; slug: string; unsubscribe: boolean }
   | { view: 'product_detail'; id?: string; spnNumber?: number; spnc?: string; storeSlug?: string }
-  | { view: 'static_page'; staticPageKey: StaticPageKey }
+  | { view: 'static_page'; staticPageKey: StaticPageKey; storeSlug?: string }
   | { view: 'not_found' };
 
 // Shared tail parser for product paths: the segment(s) after
@@ -165,10 +167,11 @@ export function parsePathname(pathname: string, search = ''): ParsedRoute {
   if (path === '/seller') return { view: 'seller_dashboard', sellerTab: 'overview' };
   if (path === '/supplier') return { view: 'supplier_dashboard' };
   if (path === '/warehouse') return { view: 'warehouse_panel' };
-  const account = /^(?:\/store\/([^/]+))?\/account(\/orders)?$/.exec(path);
+  const account = /^(?:\/store\/([^/]+))?\/account(\/orders|\/wishlist)?$/.exec(path);
   if (account) {
     const slug = account[1] && decodeURIComponent(account[1]);
-    return { view: account[2] ? 'customer_orders' : 'customer_profile', storeSlug: isStoreScopeSlug(slug) ? slug : undefined };
+    const view = account[2] === '/orders' ? 'customer_orders' : account[2] === '/wishlist' ? 'customer_wishlist' : 'customer_profile';
+    return { view, storeSlug: isStoreScopeSlug(slug) ? slug : undefined };
   }
 
   // Seller dashboard tab URLs (live Wf): ?panel=seller&tab=<tab>.
@@ -197,6 +200,8 @@ export function parsePathname(pathname: string, search = ''): ParsedRoute {
     }
   }
 
+  if (path === '/store/central') return parsePathname('/', search);
+
   const storeMatch = /^\/store\/([^/?#]+)(\/unsubscribe)?$/.exec(path);
   if (storeMatch) {
     return {
@@ -222,9 +227,11 @@ export function parsePathname(pathname: string, search = ''): ParsedRoute {
     }
   }
 
-  const staticKey = STATIC_PAGE_KEYS[path.slice(1)];
+  const staticMatch = /^(?:\/store\/([^/]+))?\/([^/]+)$/.exec(path);
+  const staticKey = staticMatch ? STATIC_PAGE_KEYS[staticMatch[2]] : undefined;
   if (staticKey) {
-    return { view: 'static_page', staticPageKey: staticKey };
+    const slug = staticMatch?.[1] && decodeURIComponent(staticMatch[1]);
+    return { view: 'static_page', staticPageKey: staticKey, ...(isStoreScopeSlug(slug) ? { storeSlug: slug } : {}) };
   }
 
   // Live search/catalog URLs live on the root path: /?q=<query> shows
@@ -233,17 +240,32 @@ export function parsePathname(pathname: string, search = ''): ParsedRoute {
   // homepage, so a direct /?q=... link showed the homepage.
   if (path === '/' || path === '') {
     const q = params.get('q');
-    if (q) return { view: 'catalog', query: q };
     const category = params.get('category');
-    if (category) return { view: 'catalog', category };
+    if (q || category) return { view: 'catalog', ...(q ? { query: q } : {}), ...(category ? { category } : {}) };
     return { view: 'customer' };
   }
 
+  if (path === '/categories') return { view: 'categories_tree' };
+  if (path === '/become-supplier') return { view: 'supplier_landing' };
+  if (path === '/become-seller') return { view: 'dropshipper_landing' };
   if (path === '/dashboard') return { view: 'dashboard' };
 
   // Live behaviour: unknown URLs render the NEW not_found view (it did
   // not exist in the source, where unknown URLs fell back to home).
   return { view: 'not_found' };
+}
+
+export function pathForStoreDomain(pathname: string, slug: string): string {
+  if (!isStoreScopeSlug(slug)) return pathname;
+  const path = pathname.replace(/\/+$/, '') || '/';
+  const base = `/store/${encodeURIComponent(slug)}`;
+  if (path === '/' || path === '/categories') return base;
+  if (path === base || path.startsWith(`${base}/`)) return pathname;
+  if (path.startsWith('/store/')) return base;
+  if (path.startsWith('/product/') || /^\/account(?:\/orders|\/wishlist)?$/.test(path) || STATIC_PAGE_KEYS[path.slice(1)]) {
+    return `${base}${pathname}`;
+  }
+  return pathname;
 }
 
 export function pathForView(
@@ -258,18 +280,30 @@ export function pathForView(
   } = {},
 ): string {
   switch (view) {
-    case 'catalog':
-      if (options.searchQuery) return `/?q=${encodeURIComponent(options.searchQuery)}`;
-      if (options.categorySlug && options.categorySlug !== 'all') return `/?category=${encodeURIComponent(options.categorySlug)}`;
-      return '/';
+    case 'catalog': {
+      const query = options.searchQuery?.trim();
+      const category = options.categorySlug || 'all';
+      const parts = [];
+      if (query) parts.push(`q=${encodeURIComponent(query)}`);
+      if (!query || category !== 'all') parts.push(`category=${encodeURIComponent(category)}`);
+      return `/?${parts.join('&')}`;
+    }
+    case 'categories_tree':
+      return '/categories';
+    case 'supplier_landing':
+      return '/become-supplier';
+    case 'dropshipper_landing':
+      return '/become-seller';
     case 'admin_panel':
       return '/admin';
     case 'seller_storefront':
-      return options.storeSlug ? `/store/${encodeURIComponent(options.storeSlug)}` : '/';
+      return isStoreScopeSlug(options.storeSlug) ? `/store/${encodeURIComponent(options.storeSlug)}` : '/';
     case 'customer_profile':
-    case 'customer_orders': {
+    case 'customer_orders':
+    case 'customer_wishlist': {
       const prefix = isStoreScopeSlug(options.storeSlug) ? `/store/${encodeURIComponent(options.storeSlug)}` : '';
-      return `${prefix}/account${view === 'customer_orders' ? '/orders' : ''}`;
+      const suffix = view === 'customer_orders' ? '/orders' : view === 'customer_wishlist' ? '/wishlist' : '';
+      return `${prefix}/account${suffix}`;
     }
     case 'product_detail': {
       const productPath = options.productUrl || '/';
@@ -281,8 +315,10 @@ export function pathForView(
       }
       return productPath;
     }
-    case 'static_page':
-      return options.staticPageKey ? STATIC_PAGE_PATHS[options.staticPageKey] : '/';
+    case 'static_page': {
+      const path = options.staticPageKey ? STATIC_PAGE_PATHS[options.staticPageKey] : '/';
+      return isStoreScopeSlug(options.storeSlug) ? `/store/${encodeURIComponent(options.storeSlug)}${path}` : path;
+    }
     case 'dashboard':
       return '/dashboard';
     case 'seller_dashboard':

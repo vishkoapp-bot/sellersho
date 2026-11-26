@@ -1,20 +1,12 @@
-import { shippingExplainer, onlinePaymentComingSoon } from './common/helpTexts';
-import { HelpExplainer } from './common/HelpExplainer';
 import React, { useEffect, useState } from 'react';
-import type { ReactNode } from 'react';
 import { useStore } from '../context/StoreContext';
-import { CreditCard, Wallet, AlertCircle, Truck } from 'lucide-react';
+import { MapPin, ReceiptText, UserRound } from 'lucide-react';
 import { isValidIranianMobile, isValidIranianPostalCode } from '../utils/validators';
-import { resolvePackagingAndShippingFee } from '../utils/pricingEngine';
 import { AddressBook } from './AddressBook';
 import { ProvinceCityPicker, toLatinDigits } from './ProvinceCityPicker';
 import { addressApi, SavedAddress, stageSelectionForOrder } from '../services/addressApi';
 
 interface CartCheckoutFormProps {
-  paymentMethod: 'cash';
-  setPaymentMethod: (m: 'cash') => void;
-  shippingSlot?: ReactNode;
-  walletSlot?: ReactNode;
   hideSavedAddressSelector?: boolean;
   customerInfo: {
     fullName: string;
@@ -36,28 +28,25 @@ export function addressPatchClearsSavedSelection(patch: Record<string, unknown>)
 }
 
 export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
-  paymentMethod,
-  setPaymentMethod,
   customerInfo,
   setCustomerInfo,
-  shippingSlot,
-  walletSlot,
   hideSavedAddressSelector,
 }) => {
-  const { cart, cartPayable, platformSettings, formatPrice, toPersianDigits, customerUser } = useStore();
+  const { customerUser } = useStore();
   const [addressBook, setAddressBook] = useState<SavedAddress[]>([]);
   // Team 08 (D63): load the saved-address book for logged-in customers.
   // The AddressBook component itself renders nothing when the book is
   // empty, matching live behaviour. Failures hide the picker, they do
   // not block checkout.
   useEffect(() => {
-    if (!customerUser.isLoggedIn) return;
+    setAddressBook([]);
+    if (!customerUser.isLoggedIn || hideSavedAddressSelector) return;
     let cancelled = false;
     addressApi.getSavedAddresses()
       .then((list) => { if (!cancelled) setAddressBook(list); })
       .catch(() => { /* no saved addresses available: picker stays hidden */ });
     return () => { cancelled = true; };
-  }, [customerUser.isLoggedIn]);
+  }, [customerUser.isLoggedIn, customerUser.mobile, hideSavedAddressSelector]);
   // ISO-B: live checkout tracks a SELECTED saved address, not just
   // prefilled fields (index-MERGED.js iC hook). saveAddress defaults
   // to true, like live. The selection is staged for OrderContext on
@@ -112,77 +101,57 @@ export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
   const isPhoneValid = !customerInfo.phone || isValidIranianMobile(customerInfo.phone);
   const isPostalValid = !customerInfo.postalCode || isValidIranianPostalCode(customerInfo.postalCode);
 
-  // Requirement 7: Packaging and Shipping fee computation by weight and destination
-  // FIX 5 (Team 03 G12): live default weight for an item with no
-  // recorded weight is 500g, not 380g.
-  const estimatedWeight = cart.reduce((sum, item) => sum + (item.product.specs?.['وزن'] ? parseInt(item.product.specs['وزن'], 10) : 500) * item.quantity, 0);
-  const packaging = resolvePackagingAndShippingFee(estimatedWeight, customerInfo.province, 'تهران', platformSettings);
+  const fieldClass = 'block min-h-12 w-full rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-base text-[var(--checkout-ink)] placeholder:text-slate-500 focus:border-[var(--checkout-accent)] focus:bg-white focus:outline-2 focus:outline-[var(--checkout-accent)] aria-invalid:border-rose-600';
+  const labelClass = 'mb-1.5 block text-sm font-bold text-slate-700';
 
   return (
-    <div className="space-y-4 pt-2">
-      {/* Worker A: live checkout form shows the shipping slot on mobile
-          only (lg:hidden); on desktop it lives in the side column. */}
-      {shippingSlot ? (
-        <div className="p-3 bg-brand-soft/70 border border-brand-border/80 rounded-2xl lg:hidden">{shippingSlot}</div>
-      ) : (
-        <div className="p-3 bg-brand-soft/70 border border-brand-border/80 rounded-2xl text-xs lg:hidden">
-          <div className="flex items-center gap-1.5 text-brand-deep font-bold">
-            <Truck className="w-4 h-4" strokeWidth={1.5} />
-            <span>هزینه بسته‌بندی و ارسال: محاسبه در مرحله بعد</span>
-                <HelpExplainer text={shippingExplainer} />
+    <div className="space-y-5 text-[var(--checkout-ink)]">
+      <section aria-labelledby="checkout-delivery-title" className="space-y-3">
+        <h4 id="checkout-delivery-title" className="flex items-center gap-2 text-base font-black">
+          <UserRound className="size-4 text-[var(--checkout-accent)]" aria-hidden="true" />
+          اطلاعات گیرنده
+        </h4>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+          <div>
+            <label htmlFor="cart-checkout-full-name" className={labelClass}>نام و نام خانوادگی</label>
+            <input
+              id="cart-checkout-full-name"
+              name="receiver"
+              autoComplete="shipping name"
+              type="text"
+              value={customerInfo.fullName}
+              onChange={(e) => updateCustomerInfo({ fullName: e.target.value })}
+              className={fieldClass}
+              required
+              minLength={3}
+            />
+          </div>
+          <div>
+            <label htmlFor="cart-checkout-phone" className={labelClass}>شماره موبایل</label>
+            <input
+              id="cart-checkout-phone"
+              name="mobile"
+              autoComplete="shipping tel-national"
+              type="tel"
+              placeholder="۰۹۱۲۳۴۵۶۷۸۹"
+              value={customerInfo.phone}
+              aria-invalid={!isPhoneValid}
+              aria-describedby={!isPhoneValid ? 'checkout-phone-error' : undefined}
+              onChange={(e) => updateCustomerInfo({ phone: toLatinDigits(e.target.value) })}
+              className={fieldClass}
+              dir="ltr"
+              required
+            />
+            {!isPhoneValid && <p id="checkout-phone-error" className="mt-1.5 text-xs text-rose-700">شماره موبایل معتبر ۱۱ رقمی وارد کنید.</p>}
           </div>
         </div>
-      )}
-      {/* Payment Method Selector */}
-      <div>
-        <label className="block text-xs lg:text-sm font-bold text-slate-700 mb-2">روش پرداخت:</label>
-        <div className={`grid gap-2 ${walletSlot ? "grid-cols-1" : "grid-cols-2"}`}>
-          <div
-            role="button" tabIndex={0} aria-label="پرداخت آنلاین"
-            onKeyDown={(event) => {
-              if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
-                event.preventDefault();
-                setPaymentMethod('cash');
-              }
-            }}
-            className={`relative p-3 rounded-2xl border text-right transition-all flex flex-col justify-between ${
-              paymentMethod === 'cash'
-                ? 'bg-brand-soft border-brand-deep text-brand-deep ring-2 ring-brand-border'
-                : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-            }`}
-          >
-            <div className="flex items-center gap-1.5 font-bold text-xs">
-              <button type="button" onClick={() => setPaymentMethod('cash')} className="inline-flex items-center gap-1.5 after:absolute after:inset-0 after:rounded-2xl focus-visible:outline-2 outline-brand-deep">
-              <CreditCard className="w-4 h-4 text-brand-deep"  strokeWidth={1.5}/>
-              <span>پرداخت آنلاین</span>
-              </button>
-              {/* Keep the selection button's ::after overlay below the (?) control. */}
-              <span className="relative z-10 inline-flex"><HelpExplainer text={onlinePaymentComingSoon} /></span>
-            </div>
-          </div>
+      </section>
 
-          {!walletSlot && (
-          <button
-            type="button"
-            disabled
-            className="p-3 rounded-2xl border text-right transition-all flex flex-col justify-between bg-slate-50 border-slate-200 text-slate-400 cursor-not-allowed opacity-70"
-          >
-            <div className="flex items-center gap-1.5 font-bold text-xs">
-              <Wallet className="w-4 h-4 text-slate-400"  strokeWidth={1.5}/>
-              <span>کیف پول و موجودی</span>
-              <span className="mr-auto text-[9px] font-bold bg-slate-200 text-slate-500 rounded-full px-2 py-0.5">به‌زودی</span>
-            </div>
-            <span className="text-[10px] text-slate-400 mt-1 block">پرداخت با کیف پول در حال حاضر فعال نیست</span>
-          </button>
-          )}
-        </div>
-        {walletSlot && <div className="mt-2 lg:hidden">{walletSlot}</div>}
-      </div>
-
-      {/* Customer Address Details */}
-      <div className="space-y-2.5">
-        <label className="block text-xs lg:text-sm font-bold text-slate-700">اطلاعات ارسال گیرنده:</label>
-        {/* Team 08 (D63): saved-address book (hidden when empty). */}
+      <section aria-labelledby="checkout-address-title" className="space-y-3 border-t border-slate-200 pt-5">
+        <h4 id="checkout-address-title" className="flex items-center gap-2 text-base font-black">
+          <MapPin className="size-4 text-[var(--checkout-accent)]" aria-hidden="true" />
+          نشانی تحویل
+        </h4>
         {!hideSavedAddressSelector && (
           <AddressBook
             book={addressBook}
@@ -195,78 +164,60 @@ export const CartCheckoutForm: React.FC<CartCheckoutFormProps> = ({
             showSaveControl={customerUser.isLoggedIn}
           />
         )}
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label htmlFor="cart-checkout-full-name" className="sr-only">نام و نام خانوادگی گیرنده</label>
-            <input
-              id="cart-checkout-full-name"
-              type="text"
-              placeholder="نام و نام خانوادگی"
-              value={customerInfo.fullName}
-              onChange={(e) => setCustomerInfo((prev: any) => ({ ...prev, fullName: e.target.value }))}
-              className="w-full text-base p-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-brand outline-hidden"
-            />
-          </div>
-          <div className="space-y-1">
-            <label htmlFor="cart-checkout-phone" className="sr-only">شماره موبایل گیرنده</label>
-            <input
-              id="cart-checkout-phone"
-              type="tel"
-              placeholder="شماره موبایل (۰۹۱۲۳۴۵۶۷۸۹)"
-              value={customerInfo.phone}
-              onChange={(e) => setCustomerInfo((prev: any) => ({ ...prev, phone: toLatinDigits(e.target.value) }))}
-              className={`w-full text-base p-2.5 rounded-xl bg-slate-50 border ${
-                !isPhoneValid ? 'border-rose-400 bg-rose-50/40' : 'border-slate-200'
-              } focus:bg-white focus:border-brand outline-hidden`}
-              dir="ltr"
-            />
-            {!isPhoneValid && (
-              <span className="text-[11px] text-rose-500 block">شماره موبایل معتبر ۱۱ رقمی وارد کنید.</span>
-            )}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-3">
           <ProvinceCityPicker
             province={customerInfo.province}
             city={customerInfo.city}
             onProvinceChange={(value, fromList) => updateCustomerInfo(fromList ? { province: value, city: '' } : { province: value })}
             onCityChange={(value) => updateCustomerInfo({ city: value })}
-            inputClassName="w-full text-base p-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-brand outline-hidden"
+            inputClassName={fieldClass}
             provinceId="cart-checkout-province"
             cityId="cart-checkout-city"
+            labelClassName={labelClass}
           />
         </div>
-
         <div>
-          <label htmlFor="cart-checkout-postal-code" className="sr-only">کد پستی</label>
+          <label htmlFor="cart-checkout-address" className={labelClass}>نشانی دقیق</label>
+          <textarea
+            id="cart-checkout-address"
+            name="street-address"
+            autoComplete="shipping street-address"
+            placeholder="خیابان، کوچه، پلاک و واحد"
+            rows={2}
+            value={customerInfo.address}
+            onChange={(e) => updateCustomerInfo({ address: e.target.value })}
+            className={`${fieldClass} resize-y`}
+            required
+          />
+        </div>
+        <div>
+          <label htmlFor="cart-checkout-postal-code" className={labelClass}>کد پستی</label>
           <input
             id="cart-checkout-postal-code"
+            name="postal-code"
             type="text"
-            placeholder="کد پستی ۱۰ رقمی (بدون خط تیره)"
+            inputMode="numeric"
+            autoComplete="shipping postal-code"
+            placeholder="۱۰ رقم بدون خط تیره"
             value={customerInfo.postalCode}
-            onChange={(e) => updateCustomerInfo({ postalCode: toLatinDigits(e.target.value) })}
-            className={`w-full text-base p-2.5 rounded-xl bg-slate-50 border ${
-              !isPostalValid ? 'border-rose-400 bg-rose-50/40' : 'border-slate-200'
-            } focus:bg-white focus:border-brand outline-hidden`}
+            aria-invalid={!isPostalValid}
+            aria-describedby={!isPostalValid ? 'checkout-postal-error' : undefined}
+            onChange={(e) => updateCustomerInfo({ postalCode: toLatinDigits(e.target.value).replace(/[^0-9]/g, '').slice(0, 10) })}
+            className={fieldClass}
             dir="ltr"
-            maxLength={10}
+            required
           />
-          {!isPostalValid && (
-            <span className="text-[11px] text-rose-500 mt-0.5 block">کد پستی ۱۰ رقمی معتبر وارد کنید.</span>
-          )}
+          {!isPostalValid && <p id="checkout-postal-error" className="mt-1.5 text-xs text-rose-700">کد پستی ۱۰ رقمی معتبر وارد کنید.</p>}
         </div>
+      </section>
 
-        <label htmlFor="cart-checkout-address" className="sr-only">آدرس دقیق پستی</label>
-        <textarea
-          id="cart-checkout-address"
-          placeholder="آدرس دقیق پستی، پلاک و زنگ"
-          rows={2}
-          value={customerInfo.address}
-          onChange={(e) => updateCustomerInfo({ address: e.target.value })}
-          className="w-full text-base p-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-brand outline-hidden resize-none"
-        />
-      </div>
+      <section aria-labelledby="checkout-payment-title" className="rounded-xl bg-[var(--checkout-soft)] p-3">
+        <h4 id="checkout-payment-title" className="flex items-center gap-2 text-sm font-black text-[var(--checkout-accent)]">
+          <ReceiptText className="size-4" aria-hidden="true" />
+          پرداخت پس از ثبت سفارش
+        </h4>
+        <p className="mt-1.5 text-xs leading-6 text-slate-700">با زدن «ثبت سفارش» مبلغی کسر نمی‌شود. وضعیت و نحوهٔ پرداخت را از «سفارش‌های من» پیگیری کنید.</p>
+      </section>
     </div>
   );
 };

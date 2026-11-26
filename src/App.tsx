@@ -11,7 +11,7 @@ import { ToastProvider } from './context/ToastContext';
 import { RoleSwitcherBar } from './components/RoleSwitcherBar';
 import { Header } from './components/Header';
 import { CategoriesBar } from './components/CategoriesBar';
-import { HeroSlider } from './components/HeroSlider';
+import { CentralHomeIntro, HeroSlider } from './components/HeroSlider';
 import { GitDeployProbe } from './components/GitDeployProbe';
 import { SpecialDealsSlider } from './components/SpecialDealsSlider';
 import { HomeFeedSections } from './components/HomeFeedSections';
@@ -81,12 +81,17 @@ export const AppContent: React.FC = () => {
     openProductDetail,
     storefrontSlug,
     storefrontLoading,
+    storefrontResolved,
     storefrontInvalid,
     storefrontSuspended,
     storefrontUnsubscribeSlug,
     routeProductPending,
     routeProductInvalid,
     routeStoreSlug,
+    routeStoreResolved,
+    routeStoreInvalid,
+    selectedCategory,
+    searchQuery,
     openStorefront,
     isSellerModalOpen,
     setIsSellerModalOpen,
@@ -97,90 +102,57 @@ export const AppContent: React.FC = () => {
     .find(panel => panel !== 'customer' && activeView === panel);
   const isWarehouseView = protectedPanel === 'warehouse_panel';
   const isOnboardingActive = isSellerModalOpen && !protectedPanel;
-  const routedIdentity = useRef<string | null>(null);
   const authorizedPanels = currentUser ? panelsForCapabilities(currentUser.capabilities) : [];
   const defaultPanel = currentUser ? defaultPanelForUser(currentUser) : 'customer';
 
   useEffect(() => {
-    if (!isSessionReady) return;
-    if (!currentUser) {
-      routedIdentity.current = null;
-      return;
-    }
-    if (isOnboardingActive) return;
-    const identityChanged = routedIdentity.current !== currentUser.id;
-    routedIdentity.current = currentUser.id;
-    if (activeView === 'dashboard' || (identityChanged && activeView === 'customer' && defaultPanel !== 'customer')) {
+    if (isSessionReady && currentUser && activeView === 'dashboard' && !isOnboardingActive) {
       setActiveView(defaultPanel);
     }
   }, [activeView, currentUser, isSessionReady, isOnboardingActive, defaultPanel, setActiveView]);
 
-  // ISO-A (model a, picked-only showcase): central-home/under-own-store
-  // frame guard. The central `customer` view must never render under a
-  // dropshipper's own session store: banner/header would brand it with
-  // the store while hero + grid show the central catalogue, and any
-  // order placed from that frame would be attributed to the dropshipper
-  // store and fail published-only validation. This fires on every entry
-  // into that state -- post-login, session restore, workspace-switcher
-  // `customer`, and dashboard back-to-site -- not just on login, so the
-  // frame cannot recur through navigation. It is referral-safe: it
-  // requires an active seller session whose storeId matches the current
-  // store, so anonymous referral frames (central store) and admin-only
-  // sessions are untouched, and the header logo (which sets the central
-  // store first) never trips it. Back-button caveat: returning to `/`
-  // via history while the own store is current re-enters the frame and
-  // bounces forward again, because central-home-with-own-store is not
-  // a legitimate state under model (a).
-  const ownStorefrontRedirectRef = useRef<string | null>(null);
+  const lastCatalogRoute = useRef<{ categorySlug: string; searchQuery: string } | null>(null);
   useEffect(() => {
-    const ownStoreId = sellerSession?.storeId;
-    if (
-      isOnboardingActive ||
-      activeView !== 'customer' ||
-      sellerSession?.status !== 'active' ||
-      !ownStoreId ||
-      currentStore?.ownerType !== 'dropshipper' ||
-      currentStore.id !== ownStoreId ||
-      !currentStore.slug
-    ) {
-      ownStorefrontRedirectRef.current = null;
-      return;
-    }
-    if (ownStorefrontRedirectRef.current === ownStoreId) return;
-    ownStorefrontRedirectRef.current = ownStoreId;
-    openStorefront(currentStore.slug);
-  }, [activeView, sellerSession, currentStore, isOnboardingActive, openStorefront]);
+    if (activeView === 'catalog') lastCatalogRoute.current = { categorySlug: selectedCategory, searchQuery };
+    else if (activeView !== 'product_detail') lastCatalogRoute.current = null;
+  }, [activeView, selectedCategory, searchQuery]);
+  const backFromCentralProduct = () => {
+    if (lastCatalogRoute.current) setActiveView('catalog', lastCatalogRoute.current);
+    else setActiveView('customer');
+  };
 
+  const adClickRecorded = useRef(false);
   const adProductOpened = useRef(false);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (adProductOpened.current || !params.has('ad_token')) return;
+    const adToken = params.get('ad_token');
+    if (adProductOpened.current || !adToken) return;
     const campaignId = params.get('campaignId');
-    if (campaignId) storeApi.recordSellerAdEvent(campaignId, 'click', params.get('ad_token') || '', params.get('productId') || undefined).catch(() => undefined);
-    const product = products.find((item) => item.id === params.get('productId'));
+    const productId = params.get('productId');
+    if (campaignId && !adClickRecorded.current) {
+      adClickRecorded.current = true;
+      void storeApi.recordSellerAdEvent(campaignId, 'click', adToken, productId || undefined).catch(() => {});
+    }
+    if (activeView === 'seller_storefront' && (!storefrontResolved || storefrontInvalid || storefrontSuspended)) return;
+    if (routeStoreSlug && !routeStoreResolved) return;
+    const product = products.find(item => item.id === productId);
     if (!product) return;
     adProductOpened.current = true;
     openProductDetail(product);
-    // The ad click landed from a store's campaign: the PDP opens in
-    // THAT store's scope (its prices, its frame, its store-carrying
-    // URL), never the central store's. The landing store is the
-    // storefront the link opened on, else the store being browsed.
-    // The central slug is not a scope (scopes are dropshipper slugs
-    // or none), so a central landing keeps the unscoped open.
-    const landingSlug = storefrontSlug ?? currentStore?.slug ?? null;
-    setActiveView('product_detail', {
-      productId: product.id,
-      storeSlug: landingSlug && landingSlug !== 'central' ? landingSlug : undefined,
-    });
-  }, [products, openProductDetail, setActiveView, storefrontSlug, currentStore]);
+  }, [products, openProductDetail, activeView, storefrontResolved, storefrontInvalid, storefrontSuspended, routeStoreSlug, routeStoreResolved]);
 
   // OTP login revalidates the session while an open wizard still owns its draft.
   if (!isSessionReady && (activeView === 'dashboard' || !isOnboardingActive)) return <div role="status">در حال بررسی نشست…</div>;
-  if ((activeView === 'customer_profile' || activeView === 'customer_orders') &&
+  if (routeStoreSlug && (!routeStoreResolved || routeStoreInvalid)) {
+    return routeStoreInvalid
+      ? <NotFoundView variant="store" onBack={() => setActiveView('seller_storefront', { storeSlug: routeStoreSlug })} />
+      : <div className="central-route-loading" role="status">در حال بارگذاری ویترین…</div>;
+  }
+  if ((activeView === 'customer_profile' || activeView === 'customer_orders' || activeView === 'customer_wishlist') &&
     !currentUser && !isMockMode()) {
     return <CustomerAccountSignIn onBack={() => {
-      if (currentStore?.ownerType === 'dropshipper' && currentStore.slug) {
-        setActiveView('seller_storefront', { storeSlug: currentStore.slug });
+      if (routeStoreSlug) {
+        setActiveView('seller_storefront', { storeSlug: routeStoreSlug });
       } else {
         setActiveView('customer');
       }
@@ -249,49 +221,20 @@ export const AppContent: React.FC = () => {
     );
   }
 
-  // Team 08 (D74): desktop storefront variants widen the shell on lg
-  // screens; every other view keeps the 504px mobile frame.
-  // Homepage-layout fix: the central homepage (the default branch below,
-  // i.e. every view that is NOT one of the listed views) must render
-  // full-width on desktop like the live Nov 2 desktop-merged homepage,
-  // not inside the 504px mobile frame. All listed views keep their frame.
-  const isStorefront = activeView === 'seller_storefront';
-  // FIX 16: live's shell for static pages is full-width on desktop
-  // (w-full max-w-[504px] lg:max-w-none, like every non-storefront
-  // view in live's App shell) with the site header + footer around
-  // the page; the static body itself already caps at lg:max-w-4xl
-  // xl:max-w-5xl centred (Fix 15). The old lg:max-w-4xl shell capped
-  // the whole page and dropped the site chrome -- the re-check's
-  // narrower-column, no-header/footer difference.
-  const isStaticPage = activeView === 'static_page';
-  // FIX 18: live's App shell renders site header + footer for every view
-  // except dashboards, storefront, suspended and admin (live bundle App
-  // switch: E5/Z5 guarded by that exact exclusion list). These views also
-  // get live's full-width desktop shell (lg:max-w-none) like static_page.
-  // FIX 19: seller_dashboard added: live seller gate renders full-width
-  // (browser-observed), but the candidate shell capped it at 504px, making
-  // the gate a narrow centered column. The gate component itself matches
-  // live; the cap came from this shell expression, not the gate.
-  const isWideChrome = ['seller_dashboard', 'supplier_dashboard', 'categories_tree', 'customer_profile', 'customer_orders', 'customer_wishlist', 'supplier_landing', 'dropshipper_landing'].includes(activeView as string);
-  const nonHomepageViews = ['seller_dashboard', 'seller_storefront', 'supplier_dashboard', 'warehouse_panel', 'product_detail', 'categories_tree', 'customer_profile', 'customer_orders', 'customer_wishlist', 'static_page', 'supplier_landing', 'dropshipper_landing'];
-  const isHomepage = !nonHomepageViews.includes(activeView as string);
-  // FIX 8: the live standalone product page renders full-width on desktop
-  // (live browser evidence 2026-11-03: product page full-width at ~1920px,
-  // while live storefronts stay framed). This corrects FIX 7, which kept
-  // product_detail in the 504px frame on bundle-count inference alone.
-  const isProductDetail = activeView === 'product_detail';
+  const isCentralSite = !routeStoreSlug && [
+    'customer', 'catalog', 'categories_tree', 'product_detail', 'customer_profile',
+    'customer_orders', 'customer_wishlist', 'static_page', 'supplier_landing', 'dropshipper_landing',
+  ].includes(activeView);
+  const showStorefrontNav = activeView === 'seller_storefront' ||
+    (!!routeStoreSlug && activeView !== 'product_detail');
+  const shellClass = isCentralSite
+    ? 'central-site w-full min-h-screen flex flex-col'
+    : 'w-full min-h-screen relative flex flex-col bg-white';
+
   return (
-    <div className="min-h-screen bg-[#edf2f7] flex justify-center text-slate-800 antialiased font-sans select-none">
+    <div className="min-h-screen bg-[#f8f6ef] flex justify-center text-slate-800 antialiased font-sans">
       <SeoManager />
-      {/*
-        Exact Snapp Pay (pl.snapp.ir) Container:
-        max-w-[504px] centered mobile/PWA frame on desktop, 100% full width on mobile
-      */}
-      {/* FIX 12 (superseded Nov 5, 2026 by owner order): the storefront shell
-          was lg:max-w-7xl, leaving pale side voids on wide desktops — the
-          owner rejected the framed column; storefronts now render
-          full-width on desktop like the homepage/static views. */}
-      <div className={(activeView === 'warehouse_panel' ? 'w-full min-h-screen relative flex flex-col' : isHomepage ? 'homepage-shell w-full bg-white min-h-screen relative flex flex-col pb-24 lg:pb-0' : isProductDetail ? 'w-full bg-white min-h-screen relative flex flex-col pb-24 lg:pb-0' : `w-full bg-white min-h-screen shadow-2xl relative flex flex-col border-x border-slate-200/80 pb-24 ${isStorefront ? 'max-w-[504px] md:max-w-none md:shadow-none md:border-x-0 lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isStaticPage ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : isWideChrome ? 'max-w-[504px] lg:max-w-none lg:shadow-none lg:border-x-0 lg:pb-0' : 'max-w-[504px]'}`)}>
+      <div className={shellClass}>
         {workspaceSwitcher}
         {/* Developer & Multi-Role Navigation Bar */}
         <RoleSwitcherBar />
@@ -337,7 +280,7 @@ export const AppContent: React.FC = () => {
             <div role="status" className="flex-1 flex items-center justify-center p-6 text-xs text-slate-500">در حال بارگذاری کالا…</div>
           ) : routeProductInvalid || !currentProductDetail ? (
             <NotFoundView onBack={() => setActiveView('customer')} />
-          ) : routeStoreSlug || currentStore?.ownerType === 'dropshipper' ? (
+          ) : routeStoreSlug ? (
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
@@ -351,28 +294,25 @@ export const AppContent: React.FC = () => {
             </>
           ) : (
             <>
-              <Header sticky={false} />
-              <ProductDetailView
-                product={currentProductDetail}
-                onBack={() => setActiveView('customer')}
-              />
+              <Header sticky={false} mainId="main-content" />
+              <ProductDetailView product={currentProductDetail} onBack={backFromCentralProduct} />
               <Footer />
             </>
           )
         ) : activeView === 'catalog' ? (
           <>
-            <Header />
+            <Header mainId="main-content" />
             <CatalogView onBack={() => setActiveView('customer')} />
             <Footer />
           </>
         ) : activeView === 'categories_tree' ? (
           <>
-            <Header sticky={false} />
+            <Header sticky={false} mainId="main-content" />
             <CategoriesTreeView onBack={() => setActiveView('customer')} />
             <Footer />
           </>
         ) : activeView === 'customer_profile' ? (
-          routeStoreSlug || currentStore?.ownerType === 'dropshipper' ? (
+          routeStoreSlug ? (
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
@@ -383,13 +323,13 @@ export const AppContent: React.FC = () => {
             </>
           ) : (
             <>
-              <Header sticky={false} />
+              <Header sticky={false} mainId="main-content" />
               <CustomerProfileView onBack={() => setActiveView('customer')} />
               <Footer />
             </>
           )
         ) : activeView === 'customer_orders' ? (
-          routeStoreSlug || currentStore?.ownerType === 'dropshipper' ? (
+          routeStoreSlug ? (
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
@@ -400,13 +340,13 @@ export const AppContent: React.FC = () => {
             </>
           ) : (
             <>
-              <Header sticky={false} />
+              <Header sticky={false} mainId="main-content" />
               <CustomerOrdersView onBack={() => setActiveView('customer')} />
               <Footer />
             </>
           )
         ) : activeView === 'customer_wishlist' ? (
-          routeStoreSlug || currentStore?.ownerType === 'dropshipper' ? (
+          routeStoreSlug ? (
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
@@ -417,13 +357,13 @@ export const AppContent: React.FC = () => {
             </>
           ) : (
             <>
-              <Header sticky={false} />
+              <Header sticky={false} mainId="main-content" />
               <CustomerWishlistView onBack={() => setActiveView('customer')} />
               <Footer />
             </>
           )
         ) : activeView === 'static_page' ? (
-          routeStoreSlug || currentStore?.ownerType === 'dropshipper' ? (
+          routeStoreSlug ? (
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
@@ -434,7 +374,7 @@ export const AppContent: React.FC = () => {
             </>
           ) : (
             <>
-              <Header sticky={false} />
+              <Header sticky={false} mainId="main-content" />
               <StaticPageView onBack={() => setActiveView('customer')} />
               <Footer />
             </>
@@ -453,21 +393,14 @@ export const AppContent: React.FC = () => {
           </>
         ) : (
           <>
-            <Header />
+            <Header mainId="main-content" />
             <GitDeployProbe />
-            {/* FIX 16: hero lives OUTSIDE the gutter-padded main (live
-                banner-reorder model: full-width child, no negative
-                margins). The wrapper preserves the exact vertical gaps
-                the hero had inside main: top = main pt (0.5/4) and
-                bottom = hero pb + wrapper pb + main pt = 12px mobile
-                (4+6+2) and 24px lg (8+0+16), as before. */}
-            <div className="pt-0.5 pb-1.5 lg:pt-4 lg:pb-0">
-              <HeroSlider />
-            </div>
-            <main className="homepage-main flex-1 space-y-2 pt-0.5 lg:space-y-4 lg:py-4">
+            <main id="main-content" tabIndex={-1} className="central-wrap central-home">
+              <CentralHomeIntro />
               <CategoriesBar />
               <SpecialDealsSlider />
               <HomeFeedSections />
+              <HeroSlider />
             </main>
             <Footer />
           </>
@@ -478,7 +411,7 @@ export const AppContent: React.FC = () => {
         <CartDrawer />
         <SellerOnboardingModal />
         <OrderTrackingModal />
-        {activeView === 'seller_storefront' ? <StorefrontBottomNav /> : activeView === 'product_detail' && (routeStoreSlug || currentStore?.ownerType === 'dropshipper') ? null : isHomepage ? <div className="lg:hidden"><BottomNav /></div> : <BottomNav />}
+        {showStorefrontNav ? <StorefrontBottomNav /> : isCentralSite ? <BottomNav /> : null}
       </div>
     </div>
   );

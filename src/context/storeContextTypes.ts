@@ -125,6 +125,7 @@ export interface StoreContextType {
   niches: Niche[];
   catalogLoading: boolean;
   catalogError: string | null;
+  fetchCatalogProducts: () => Promise<void>;
   catalogPriceRangeError: boolean;
   // PERF-01: paged catalog (ProductContext passthrough).
   catalogFilter: import('./ProductContext').CatalogFilter;
@@ -134,6 +135,7 @@ export interface StoreContextType {
   hasMoreCatalog: boolean;
   catalogTotal: number;
   catalogLoadingMore: boolean;
+  catalogLoadMoreError: boolean;
   cart: CartItem[];
   addToCart: (product: Product, quantity?: number, color?: string, variantId?: string, addonIds?: string[]) => void;
   removeFromCart: (key: string) => void;

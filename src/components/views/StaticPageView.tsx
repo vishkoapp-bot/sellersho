@@ -46,18 +46,18 @@ const TAB_LABELS: Record<string, string> = {
 };
 
 export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
-  const { staticPageKey } = useStore();
+  const { staticPageKey, openStaticPage, routeStoreSlug } = useStore();
   const [pages, setPages] = useState<CmsPage[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>(staticPageKey || 'about');
-  const [openFaq, setOpenFaq] = useState<number | null>(0);
+  const [openFaq, setOpenFaq] = useState<number | null>(null);
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const lastScrolledTab = useRef<string | null>(null);
   // FIX 15: live syncs the active tab when the route's staticPageKey
   // changes (bundle z3) and scrolls the active tab into view; the
   // candidate kept the first tab forever across /about -> /license
   // navigation inside the same view instance.
-  useEffect(() => { setActiveTab(staticPageKey || 'about'); setOpenFaq(0); }, [staticPageKey]);
+  useEffect(() => { setActiveTab(staticPageKey || 'about'); setOpenFaq(null); }, [staticPageKey]);
   useEffect(() => {
     if (lastScrolledTab.current === activeTab) return;
     const el = tabRefs.current[activeTab];
@@ -115,7 +115,7 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
       <div className="space-y-2">
         {items.map((f, idx) => (
           <div key={idx} className="bg-white rounded-2xl border border-slate-200/90 p-3 shadow-2xs">
-            <button onClick={() => setOpenFaq(openFaq === idx ? null : idx)} className="w-full flex items-center justify-between text-right font-bold text-xs text-slate-800">
+            <button type="button" aria-expanded={openFaq === idx} onClick={() => setOpenFaq(openFaq === idx ? null : idx)} className="min-h-11 w-full flex items-center justify-between gap-3 text-right font-bold text-xs text-slate-800">
               <span>{f.q}</span>
               <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${openFaq === idx ? 'rotate-180' : ''}`}  strokeWidth={1.5}/>
             </button>
@@ -127,27 +127,32 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-[#f8fafc] select-none pb-20 lg:pb-8">
-      <header className="sticky top-0 z-30 lg:static bg-white border-b border-slate-200 px-3.5 py-2.5 flex items-center justify-between">
+    <main id="main-content" tabIndex={-1} className={routeStoreSlug ? "flex-1 flex flex-col bg-[#f8fafc] pb-20 lg:pb-8" : "central-info-page central-wrap"}>
+      <header className="central-info-heading flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <button onClick={onBack} className="p-1 rounded-lg hover:bg-slate-100 text-slate-700">
+          <button type="button" onClick={onBack} aria-label="بازگشت به فروشگاه" className="grid min-h-11 min-w-11 place-items-center rounded-lg hover:bg-slate-100 text-slate-700">
             <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
           </button>
-          <h1 className="text-xs font-bold text-slate-900">اطلاعات و قوانین</h1>
+          <h1 className="text-xl font-black text-slate-900">راهنمای خرید</h1>
         </div>
       </header>
 
       {/* Tabs (labels from CMS titles, CMS order) */}
       {pages && (
-        <div className="flex bg-white border-b border-slate-200 p-1.5 sm:p-2 gap-0.5 sm:gap-1 overflow-x-auto no-scrollbar text-[11px] sm:text-xs [mask-image:linear-gradient(to_left,black_92%,transparent)] sm:[mask-image:none]">
+        <div className="central-info-tabs flex bg-white border-b border-slate-200 p-1.5 sm:p-2 gap-1 overflow-x-auto text-xs">
           {pages.map((p) => {
             const Icon = TAB_ICONS[p.key] || Info;
             return (
               <button
                 key={p.key}
                 ref={(el) => { tabRefs.current[p.key] = el; }}
-                onClick={() => setActiveTab(p.key)}
-                className={`py-1 px-2 sm:px-2.5 rounded-xl font-bold flex items-center gap-1 shrink-0 ${
+                type="button"
+                aria-pressed={activeTab === p.key}
+                onClick={() => {
+                  if (Object.prototype.hasOwnProperty.call(TAB_LABELS, p.key)) openStaticPage(p.key as StaticPageKey);
+                  else { setActiveTab(p.key); setOpenFaq(null); }
+                }}
+                className={`min-h-11 py-1 px-2 sm:px-2.5 rounded-xl font-bold flex items-center gap-1 shrink-0 ${
                   activeTab === p.key ? 'bg-brand text-white shadow-2xs' : 'text-slate-600 hover:bg-slate-100'
                 }`}
               >
@@ -159,23 +164,23 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
         </div>
       )}
 
-      <div className="p-3.5 w-full lg:max-w-4xl xl:max-w-5xl lg:px-8 lg:mx-auto">
+      <div className="central-info-content p-3.5 w-full lg:max-w-4xl xl:max-w-5xl lg:px-8 lg:mx-auto">
         {loadError && (
           <div className="bg-white rounded-2xl border border-slate-200/90 p-4 space-y-3 text-xs text-slate-700 shadow-2xs text-center">
-            <p>{loadError}</p>
+            <p role="alert">{loadError}</p>
             <button onClick={load} className="py-2 px-4 bg-slate-900 text-white font-bold rounded-xl">
               تلاش مجدد
             </button>
           </div>
         )}
         {!loadError && !pages && (
-          <div className="bg-white rounded-2xl border border-slate-200/90 p-4 text-xs text-slate-500 shadow-2xs text-center">
+          <div role="status" className="bg-white rounded-2xl border border-slate-200/90 p-4 text-xs text-slate-500 shadow-2xs text-center">
             در حال بارگذاری…
           </div>
         )}
         {!loadError && pages && activePage && activePage.key === 'faq' && renderFaq(activePage.content)}
         {!loadError && pages && activePage && activePage.key !== 'faq' && renderParagraphs(activePage.content)}
       </div>
-    </div>
+    </main>
   );
 };

@@ -38,3 +38,40 @@ test('a verified customer reaches the storefront profile after account sign-in',
     assert.equal(new URL(page.url()).pathname, `${storefront}/account`);
     assert.equal(await page.$('input[type="tel"]'), null);
   }));
+
+test('a seller session and referral do not replace the central store, while the seller workspace and storefront retain their own shop', () =>
+  visit('/?seller&ref=batch-eight-store', 390, async page => {
+    await page.waitForFunction(() => {
+      const state = (window as any).batch8Fixture?.state?.();
+      return state?.isSessionReady && state.userId && state.view === 'customer' && state.storeSlug === 'central';
+    });
+    assert.equal(new URL(page.url()).pathname, '/');
+
+    async function open(view: string) {
+      await page.evaluate(target => (window as any).batch8Fixture.openWorkspace(target), view);
+    }
+    async function waitForScope(view: string, storeSlug: string, pathname: string) {
+      await page.waitForFunction((expectedView, slug, path) => {
+        const state = (window as any).batch8Fixture.state();
+        return state.view === expectedView && state.storeSlug === slug && location.pathname === path;
+      }, {}, view, storeSlug, pathname);
+    }
+
+    await open('seller_dashboard');
+    await waitForScope('seller_dashboard', 'batch-eight-store', '/seller');
+    await open('seller_storefront');
+    await waitForScope('seller_storefront', 'batch-eight-store', storefront);
+    await page.waitForSelector('header button[title="حساب کاربری"]', { visible: true });
+    await open('customer_wishlist');
+    await waitForScope('customer_wishlist', 'batch-eight-store', storefront + '/account/wishlist');
+    await open('static_page');
+    await waitForScope('static_page', 'batch-eight-store', storefront + '/about');
+    await open('customer');
+    await waitForScope('customer', 'central', '/');
+    await open('customer_wishlist');
+    await waitForScope('customer_wishlist', 'central', '/account/wishlist');
+    await page.goBack();
+    await waitForScope('customer', 'central', '/');
+    await open('seller_dashboard');
+    await waitForScope('seller_dashboard', 'batch-eight-store', '/seller');
+  }));

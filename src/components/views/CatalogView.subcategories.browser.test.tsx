@@ -1,72 +1,73 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { batch8Browser } from '../../../scripts/fixtures/catalog/batch8-browser';
+import { batch8Browser, fillInput, waitText } from '../../../scripts/fixtures/catalog/batch8-browser';
 
 const visit = batch8Browser();
 
-test('subcategories expand and are selectable on mobile at 390px', async () => {
-  await visit('/', 390, async page => {
-    const tiles = '[data-testid="category-item"]';
+test('mobile catalog keeps products visible, expands categories in filters and makes selection sharable', async () => {
+  await visit('/?category=digital', 390, async page => {
     const rows = '[data-testid="product-item"]';
-    const chevron = 'button[aria-label="زیردسته‌های کالای دیجیتال"]';
-    const chipRow = 'aside div.overflow-x-auto';
-    const mobileBlock = `${chipRow} + div.lg\\:hidden`;
-    const child = `${mobileBlock} button`;
+    const filters = '#catalog-filters';
+    const filterButton = 'button[aria-controls="catalog-filters"]';
+    const chevron = `${filters} button[aria-label="زیردسته‌های کالای دیجیتال"]`;
 
-    await page.waitForFunction(selector => {
-      const tile = [...document.querySelectorAll(selector)].find(node => node.textContent?.includes('کالای دیجیتال'));
-      return tile?.textContent?.includes('۲ کالا');
-    }, {}, tiles);
-    await page.$$eval(tiles, elements =>
-      (elements.find(node => node.textContent?.includes('کالای دیجیتال')) as HTMLElement).click());
     await page.waitForFunction(() => Boolean((window as any).batch8Fixture?.pending));
     await page.evaluate(() => (window as any).batch8Fixture.finish());
     await page.waitForFunction(selector => document.querySelectorAll(selector).length === 2, {}, rows);
-    await page.waitForSelector(chipRow);
+    await page.waitForSelector(filters, { hidden: true });
+    await page.click(filterButton);
+    await page.waitForSelector(chevron, { visible: true });
+    const toggleHeight = await page.$eval(chevron, element => element.getBoundingClientRect().height);
+    assert.ok(toggleHeight >= 44);
 
-    const toggle = await page.$eval(chevron, element => {
-      const rect = element.getBoundingClientRect();
-      return { display: getComputedStyle(element).display, left: rect.left, right: rect.right,
-        top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height };
-    });
-    assert.notEqual(toggle.display, 'none');
-    assert.ok(toggle.width > 0 && toggle.height >= 40);
-    assert.ok(toggle.left >= 0 && toggle.right <= 390 && toggle.top >= 0 && toggle.bottom <= 760);
-
-    // Selecting the homepage tile already expands its category and ancestors.
-    if (await page.$eval(chevron, element => element.getAttribute('aria-expanded') === 'true')) {
+    const expansion = await page.$eval(chevron, element => element.getAttribute('aria-expanded'));
+    if (expansion === 'true') {
       await page.click(chevron);
       await page.waitForFunction(selector => document.querySelector(selector)?.getAttribute('aria-expanded') === 'false', {}, chevron);
     }
-    assert.equal(await page.$(mobileBlock), null);
     await page.click(chevron);
-    await page.waitForSelector(child, { visible: true });
-    const expanded = await page.$eval(child, element => {
-      const block = element.closest('div.lg\\:hidden')!;
-      const row = block.previousElementSibling!;
-      const rect = element.getBoundingClientRect();
-      return { text: element.textContent?.trim(), left: rect.left, right: rect.right, width: rect.width,
-        blockTop: block.getBoundingClientRect().top, rowBottom: row.getBoundingClientRect().bottom,
-        overflow: document.documentElement.scrollWidth };
+    await page.waitForFunction(selector => document.querySelector(selector)?.getAttribute('aria-expanded') === 'true', {}, chevron);
+    await page.$$eval(`${filters} button`, buttons => {
+      (buttons.find(button => button.textContent?.trim() === 'موبایل') as HTMLButtonElement).click();
     });
-    assert.equal(expanded.text, 'موبایل');
-    assert.ok(expanded.width > 0 && expanded.left >= 0 && expanded.right <= 390);
-    assert.ok(expanded.blockTop >= expanded.rowBottom);
-    assert.ok(expanded.overflow <= 390);
-    assert.equal(await page.$eval(chevron, element => element.getAttribute('aria-expanded')), 'true');
-
-    await page.click(child);
     await page.waitForFunction(selector => {
       const products = document.querySelectorAll(selector);
       return products.length === 1 && products[0].textContent?.includes('کالای عمومی نمونه 2');
     }, {}, rows);
-    assert.equal(await page.$$eval(rows, elements => elements.length), 1);
-    assert.match(await page.$eval(rows, element => element.textContent ?? ''), /کالای عمومی نمونه 2/);
-    // In-catalog selection is state-only by design: the URL is written
-    // only by navigation into the catalog (openCatalogCategory), never by
-    // a chip click — desktop and mobile alike. The entry URL
-    // (?category=digital, from the homepage tile) therefore stays put;
-    // the selection itself is proven by the product list above.
-    assert.equal(new URL(page.url()).searchParams.get('category'), 'digital');
+    await page.waitForSelector(filters, { hidden: true });
+    assert.equal(new URL(page.url()).searchParams.get('category'), 'mobile');
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await page.goBack();
+    await page.waitForFunction(() => new URL(location.href).searchParams.get('category') === 'digital');
+    await page.waitForFunction(() => Boolean((window as any).batch8Fixture?.pending));
+    await page.evaluate(() => (window as any).batch8Fixture.finish());
+    await page.waitForFunction(selector => document.querySelectorAll(selector).length === 2, {}, rows);
   });
 });
+
+test('category directory finds nested categories and opens their catalog URL', () =>
+  visit('/categories', 390, async page => {
+    await page.waitForSelector('#category-search');
+    await fillInput(page, '#category-search', 'موبايل');
+    await waitText(page, 'موبایل');
+    await page.waitForSelector('main a[href="/?category=mobile"]', { visible: true });
+    await page.$eval('main a[href="/?category=mobile"]', link => link.scrollIntoView({ block: 'center' }));
+    await page.click('main a[href="/?category=mobile"]');
+    await page.waitForSelector('[data-testid="product-item"]');
+    assert.equal(new URL(page.url()).searchParams.get('category'), 'mobile');
+  }));
+
+test('a failed search can be retried without losing the query or showing a false empty state', () =>
+  visit('/?q=retry', 390, async page => {
+    const error = '[data-testid="catalog-load-error"]';
+    await page.waitForFunction(() => Boolean((window as any).batch8Fixture?.pending));
+    await page.evaluate(() => (window as any).batch8Fixture.finish('error'));
+    await page.waitForSelector(error);
+    assert.doesNotMatch(await page.$eval('main', main => main.textContent ?? ''), /کالایی یافت نشد/);
+    await page.$eval(error + ' button', button => (button as HTMLButtonElement).click());
+    await page.waitForFunction(() => Boolean((window as any).batch8Fixture?.pending));
+    await page.evaluate(() => (window as any).batch8Fixture.finish());
+    await page.waitForSelector('[data-testid="product-item"]');
+    assert.equal(await page.$(error), null);
+    assert.equal(new URL(page.url()).searchParams.get('q'), 'retry');
+  }));

@@ -1,136 +1,76 @@
-import React, { useState, useEffect } from 'react';
-import { bannersApi, ApiBanner, cleanBannerTitle, isUsableBanner } from '../services/bannersApi';
+import React, { useEffect, useState } from 'react';
+import { ArrowLeft, ChevronLeft, ChevronRight, LayoutGrid } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
-import { ChevronRight, ChevronLeft } from 'lucide-react';
+import { bannersApi, cleanBannerTitle, isUsableBanner, type ApiBanner } from '../services/bannersApi';
+import { pathForView } from '../utils/routing';
+import { followStoreLink } from '../utils/followStoreLink';
 
-// Live homepage hero (live bundle D5): real banners from
-// GET /banners?position=hero — image + title/subtitle overlay, 4.5s
-// auto-advance, null when no usable banner exists. The previous gradient
-// mock slides (src/data/banners.ts) are gone; nothing here falls back to
-// mock data.
-export const HeroSlider: React.FC = () => {
-  const { openCatalogCategory } = useStore();
+export function CentralHomeIntro() {
+  const { openCatalogCategory, setActiveView } = useStore();
+  return (
+    <section className="central-intro" aria-labelledby="central-home-title">
+      <div className="central-intro-copy">
+        <p className="central-intro-label">فروشگاه آنلاین سلرشو</p>
+        <h1 id="central-home-title">برای هر روز،<br /> انتخابی بهتر</h1>
+        <p>از کالاهای دیجیتال تا پوشاک و لوازم خانه. کالاها را پیدا کنید، جزئیات را ببینید و آنلاین سفارش دهید.</p>
+        <div className="central-intro-actions">
+          <a className="central-button" href={pathForView('catalog')}
+            onClick={event => followStoreLink(event, () => openCatalogCategory('all'))}>مشاهده همه کالاها<ArrowLeft size={19} aria-hidden="true" /></a>
+          <a className="central-button central-button--outline" href={pathForView('categories_tree')}
+            onClick={event => followStoreLink(event, () => setActiveView('categories_tree'))}><LayoutGrid size={17} aria-hidden="true" /> دسته‌بندی‌ها</a>
+        </div>
+      </div>
+      <div className="central-intro-media">
+        <img src="/storefront/central-hero.webp" alt="" width="1200" height="800" fetchPriority="high" decoding="async" />
+      </div>
+    </section>
+  );
+}
+
+export function campaignAddress(banner: ApiBanner) {
+  const link = banner.linkUrl?.trim();
+  if (link?.startsWith('#')) return link.length > 1 ? link : null;
+  if (link?.startsWith('/') && !/^\/[\\/]/.test(link)) return link;
+  if (link && /^https?:\/\//i.test(link)) return link;
+  return null;
+}
+
+export const HeroSlider: React.FC<{ position?: 'hero' | 'secondary' }> = ({ position = 'hero' }) => {
+  const { openCatalogCategory, toPersianDigits, categories } = useStore();
   const [banners, setBanners] = useState<ApiBanner[]>([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const [index, setIndex] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    bannersApi.getBanners('hero')
-      .then((list) => {
-        if (!cancelled) setBanners(list.filter(isUsableBanner));
-      })
-      .catch(() => {
-        if (!cancelled) setBanners([]);
-      });
+    bannersApi.getBanners(position)
+      .then(list => { if (!cancelled) setBanners(list.filter(isUsableBanner)); })
+      .catch(() => {});
     return () => { cancelled = true; };
-  }, []);
+  }, [position]);
 
-  useEffect(() => {
-    if (banners.length <= 1) return;
-    const timer = setInterval(() => {
-      setCurrentIndex((prev) => (prev + 1) % banners.length);
-    }, 4500);
-    return () => clearInterval(timer);
-  }, [banners.length]);
-
-  if (banners.length === 0) return null;
-
-  const prevSlide = () => {
-    setCurrentIndex((prev) => (prev - 1 + banners.length) % banners.length);
-  };
-
-  const nextSlide = () => {
-    setCurrentIndex((prev) => (prev + 1) % banners.length);
-  };
-
-  const handleBannerClick = (banner: ApiBanner) => {
-    if (banner.linkUrl && banner.linkUrl.startsWith('#')) {
-      const el = document.querySelector(banner.linkUrl);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth' });
-        return;
-      }
-    }
-    openCatalogCategory('all', cleanBannerTitle(banner.title));
-  };
+  const banner = banners[index];
+  if (!banner) return null;
+  const title = cleanBannerTitle(banner.title);
+  const address = campaignAddress(banner);
+  const categorySlug = categories.find(category => category.title === title)?.slug ?? 'all';
+  const show = (delta: number) => setIndex(current => (current + delta + banners.length) % banners.length);
 
   return (
-    // FIX 16: full-bleed is structural now: App.tsx renders this hero
-    // OUTSIDE the gutter-padded <main> (live banner-reorder model), so
-    // no negative margins are needed here. px-3.5 on mobile matches
-    // live's base .page-gutter (14px); lg:px-0 is edge-to-edge.
-    <div className="px-3.5 lg:px-0 py-1 lg:py-2">
-      <div className="relative overflow-hidden shadow-sm aspect-[2.3/1] lg:aspect-auto lg:h-[300px] rounded-2xl lg:rounded-none w-full flex items-center bg-slate-100">
-        {banners.map((banner, i) => {
-          const title = cleanBannerTitle(banner.title);
-          return (
-            <div
-              key={banner.id}
-              className={`absolute inset-0 w-full h-full cursor-pointer transition-opacity duration-500 ${
-                i === currentIndex ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'
-              }`}
-              onClick={() => handleBannerClick(banner)}
-            >
-              <img
-                src={banner.imageUrl}
-                alt={title}
-                loading={i === 0 ? 'eager' : 'lazy'}
-                decoding="async"
-                className="w-full h-full object-cover"
-              />
-              {(title || banner.subtitle || banner.linkUrl) && (
-                <div className="absolute inset-y-0 right-0 z-10 flex flex-col justify-center text-right pr-14 pl-2 lg:pr-16 bg-gradient-to-l from-black/60 via-black/25 to-transparent pointer-events-none w-[52%] lg:w-[40%] xl:w-[32%] 2xl:w-[28%]">
-                  {title && <h3 className="text-white text-[15px] lg:text-2xl xl:text-3xl font-extrabold tracking-tight drop-shadow-md leading-snug line-clamp-2">{title}</h3>}
-                  {banner.subtitle && <p className="text-white/90 text-[11px] lg:text-sm xl:text-base font-medium mt-1 drop-shadow leading-relaxed line-clamp-2">{banner.subtitle}</p>}
-                  {banner.linkUrl && (
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); handleBannerClick(banner); }}
-                      className="pointer-events-auto self-start mt-2.5 px-4 py-2 rounded-xl bg-[#5d44f8] hover:bg-[#4a33d8] text-white text-[11px] lg:text-sm lg:px-6 lg:py-3 font-bold shadow-md transition-colors"
-                    >
-                      مشاهده
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        {banners.length > 1 && (
-          <>
-            <button
-              onClick={prevSlide}
-              className="absolute right-2 z-20 w-11 h-11 rounded-full bg-black/30 hover:bg-black/50 backdrop-blur-sm text-white flex items-center justify-center transition-colors"
-              title="قبلی"
-              aria-label="اسلاید قبلی"
-            >
-              <ChevronRight className="w-4 h-4"  strokeWidth={1.5}/>
-            </button>
-
-            <button
-              onClick={nextSlide}
-              className="absolute left-2 z-20 w-11 h-11 rounded-full bg-black/30 hover:bg-black/50 backdrop-blur-sm text-white flex items-center justify-center transition-colors"
-              title="بعدی"
-              aria-label="اسلاید بعدی"
-            >
-              <ChevronLeft className="w-4 h-4"  strokeWidth={1.5}/>
-            </button>
-
-            <div className="absolute bottom-2 inset-x-0 z-20 flex justify-center gap-1">
-              {banners.map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() => setCurrentIndex(i)}
-                  className={`h-1.5 rounded-full transition-all ${
-                    i === currentIndex ? 'w-5 bg-white shadow-xs' : 'w-1.5 bg-white/50'
-                  }`}
-                />
-              ))}
-            </div>
-          </>
-        )}
+    <section className="central-campaign" aria-label="پیشنهادهای فروشگاه" data-testid={position === 'secondary' ? 'slider-banner' : undefined}>
+      <div className="central-campaign-copy">
+        {title && <h2>{title}</h2>}
+        {banner.subtitle && <p>{banner.subtitle}</p>}
+        <a href={address || pathForView('catalog', { categorySlug })}
+          onClick={address ? undefined : event => followStoreLink(event, () => openCatalogCategory(categorySlug))}>
+          مشاهده پیشنهاد <ArrowLeft size={18} aria-hidden="true" />
+        </a>
+        {banners.length > 1 && <div className="central-campaign-controls">
+          <button type="button" onClick={() => show(-1)} aria-label="پیشنهاد قبلی"><ChevronRight size={20} aria-hidden="true" /></button>
+          <span aria-live="polite">{toPersianDigits(index + 1)} از {toPersianDigits(banners.length)}</span>
+          <button type="button" onClick={() => show(1)} aria-label="پیشنهاد بعدی"><ChevronLeft size={20} aria-hidden="true" /></button>
+        </div>}
       </div>
-    </div>
+      {banner.imageUrl && <img className="central-campaign-image" src={banner.imageUrl} alt={title ? '' : 'بنر پیشنهاد فروشگاه'} width="760" height="320" loading="lazy" decoding="async" />}
+    </section>
   );
 };

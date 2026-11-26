@@ -1,7 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useStore, useActiveStoreCategorySlugs, expandCategorySlugsWithAncestors } from '../../context/StoreContext';
-import { ArrowRight, ChevronDown, ChevronLeft, LayoutGrid, Package } from 'lucide-react';
+import { ArrowRight, ChevronDown, ChevronLeft, LayoutGrid, Package, Search, X } from 'lucide-react';
 import type { Category } from '../../types';
+import { normalizePersianText, pathForView } from '../../utils/routing';
+import { FallbackImage } from '../common/FallbackImage';
 
 interface TreeNode {
   cat: Category;
@@ -9,175 +11,157 @@ interface TreeNode {
 }
 
 const buildTree = (categories: Category[]): TreeNode[] => {
-  const byId = new Map<string, TreeNode>();
-  categories.forEach((c) => byId.set(c.id, { cat: c, children: [] }));
+  const byId = new Map(categories.map(cat => [cat.id, { cat, children: [] } as TreeNode]));
   const roots: TreeNode[] = [];
-  categories.forEach((c) => {
-    const node = byId.get(c.id)!;
-    if (c.parentId && byId.has(c.parentId)) byId.get(c.parentId)!.children.push(node);
+  for (const cat of categories) {
+    const node = byId.get(cat.id)!;
+    const parent = cat.parentId ? byId.get(cat.parentId) : undefined;
+    if (parent) parent.children.push(node);
     else roots.push(node);
-  });
+  }
   return roots;
 };
 
-// Live tree view (bundle component f3): sticky header with count, card
-// grid, recursive indented rows, all roots expanded on first load, and an
-// empty state when the tree is empty. The card icon in live is an internal
-// category-icon component (Jm) that is not exported from the excluded
-// CategoriesBar.tsx, so the card uses the category image or a LayoutGrid
-// fallback — the one approximation in this file.
+function matchTree(node: TreeNode, query: string): TreeNode | null {
+  if (normalizePersianText(node.cat.title).toLowerCase().includes(query)) return node;
+  const children = node.children.map(child => matchTree(child, query)).filter(child => child !== null);
+  return children.length ? { ...node, children } : null;
+}
+
+const action = 'inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl px-3 text-sm font-bold text-[#164638] hover:bg-[#e5efe6] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#164638]';
+
 export const CategoriesTreeView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const { openCatalogCategory, toPersianDigits, categories, catalogLoading, currentStore } = useStore();
-  // While a store context is active, this tree is the STORE's tree:
-  // only the categories the store actually sells (ancestors
-  // included) are listed, and clicks route through
-  // openCatalogCategory, which lands them inside the store. Central
-  // browsing (no store context) is untouched. While the store's set
-  // loads, a loading row replaces the tree — the full platform tree
-  // never flashes.
   const { storeSlug, categorySlugs } = useActiveStoreCategorySlugs();
-  const visibleCategories = useMemo(() => {
-    if (!storeSlug) return categories;
-    if (!categorySlugs) return null;
-    const included = expandCategorySlugsWithAncestors(categories, categorySlugs);
-    return categories.filter((c) => included.has(c.slug));
-  }, [categories, storeSlug, categorySlugs]);
-  const roots = useMemo(() => buildTree(visibleCategories ?? []), [visibleCategories]);
+  const [search, setSearch] = useState('');
   const [expandedSlugs, setExpandedSlugs] = useState<Set<string>>(new Set());
-  const initialized = useRef(false);
 
-  useEffect(() => {
-    if (!initialized.current && roots.length > 0) {
-      initialized.current = true;
-      setExpandedSlugs(new Set(roots.map((r) => r.cat.slug)));
-    }
-  }, [roots]);
+  const loaded = !storeSlug || categorySlugs !== null;
+  const roots = useMemo(() => {
+    if (!storeSlug) return buildTree(categories);
+    if (!categorySlugs) return [];
+    const included = expandCategorySlugsWithAncestors(categories, categorySlugs);
+    return buildTree(categories.filter(category => included.has(category.slug)));
+  }, [categories, storeSlug, categorySlugs]);
+  const query = normalizePersianText(search.trim()).toLowerCase();
+  const displayRoots = useMemo(() => query
+    ? roots.map(node => matchTree(node, query)).filter(node => node !== null)
+    : roots, [roots, query]);
 
-  const toggle = (slug: string) => {
-    setExpandedSlugs((prev) => {
-      const next = new Set(prev);
-      if (next.has(slug)) next.delete(slug);
-      else next.add(slug);
-      return next;
-    });
+  const branchExpanded = (slug: string) => expandedSlugs.has(slug) !== Boolean(query);
+  const toggle = (slug: string) => setExpandedSlugs(previous => {
+    const next = new Set(previous);
+    if (next.has(slug)) next.delete(slug);
+    else next.add(slug);
+    return next;
+  });
+  const updateSearch = (value: string) => {
+    setSearch(value);
+    setExpandedSlugs(new Set());
   };
+  const categoryLink = (cat: Category, content: React.ReactNode, className: string) => storeSlug
+    ? <button type="button" onClick={() => openCatalogCategory(cat.slug)} className={className}>{content}</button>
+    : <a href={pathForView('catalog', { categorySlug: cat.slug })}
+      onClick={event => {
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        openCatalogCategory(cat.slug);
+      }} className={className}>{content}</a>;
 
-  const renderNode = (node: TreeNode, depth: number): React.ReactNode => {
-    const kids = node.children;
-    const expanded = expandedSlugs.has(node.cat.slug);
+  const expansionButton = (node: TreeNode) => {
+    const expanded = branchExpanded(node.cat.slug);
     return (
-      <div key={node.cat.id}>
-        <div className="flex items-center gap-1 min-w-0" style={{ marginRight: depth * 14 }}>
-          {kids.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => toggle(node.cat.slug)}
-              aria-expanded={expanded}
-              aria-label={`زیردسته‌های ${node.cat.title}`}
-              className="shrink-0 p-1 rounded-md hover:bg-slate-100 text-slate-500"
-            >
-              <ChevronDown className={`w-4 h-4 transition-transform ${expanded ? 'rotate-180' : ''}`} strokeWidth={1.5} />
-            </button>
-          ) : (
-            <span aria-hidden="true" className="w-6 shrink-0 text-center text-[8px] text-slate-300">●</span>
-          )}
-          <button
-            type="button"
-            onClick={() => openCatalogCategory(node.cat.slug)}
-            className="min-w-0 flex-1 text-right truncate py-1 px-1 rounded-lg text-[11px] lg:text-sm font-medium text-slate-700 hover:text-brand-deep hover:bg-brand-soft/50 transition-colors"
-          >
-            {node.cat.title}
-          </button>
-          {kids.length > 0 && (
-            <span className="shrink-0 text-[10px] text-slate-400">{toPersianDigits(kids.length)}</span>
-          )}
-        </div>
-        {expanded && kids.length > 0 && (
-          <div className="mt-0.5 space-y-0.5">
-            {kids.map((ch) => renderNode(ch, depth + 1))}
-          </div>
-        )}
-      </div>
+      <button type="button" onClick={() => toggle(node.cat.slug)}
+        aria-expanded={expanded} aria-label={`زیردسته‌های ${node.cat.title}`} className={`${action} size-11 shrink-0 border border-[#d5e0d7] bg-white px-0`}>
+        <ChevronDown size={18} aria-hidden className={expanded ? 'rotate-180' : ''} />
+      </button>
     );
   };
 
+  const renderNode = (node: TreeNode): React.ReactNode => (
+    <li key={node.cat.id}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        {categoryLink(node.cat, <><span className="wrap-anywhere">{node.cat.title}</span><ChevronLeft size={15} aria-hidden className="ms-auto shrink-0" /></>,
+          `${action} min-w-0 flex-1 justify-start text-start font-semibold`)}
+        {node.children.length > 0 && expansionButton(node)}
+      </div>
+      {branchExpanded(node.cat.slug) && node.children.length > 0 && (
+        <ul className="ms-2 border-s border-[#dce5d9] ps-2">{node.children.map(renderNode)}</ul>
+      )}
+    </li>
+  );
+
+  const loading = !loaded || (catalogLoading && roots.length === 0);
   return (
-    <div className="flex-1 flex flex-col bg-white select-none pb-20 lg:pb-8">
-      <header className="sticky top-0 z-30 lg:static bg-white border-b border-slate-200 px-3.5 lg:px-8 xl:px-10 2xl:px-12 py-2.5 lg:py-3.5 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <button onClick={onBack} className="p-1 rounded-lg hover:bg-slate-100 text-slate-700">
-            <ArrowRight className="w-5 h-5" strokeWidth={1.5} />
-          </button>
-          <div className="flex items-center gap-1.5">
-            <LayoutGrid className="w-4 h-4 text-brand-deep" strokeWidth={1.5} />
-            <h1 className="text-xs lg:text-lg xl:text-xl font-bold text-slate-900">{storeSlug ? `دسته‌بندی‌های ${currentStore.name}` : 'دسته‌بندی‌های کاتالوگ مرکزی'}</h1>
+    <main id="main-content" tabIndex={-1} dir="rtl" className="flex-1 bg-[#f8f6ef] pb-12 text-[#172d26]">
+      <header className="border-b border-[#dce5d9] bg-[#edf2e9]">
+        <div className="mx-auto w-full max-w-[1360px] px-4 py-5 sm:px-6 sm:py-8 lg:px-8">
+          <button type="button" onClick={onBack} className={`${action} mb-2 px-0`}><ArrowRight size={17} aria-hidden /> خانه</button>
+          <div className="grid items-end gap-4 sm:grid-cols-[1fr_minmax(250px,360px)]">
+            <div>
+              <h1 className="text-2xl leading-snug font-black sm:text-4xl">{storeSlug ? `دسته‌بندی‌های ${currentStore.name}` : 'دسته‌بندی کالاها'}</h1>
+              {!storeSlug && (
+                <a href={pathForView('catalog')} onClick={event => {
+                  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                  event.preventDefault();
+                  openCatalogCategory('all');
+                }} className={`${action} mt-1 px-0`}>مشاهدهٔ همهٔ کالاها <ChevronLeft size={16} aria-hidden /></a>
+              )}
+            </div>
+            {roots.length > 0 && (
+              <div className="flex min-h-12 items-center gap-2 rounded-xl border border-[#ccd9cd] bg-white ps-3 focus-within:outline-2 focus-within:outline-[#164638]">
+                <Search size={18} className="shrink-0 text-[#506357]" aria-hidden />
+                <label className="sr-only" htmlFor="category-search">جستجو در دسته‌بندی‌ها</label>
+                <input id="category-search" type="search" value={search} onChange={event => updateSearch(event.target.value)}
+                  placeholder="نام دسته را جستجو کنید" className="min-h-12 min-w-0 flex-1 bg-transparent pe-3 text-sm outline-hidden [&::-webkit-search-cancel-button]:hidden" />
+                {search && <button type="button" aria-label="پاک کردن جستجوی دسته‌ها" className={`${action} px-0 aspect-square`}
+                  onClick={() => { updateSearch(''); document.getElementById('category-search')?.focus(); }}><X size={16} aria-hidden /></button>}
+              </div>
+            )}
           </div>
         </div>
-        <span className="text-[10px] lg:text-xs text-slate-400">
-          {storeSlug && !visibleCategories ? 'در حال بارگذاری' : catalogLoading ? 'در حال بارگذاری' : `${toPersianDigits((visibleCategories ?? categories).length)} دسته‌بندی`}
-        </span>
       </header>
 
-      {storeSlug && !visibleCategories ? (
-        <div className="p-6 lg:py-16 text-center space-y-3">
-          <p className="text-[11px] lg:text-sm text-slate-500">در حال بارگذاری دسته‌بندی‌های فروشگاه…</p>
-        </div>
-      ) : !catalogLoading && roots.length === 0 ? (
-        <div className="p-6 lg:py-16 text-center space-y-3">
-          <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
-            <Package className="w-6 h-6" strokeWidth={1.5} />
+      <div className="mx-auto w-full max-w-[1360px] px-4 pt-5 sm:px-6 lg:px-8 lg:pt-8">
+        {loading ? (
+          <p role="status" className="rounded-2xl border border-[#dce5d9] bg-white px-5 py-10 text-center text-sm text-[#506357]">در حال بارگذاری دسته‌بندی‌ها…</p>
+        ) : displayRoots.length === 0 ? (
+          <div className="rounded-2xl border border-[#dce5d9] bg-white px-4 py-12 text-center">
+            <div className="mx-auto mb-3 grid size-14 place-items-center rounded-2xl bg-[#edf4ee] text-[#164638]"><Package size={26} aria-hidden /></div>
+            <h2 className="text-lg font-black">{query ? 'دسته‌ای پیدا نشد' : 'دسته‌بندی‌ای ثبت نشده است'}</h2>
+            {query && <button type="button" onClick={() => updateSearch('')} className={`${action} mt-3 border border-[#d5e0d7]`}>مشاهدهٔ همهٔ دسته‌بندی‌ها</button>}
           </div>
-          <h3 className="text-xs lg:text-base font-bold text-slate-800">دسته‌بندی‌ای ثبت نشده است</h3>
-          <p className="text-[11px] lg:text-sm text-slate-500">به‌محض ثبت دسته‌بندی، اینجا نمایش داده می‌شود.</p>
-        </div>
-      ) : (
-        <div className="p-3.5 space-y-3 lg:px-8 lg:py-6 xl:px-10 2xl:px-12 sm:grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-4 lg:gap-6 lg:space-y-0">
-          {roots.map((root) => {
-            const expanded = expandedSlugs.has(root.cat.slug);
-            return (
-              <div key={root.cat.id} className="bg-white rounded-2xl border border-slate-200/90 p-3 lg:p-5 shadow-2xs space-y-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <button
-                    type="button"
-                    onClick={() => openCatalogCategory(root.cat.slug)}
-                    className="flex items-center gap-3 min-w-0 flex-1 text-right group"
-                  >
-                    <div className="shrink-0 w-12 h-12 lg:w-16 lg:h-16 flex items-center justify-center group-hover:scale-105 transition-transform">
-                      {root.cat.image ? (
-                        <img src={root.cat.image} alt={root.cat.title} className="w-full h-full object-contain" />
-                      ) : (
-                        <LayoutGrid className="w-8 h-8 text-slate-300" strokeWidth={1.5} />
-                      )}
-                    </div>
-                    <h3 className="text-xs lg:text-base font-bold text-slate-900 group-hover:text-brand-deep transition-colors truncate">{root.cat.title}</h3>
-                  </button>
-                  {root.children.length > 0 ? (
-                    <button
-                      type="button"
-                      onClick={() => toggle(root.cat.slug)}
-                      aria-expanded={expanded}
-                      aria-label={`زیردسته‌های ${root.cat.title}`}
-                      className="shrink-0 p-1.5 rounded-lg hover:bg-slate-100 text-slate-500"
-                    >
-                      <ChevronDown className={`w-4 h-4 transition-transform ${expanded ? 'rotate-180' : ''}`} strokeWidth={1.5} />
-                    </button>
-                  ) : (
-                    <span className="shrink-0 flex items-center gap-1 text-[11px] font-bold text-brand">
-                      <span>مشاهده</span>
-                      <ChevronLeft className="w-4 h-4" strokeWidth={1.5} />
-                    </span>
-                  )}
-                </div>
-                {expanded && root.children.length > 0 && (
-                  <div className="pt-2 border-t border-slate-100 space-y-0.5">
-                    {root.children.map((ch) => renderNode(ch, 1))}
+        ) : (
+          <>
+            <p role="status" className="mb-3 text-sm font-medium text-[#506357]">{toPersianDigits(displayRoots.length)} دستهٔ اصلی</p>
+            <div className="grid items-start gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:gap-4">
+              {displayRoots.map(node => (
+                <article key={node.cat.id} className="min-w-0 rounded-2xl border border-[#dce5d9] bg-white p-3 sm:p-4">
+                  <div className="flex items-center gap-2">
+                    {categoryLink(node.cat, (
+                      <>
+                        <span className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-xl bg-[#edf4ee] text-[#164638]">
+                          <FallbackImage srcs={node.cat.image ? [node.cat.image] : []} alt="" loading="lazy" className="size-full object-contain"
+                            fallback={<LayoutGrid size={23} aria-hidden />} />
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block wrap-anywhere text-base font-black">{node.cat.title}</span>
+                          {node.children.length > 0 && <span className="mt-0.5 block text-xs font-medium text-[#506357]">{toPersianDigits(node.children.length)} زیردسته</span>}
+                        </span>
+                        {node.children.length === 0 && <ChevronLeft size={17} aria-hidden className="ms-auto shrink-0" />}
+                      </>
+                    ), `${action} min-w-0 flex-1 justify-start gap-3 px-1 py-1 text-start`)}
+                    {node.children.length > 0 && expansionButton(node)}
                   </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
+                  {branchExpanded(node.cat.slug) && node.children.length > 0 && (
+                    <ul className="mt-3 border-t border-[#e1e8de] pt-2">{node.children.map(renderNode)}</ul>
+                  )}
+                </article>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </main>
   );
 };

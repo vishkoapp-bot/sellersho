@@ -8,10 +8,11 @@ import { FashionProductCard } from '../../storefront/FashionProductCard';
 interface Props {
   products: Product[];
   fashion: boolean;
+  central?: boolean;
   onOpen: (product: Product) => void;
 }
 
-export const ProductDetailRelated: React.FC<Props> = ({ products, fashion, onOpen }) => {
+export const ProductDetailRelated: React.FC<Props> = ({ products, fashion, central = false, onOpen }) => {
   if (products.length === 0) return null;
 
   if (fashion) {
@@ -35,6 +36,17 @@ export const ProductDetailRelated: React.FC<Props> = ({ products, fashion, onOpe
           </div>
         </section>
       </div>
+    );
+  }
+
+  if (central) {
+    return (
+      <section data-testid="product-related" className="central-pdp-related" aria-label="کالاهای مشابه">
+        <h2 className="text-xl font-extrabold">کالاهای مشابه</h2>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
+          {products.map(product => <ProductCard key={product.id} product={product} />)}
+        </div>
+      </section>
     );
   }
 

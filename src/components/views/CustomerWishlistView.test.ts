@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { build } from 'esbuild';
+import puppeteer from 'puppeteer';
 import type { Product, ProductVariant } from '../../types';
 import { cardPriceOf, cardPriceVariantOf } from '../../utils/cardPrice';
 import { resolvePurchase } from '../../utils/productPurchase';
@@ -86,4 +88,65 @@ test('wishlist quick-add uses the selected variant minimum quantity', () => {
 test('wishlist view never reads the effective default flag', () => {
   const source = readFileSync(new URL('./CustomerWishlistView.tsx', import.meta.url), 'utf8');
   assert.equal((source.match(/isDefault/g) ?? []).length, 0);
+});
+
+test('wishlist resolves saved IDs beyond the loaded catalog and asks scoped shops for their own price', async () => {
+  const bundle = await build({
+    write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic',
+    define: { 'process.env.NODE_ENV': '"production"', 'import.meta.env': '{}' },
+    plugins: [{ name: 'wishlist-fixture', setup(build) {
+      build.onResolve({ filter: /(?:^|\/)StoreContext$/ }, () => ({ path: 'store', namespace: 'fixture' }));
+      build.onResolve({ filter: /(?:^|\/)ToastContext$/ }, () => ({ path: 'toast', namespace: 'fixture' }));
+      build.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({
+        loader: 'js',
+        contents: args.path === 'store'
+          ? `export const useStore = () => window.wishlistFixture;`
+          : `export const useToast = () => ({ success(){}, info(){}, error(){} });`,
+      }));
+    } }],
+    stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `
+      import React from 'react';
+      import { createRoot } from 'react-dom/client';
+      import { CustomerWishlistView } from './src/components/views/CustomerWishlistView';
+      createRoot(document.getElementById('root')).render(<CustomerWishlistView onBack={() => {}} />);
+    ` },
+  });
+  const browser = await puppeteer.launch({ headless: true, executablePath: process.env.CHROME_PATH, pipe: true });
+  try {
+    for (const scoped of [false, true]) {
+      const page = await browser.newPage();
+      await page.setRequestInterception(true);
+      page.on('request', request => {
+        if (request.isNavigationRequest() && request.url() === 'http://wishlist.test/') {
+          void request.respond({ status: 200, contentType: 'text/html', body: '<div id="root"></div>' });
+        } else void request.abort();
+      });
+      await page.goto('http://wishlist.test/');
+      await page.evaluate((scoped) => {
+        const currentStore = scoped
+          ? { id: 'vendor', slug: 'sample-shop', ownerType: 'dropshipper' }
+          : { id: 'central', slug: 'central', ownerType: 'central' };
+        (window as any).wishlistFixture = {
+          currentStore, stores: [currentStore], routeStoreSlug: scoped ? currentStore.slug : null,
+          wishlists: { [currentStore.id]: ['saved-item'] }, products: [], cart: [],
+          formatPrice: String, toPersianDigits: String,
+        };
+        (window as any).wishlistRequests = [];
+        window.fetch = async (input) => {
+          (window as any).wishlistRequests.push(String(input));
+          return Response.json({ id: 'saved-item', title: 'کالای ذخیره‌شده خارج از صفحهٔ فعلی', category: 'home',
+            stock: 3, price: scoped ? 240000 : 180000, originalPrice: scoped ? 240000 : 180000 });
+        };
+      }, scoped);
+      await page.addScriptTag({ content: bundle.outputFiles[0].text });
+      await page.waitForSelector('#root li a');
+      assert.match(await page.$eval('#root li', node => node.textContent || ''), scoped ? /240000/ : /180000/);
+      assert.deepEqual(await page.evaluate(() => (window as any).wishlistRequests), [
+        `/api/v1/products/saved-item${scoped ? '?storeSlug=sample-shop' : ''}`,
+      ]);
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
 });

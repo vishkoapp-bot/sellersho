@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { batch8Browser, waitText } from '../../scripts/fixtures/catalog/batch8-browser';
+import { batch8Browser, clickText, waitText } from '../../scripts/fixtures/catalog/batch8-browser';
 import { formatPrice } from '../utils/formatters';
 
 const visit = batch8Browser();
@@ -36,3 +36,43 @@ for (const fare of [0, 15000]) {
     }
   });
 }
+
+test('shopping from an empty central cart dismisses the dialog and opens the catalog', async () => {
+  await visit('/', 390, async page => {
+    await clickText(page, 'سبد خرید');
+    await waitText(page, 'سبد خرید شما در حال حاضر خالی است.');
+    await clickText(page, 'مشاهده محصولات');
+    await page.waitForSelector('button[aria-label="بستن سبد خرید"]', { hidden: true, timeout: 2000 });
+    await page.waitForFunction(() => (window as any).batch8Fixture?.state().view === 'catalog');
+  });
+});
+
+test('mobile checkout keeps the address in front and can close by keyboard', async () => {
+  await visit('/', 390, async page => {
+    await page.waitForFunction(() => (window as any).batch8Fixture?.state?.().productCount === 24);
+    await page.evaluate(() => (window as any).batch8Fixture.openCheckout(15000));
+    await page.waitForSelector('[role="dialog"][aria-labelledby="cart-drawer-title"]', { timeout: 2000 });
+    assert.equal(await page.$eval('[aria-current="step"] > span:last-child', el => el.textContent?.trim()), 'نشانی و ثبت');
+    await page.waitForFunction(() => document.activeElement?.id === 'cart-drawer-title');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#cart-drawer-title', { hidden: true });
+  });
+});
+
+test('an address edit disables checkout before the debounced shipping quote refresh', async () => {
+  await visit('/', 390, async page => {
+    await page.waitForFunction(() => (window as any).batch8Fixture?.state?.().productCount === 24);
+    await page.evaluate(() => (window as any).batch8Fixture.openCheckout(15000));
+    const submit = 'button[form="checkout-details"]';
+    await page.waitForSelector(`${submit}:not(:disabled)`);
+    const blocked = await page.$eval('#cart-checkout-address', async (node, selector) => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+      setValue.call(node, 'نشانی ویرایش‌شده');
+      node.dispatchEvent(new Event('input', { bubbles: true }));
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+      return document.querySelector<HTMLButtonElement>(selector)?.disabled;
+    }, submit);
+    assert.equal(blocked, true);
+    await page.waitForSelector(`${submit}:not(:disabled)`);
+  });
+});

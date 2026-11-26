@@ -98,7 +98,7 @@ test('server-owned order remains visible when recipient name and phone differ fr
     const page = await context.newPage(); await page.goto(url); await page.waitForFunction(() => !!(window as any).orderHarness?.auth); await login(page, 20);
     await page.evaluate(() => (window as any).orderHarness.orders.fetchMyOrders());
     await page.waitForFunction(() => document.body.textContent?.includes('CANARY-20'));
-    assert.ok((await page.$eval('body', el => el.textContent))?.includes('۱ سفارش ثبت شده'));
+    assert.match(await page.$eval('nav[aria-label="امکانات حساب"]', el => el.textContent ?? ''), /۱ سفارش در این فروشگاه/);
   } finally { await context.close(); }
 });
 for (const failure of [false, true]) test(`late A create ${failure ? 'error' : 'success'} cannot restore staged address into B`, async () => {

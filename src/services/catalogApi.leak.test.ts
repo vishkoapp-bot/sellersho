@@ -86,7 +86,8 @@ test('real customer components and PDP variant selection keep unit data out of t
         cartItemsCount: 0, isWishlisted: () => false, setTrackingOrder: noop, setIsTrackingModalOpen: noop,
       });`,
     OrderContext: `export const useOrders = () => ({ orders: [${JSON.stringify(order)}], fetchMyOrders: async () => {} });`,
-    AuthContext: `export const useAuth = () => ({ currentUser: { role: 'customer' }, isSessionReady: true });`,
+    AuthContext: `export const adminRolesForCapabilities = () => [];
+      export const useAuth = () => ({ currentUser: { role: 'customer' }, isSessionReady: true });`,
   };
   const bundle = await build({
     write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic',

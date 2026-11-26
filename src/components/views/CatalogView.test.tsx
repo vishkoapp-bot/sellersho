@@ -30,25 +30,23 @@ async function ready(page: Page) {
   });
 }
 
-test('dropshipper catalog suppresses the central assortment on its first commit and then bounces', async () => {
+test('explicit central catalog does not reuse the previous storefront scope', async () => {
   const context = await browser.createBrowserContext();
   try {
-    const page = await context.newPage(); await ready(page);
+    const page = await context.newPage();
+    await ready(page);
     await page.evaluate(() => (window as any).catalogHarness.select('mone'));
     await page.waitForFunction(() => (window as any).catalogHarness.state().slug === 'mone');
     await page.evaluate(() => (window as any).catalogHarness.open());
-    await page.waitForFunction(() => (window as any).catalogHarness.state().view === 'seller_storefront');
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid="product-item"]').length === 2);
     const result = await page.evaluate(() => {
       const h = (window as any).catalogHarness;
-      return { paints: h.paints, state: h.state(), text: document.body.textContent };
+      return { paints: h.paints, state: h.state() };
     });
     assert.ok(result.paints.length > 0);
-    assert.equal(result.paints[0].view, 'catalog', 'layout recording precedes the navigation effect');
-    for (const paint of result.paints) {
-      assert.equal(paint.rows, 0); assert.equal(paint.heading, false);
-    }
-    assert.equal(result.state.slug, 'mone');
-    assert.doesNotMatch(result.text, /تیشرت زنانه|شلوار مردانه|کاتالوگ جامع کالاها/);
+    assert.equal(result.paints[0].view, 'catalog');
+    assert.equal(result.state.slug, 'central');
+    assert.equal(result.state.view, 'catalog');
   } finally { await context.close(); }
 });
 
@@ -69,14 +67,14 @@ test('central catalog renders both products and stays in the catalog', async () 
   } finally { await context.close(); }
 });
 
-test('catalog navigation preserves the selected dropshipper store', async () => {
+test('category discovery inside the storefront stays scoped to that storefront', async () => {
   const context = await browser.createBrowserContext();
   try {
     const page = await context.newPage(); await ready(page);
     await page.evaluate(() => (window as any).catalogHarness.select('mone'));
     await page.waitForFunction(() => (window as any).catalogHarness.state().slug === 'mone');
     await page.evaluate(() => (window as any).catalogHarness.navigateCatalog());
-    await page.waitForFunction(() => (window as any).catalogHarness.state().view === 'catalog');
+    await page.waitForFunction(() => (window as any).catalogHarness.state().view === 'seller_storefront');
     assert.equal(await page.evaluate(() => (window as any).catalogHarness.state().slug), 'mone');
   } finally { await context.close(); }
 });
@@ -366,7 +364,7 @@ test('A8 — a forced inverted filter 400s into the inline message, not the gene
       const h = (window as any).catalogHarness;
       return {
         error: document.querySelector('[data-testid="price-range-error"]')?.textContent ?? null,
-        genericBanner: document.querySelectorAll('.rounded-xl.bg-rose-50').length,
+        genericBanner: document.querySelectorAll('[data-testid="catalog-load-error"]').length,
         items: document.querySelectorAll('[data-testid="product-item"]').length,
         emptyState: document.body.textContent?.includes('کالایی یافت نشد') ?? false,
         rawBody: document.body.textContent?.includes('{"error"') ?? false,
@@ -392,7 +390,7 @@ const visitCatalog = batch8Browser();
 test('catalog load-more shows the remaining count and keeps the header total', async () => {
   for (const [total, header, remaining] of [[41, '۴۱', '۱۷'], [25, '۲۵', '۱']] as const) {
     await visitCatalog(`/?category=all&total=${total}`, 390, async page => {
-      await waitText(page, `(${header})`);
+      await waitText(page, `${header} کالا`);
       await waitText(page, `نمایش بیشتر (${remaining} کالای دیگر)`);
       assert.doesNotMatch(await page.$eval('body', body => body.innerText), /نمایش بیشتر \((۴۱|۲۵)/);
     });
@@ -401,7 +399,7 @@ test('catalog load-more shows the remaining count and keeps the header total', a
 
 test('catalog has no load-more button when all products are loaded', async () => {
   await visitCatalog('/?category=all&total=24', 390, async page => {
-    await waitText(page, '(۲۴)');
+    await waitText(page, '۲۴ کالا');
     assert.doesNotMatch(await page.$eval('body', body => body.innerText), /نمایش بیشتر/);
   });
 });

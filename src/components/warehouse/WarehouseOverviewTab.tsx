@@ -1,155 +1,139 @@
-import React, { useEffect, useState } from 'react';
-import { useStore } from '../../context/StoreContext';
-import { WarehouseOverviewDto, wmsApi } from '../../services/wmsApi';
+import { useEffect, useState } from 'react';
+import { Boxes, ChevronDown, ChevronLeft, Layers, Package, PackageCheck, ScanLine, Send, ShieldCheck, Warehouse } from 'lucide-react';
 import { apiRequest } from '../../services/apiClient';
-import { useToast } from '../../context/ToastContext';
-import { Warehouse, Package, CheckCircle2, Clock, ScanLine, Boxes } from 'lucide-react';
+import { wmsApi, type WarehouseOverviewDto } from '../../services/wmsApi';
+import { PanelWorkQueue } from '../common/PanelWorkQueue';
+import { followWarehouseLink, receivingStages, shippingStages, warehouseSectionHref, type WarehouseSection } from './WarehouseNavigation';
 
-interface Props {
-  onNavigateTab: (tab: string) => void;
+const digits = new Intl.NumberFormat('fa-IR');
+const work = [
+  { section: 'receive', label: 'محموله‌های منتظر دریافت', icon: PackageCheck },
+  { section: 'qc', label: 'ردیف‌های کنترل کیفیت', icon: ShieldCheck },
+  { section: 'putaway', label: 'کارهای جانمایی', icon: Layers },
+  { section: 'picking', label: 'سفارش‌های آمادهٔ جمع‌آوری', icon: ScanLine },
+  { section: 'packing', label: 'سفارش‌های آمادهٔ بسته‌بندی', icon: Package },
+  { section: 'shipping', label: 'سفارش‌های آمادهٔ ارسال', icon: Send },
+] as const;
+
+type WorkSection = (typeof work)[number]['section'];
+interface OverviewData {
+  overview?: WarehouseOverviewDto;
+  counts: Partial<Record<WorkSection, number>>;
+  failed: boolean;
 }
 
-export const WarehouseOverviewTab: React.FC<Props> = ({ onNavigateTab }) => {
-  const { warehouseSession, toPersianDigits } = useStore();
-  const { error } = useToast();
-  const [overview, setOverview] = useState<WarehouseOverviewDto | null>(null);
-  const [overviewLoading, setOverviewLoading] = useState(true);
+async function ordersWaiting(phase: 'pick' | 'pack' | 'ship', signal: AbortSignal) {
+  const result = await apiRequest<{ orders: unknown[] } | unknown[]>(`/warehouse/orders/ready-to-${phase}`, { auth: true, signal });
+  const rows = Array.isArray(result) ? result : result?.orders;
+  return queueCount(rows);
+}
 
+function queueCount(rows: unknown[] | undefined) {
+  if (!Array.isArray(rows)) throw new Error('Warehouse queue missing');
+  return rows.length;
+}
+
+function formatVolume(value: number) {
+  return `${digits.format(value)} سانتی‌متر مکعب`;
+}
+
+export function WarehouseOverviewTab({ onNavigateTab }: { onNavigateTab: (section: WarehouseSection) => void }) {
+  const [data, setData] = useState<OverviewData>();
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    let active = true;
-    wmsApi.getOverview()
-      .then((value) => { if (active) setOverview(value); })
-      .catch((cause) => { if (active) error(cause instanceof Error ? cause.message : 'نمای کلی انبار دریافت نشد.'); })
-      .finally(() => { if (active) setOverviewLoading(false); });
-    return () => { active = false; };
-  }, [error]);
+    const request = new AbortController();
+    const { signal } = request;
+    setData(undefined);
+    void Promise.allSettled([
+      wmsApi.getOverview(signal),
+      wmsApi.getQCQueue(signal).then(result => queueCount(result?.queue)),
+      wmsApi.getPutawayQueue(signal).then(result => queueCount(result?.queue)),
+      ordersWaiting('pick', signal),
+      ordersWaiting('pack', signal),
+      ordersWaiting('ship', signal),
+    ]).then(([summary, qc, putaway, picking, packing, shipping]) => {
+      if (signal.aborted) return;
+      const count = (read: PromiseSettledResult<number>) => read.status === 'fulfilled' ? read.value : undefined;
+      const overview = summary.status === 'fulfilled' ? summary.value : undefined;
+      setData({ overview, counts: {
+        receive: overview?.inboundPending,
+        qc: count(qc), putaway: count(putaway), picking: count(picking), packing: count(packing), shipping: count(shipping),
+      }, failed: [summary, qc, putaway, picking, packing, shipping].some(read => read.status === 'rejected') });
+    });
+    return () => request.abort();
+  }, [attempt]);
 
-  const warehouseName = overview?.warehouseName || warehouseSession?.warehouseName || 'انبار مرکزی';
-  const [pickCount, setPickCount] = useState(0);
-  const [packCount, setPackCount] = useState(0);
-
-  useEffect(() => {
-    let active = true;
-    const loadCount = async (queuePath: string, setCount: (n: number) => void) => {
-      try {
-        const data = await apiRequest<{ orders?: unknown[] } | unknown[]>(queuePath, { method: 'GET', auth: true });
-        if (active) setCount(Array.isArray(data) ? data.length : (data.orders?.length || 0));
-      } catch { /* keep the last count; the overview fetch surfaces failures */ }
-    };
-    void loadCount('/warehouse/orders/ready-to-pick', setPickCount);
-    void loadCount('/warehouse/orders/ready-to-pack', setPackCount);
-    return () => { active = false; };
-  }, []);
-
-  const readyToPick = pickCount;
-  const packingQueue = packCount;
-  const capacityUsedPercent = overview?.capacityPercent || 0;
-
+  const overview = data?.overview;
+  const capacityPercent = overview ? Math.max(0, Math.min(100, overview.capacityPercent)) : 0;
   return (
-    <div className="space-y-3 pb-6">
-      {/* 1. Header Card */}
-      <div className="bg-gradient-to-l from-slate-900 via-amber-950 to-slate-900 rounded-2xl p-3.5 text-white shadow-xs">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-400/30 flex items-center justify-center text-amber-400">
-              <Warehouse className="w-5 h-5"  strokeWidth={1.5}/>
+    <div className="space-y-4 pb-6">
+      <section aria-label="شروع عملیات انبار" className="grid gap-3 sm:grid-cols-2">
+        {([
+          { title: 'ورود کالا به انبار', steps: receivingStages, action: 'دریافت محموله', section: 'receive', Icon: Warehouse },
+          { title: 'آماده‌سازی سفارش', steps: shippingStages, action: 'جمع‌آوری اقلام سفارش', section: 'picking', Icon: Send },
+        ] as const).map(({ title, steps, action, section, Icon }) => (
+          <div key={section} className="flex min-w-0 flex-col rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+            <div className="flex items-center gap-2.5">
+              <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand-deep"><Icon aria-hidden="true" className="size-5" /></span>
+              <h2 className="text-base font-extrabold text-slate-900">{title}</h2>
             </div>
-            <div>
-              <h2 className="text-xs font-bold flex items-center gap-1.5">
-                <span>{warehouseName}</span>
-                <span className="text-[9px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.2 rounded-full font-bold">
-                  فعال
-                </span>
-              </h2>
-              <span className="text-[10px] text-slate-400 block mt-0.5">
-                حجم تأییدشده: {overviewLoading ? 'در حال دریافت...' : `${toPersianDigits(overview?.capacityVolumeCm3 || 0)} cm³`}
-              </span>
-            </div>
+            <ol className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-xs leading-6 text-slate-700">
+              {steps.map((step, index) => (
+                <li key={step.section} className="inline-flex items-center gap-1">
+                  {index > 0 && <ChevronLeft aria-hidden="true" className="size-3.5 text-slate-500" />}{step.label}
+                </li>
+              ))}
+            </ol>
+            <a href={warehouseSectionHref(section)} onClick={event => followWarehouseLink(event, () => onNavigateTab(section))}
+              className="mt-3 inline-flex min-h-11 items-center justify-between gap-2 rounded-xl bg-brand-soft px-3 text-sm font-bold text-brand-deep hover:bg-brand-border focus-visible:outline-2 focus-visible:outline-brand">
+              {action}<ChevronLeft aria-hidden="true" className="size-4 shrink-0" />
+            </a>
           </div>
-        </div>
+        ))}
+      </section>
 
-        <div className="mt-2.5 pt-2 border-t border-white/10 space-y-1">
-          <div className="flex justify-between text-[10px]">
-            <span className="text-slate-300">ظرفیت اشغال‌شده:</span>
-            <span className="font-bold text-amber-300">{overviewLoading ? '...' : `٪${toPersianDigits(capacityUsedPercent)}`}</span>
-          </div>
-          <div className="w-full h-2 bg-black/40 rounded-full overflow-hidden">
-            <div className="h-full bg-amber-500 rounded-full" style={{ width: `${capacityUsedPercent}%` }} />
-          </div>
-        </div>
-      </div>
+      <PanelWorkQueue items={work.map(({ section, ...item }) => ({
+        ...item, count: data?.counts[section], href: warehouseSectionHref(section), open: () => onNavigateTab(section),
+      }))} loading={!data} error={data?.failed ? 'دریافت بخشی از اطلاعات انبار انجام نشد.' : undefined}
+        retry={() => setAttempt(value => value + 1)} />
 
-      {/* 2. Operations Metrics */}
-      <div className="grid grid-cols-2 gap-2">
-        <div className="bg-white rounded-xl p-3 border border-slate-200/90 shadow-2xs">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-[11px] font-bold text-slate-700">آماده جمع‌آوری (Pick)</span>
-            <ScanLine className="w-3.5 h-3.5 text-amber-600"  strokeWidth={1.5}/>
+      <details className="group rounded-2xl border border-slate-200 bg-white px-4 py-1 sm:px-5">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-lg font-bold text-slate-900 focus-visible:outline-2 focus-visible:outline-brand [&::-webkit-details-marker]:hidden">
+          <Boxes aria-hidden="true" className="size-5 shrink-0 text-brand-deep" />
+          <span className="flex-1">ظرفیت و گردش موجودی</span>
+          <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-slate-500 group-open:rotate-180" />
+        </summary>
+        {overview ? (
+          <div className="space-y-3 border-t border-slate-100 pb-3 pt-3">
+            {overview.warehouseName && <p className="text-sm font-bold text-slate-900">{overview.warehouseName}</p>}
+            {overview.capacityVolumeCm3 > 0 ? (
+              <div className="space-y-1">
+                <p id="warehouse-capacity-used" className="text-sm font-bold text-slate-800">ظرفیت اشغال‌شده یا رزروشده · {digits.format(overview.capacityPercent)}٪</p>
+                <div role="progressbar" aria-labelledby="warehouse-capacity-used" aria-valuenow={capacityPercent} className="h-2 overflow-hidden rounded-full bg-slate-100">
+                  <div aria-hidden="true" className="h-full rounded-full bg-brand-deep" style={{ width: `${capacityPercent}%` }} />
+                </div>
+              </div>
+            ) : <p className="text-sm text-slate-600">ظرفیت تأییدشده‌ای برای قفسه‌ها ثبت نشده است.</p>}
+            <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {[
+                ['ظرفیت تأییدشده', formatVolume(overview.capacityVolumeCm3)],
+                ['حجم اشغال‌شده', formatVolume(overview.occupiedVolumeCm3)],
+                ['حجم رزروشده', formatVolume(overview.reservedVolumeCm3)],
+                ['جابه‌جایی ثبت‌شده', digits.format(overview.verifiedMovements)],
+              ].map(([label, value]) => (
+                <div key={label} className="min-w-0 rounded-lg bg-slate-50 px-3 py-2">
+                  <dt className="text-xs leading-6 text-slate-600">{label}</dt>
+                  <dd className="break-words text-sm font-bold tabular-nums text-slate-900">{value}</dd>
+                </div>
+              ))}
+            </dl>
+            <a href={warehouseSectionHref('inventory')} onClick={event => followWarehouseLink(event, () => onNavigateTab('inventory'))}
+              className="inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-sm font-bold text-brand-deep hover:bg-brand-soft focus-visible:outline-2 focus-visible:outline-brand">
+              مشاهدهٔ موجودی قفسه‌ها<ChevronLeft aria-hidden="true" className="size-4" />
+            </a>
           </div>
-          <div className="text-sm font-extrabold text-slate-900">
-            {toPersianDigits(readyToPick)} <span className="text-[9px] font-normal text-slate-500">سفارش</span>
-          </div>
-          <span className="text-[9px] text-amber-600 font-bold block mt-1">تأییدیه درگاه صادر شد</span>
-        </div>
-
-        <div className="bg-white rounded-xl p-3 border border-slate-200/90 shadow-2xs">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-[11px] font-bold text-slate-700">صف بسته‌بندی</span>
-            <Boxes className="w-3.5 h-3.5 text-blue-600"  strokeWidth={1.5}/>
-          </div>
-          <div className="text-sm font-extrabold text-slate-900">
-            {toPersianDigits(packingQueue)} <span className="text-[9px] font-normal text-slate-500">بسته</span>
-          </div>
-          <span className="text-[9px] text-blue-600 font-medium block mt-1">منتظر چاپ بارنامه</span>
-        </div>
-
-        <div className="bg-white rounded-xl p-3 border border-slate-200/90 shadow-2xs">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-[11px] font-bold text-slate-700">محموله در اسکله</span>
-            <Clock className="w-3.5 h-3.5 text-indigo-600"  strokeWidth={1.5}/>
-          </div>
-          <div className="text-sm font-extrabold text-slate-900">
-            {overviewLoading ? '...' : toPersianDigits(overview?.inboundPending || 0)} <span className="text-[9px] font-normal text-slate-500">محموله</span>
-          </div>
-          <span className="text-[9px] text-slate-400 block mt-1">آماده بازرسی QC</span>
-        </div>
-
-        <div className="bg-white rounded-xl p-3 border border-slate-200/90 shadow-2xs">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-[11px] font-bold text-slate-700">دقت پردازش</span>
-            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600"  strokeWidth={1.5}/>
-          </div>
-          <div className="text-sm font-extrabold text-emerald-600">
-            {overviewLoading ? '...' : toPersianDigits(overview?.verifiedMovements || 0)}
-          </div>
-          <span className="text-[9px] text-emerald-600 font-bold block mt-1">movement canonical تأییدشده</span>
-        </div>
-      </div>
-
-      {/* 3. Action Buttons */}
-      <div className="grid grid-cols-2 gap-2">
-        <button
-          onClick={() => onNavigateTab('picking')}
-          className="p-2.5 bg-white border border-slate-200/90 rounded-xl text-right flex items-center gap-2 hover:bg-slate-50 shadow-2xs"
-        >
-          <ScanLine className="w-4 h-4 text-amber-600 shrink-0"  strokeWidth={1.5}/>
-          <div>
-            <span className="text-[11px] font-bold text-slate-800 block">شروع جمع‌آوری</span>
-            <span className="text-[9px] text-slate-400 block">اسکن اقلام سفارش</span>
-          </div>
-        </button>
-
-        <button
-          onClick={() => onNavigateTab('packing')}
-          className="p-2.5 bg-white border border-slate-200/90 rounded-xl text-right flex items-center gap-2 hover:bg-slate-50 shadow-2xs"
-        >
-          <Package className="w-4 h-4 text-blue-600 shrink-0"  strokeWidth={1.5}/>
-          <div>
-            <span className="text-[11px] font-bold text-slate-800 block">میز بسته‌بندی</span>
-            <span className="text-[9px] text-slate-400 block">چاپ فاکتور و برچسب</span>
-          </div>
-        </button>
-      </div>
+        ) : <p className="pb-3 text-sm text-slate-600">{data ? 'گزارش ظرفیت در دسترس نیست.' : 'در حال دریافت گزارش ظرفیت…'}</p>}
+      </details>
     </div>
   );
-};
+}

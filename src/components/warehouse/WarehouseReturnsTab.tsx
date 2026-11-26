@@ -1,8 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { CheckCircle2, ClipboardCheck, PackageCheck, RefreshCw, Truck, XCircle } from 'lucide-react';
+import React, { useCallback, useEffect, useId, useState } from 'react';
+import { CheckCircle2, ClipboardCheck, PackageCheck, RefreshCw, RotateCcw, Truck, XCircle } from 'lucide-react';
 import { useToast } from '../../context/ToastContext';
 import { CarrierOptionDto, ReturnFinancialEventDto, ReturnParcelDto, SupplierReturnRequestDto, warehouseReturnsApi } from '../../services/supplierApi';
 import { apiRequest } from '../../services/apiClient';
+import { SupplierDialog, SupplierDialogHeading } from '../supplier/SupplierDialog';
+import { SupplierEmptyState, SupplierResourceState } from '../supplier/SupplierResourceState';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
 
 const labels: Record<string, string> = {
   awaiting_return_test: 'در انتظار بررسی', approved: 'تأیید شده', rejected: 'رد شده', packed: 'بسته‌بندی شده',
@@ -50,33 +53,29 @@ const statusLabel: Record<string, string> = {
 export const WarehousePriceReviewSection: React.FC<{ returnId: string | null }> = ({ returnId }) => {
   const { success, error } = useToast();
   const [reviews, setReviews] = useState<PriceReview[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-  const [backendInactive, setBackendInactive] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [agreed, setAgreed] = useState<Record<string, string>>({});
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    if (!returnId) { setReviews([]); setLoaded(false); setBackendInactive(false); return; }
+    if (!returnId) return;
     setLoading(true);
-    setBackendInactive(false);
+    setLoadError('');
     try {
       const data = await apiRequest<PriceReview[] | { reviews?: PriceReview[] }>(
         `/warehouse/returns/${encodeURIComponent(returnId)}/price-review`,
         { method: 'GET', auth: true },
       );
       setReviews(Array.isArray(data) ? data : (data.reviews || []));
-      setLoaded(true);
     } catch (cause) {
       setReviews([]);
-      setLoaded(true);
-      setBackendInactive(true);
-      error(cause instanceof Error ? cause.message : 'دریافت بازبینی‌های قیمت انجام نشد.');
+      setLoadError(cause instanceof Error ? cause.message : 'دریافت بازبینی‌های قیمت انجام نشد.');
     } finally {
       setLoading(false);
     }
-  }, [returnId, error]);
+  }, [returnId]);
 
   useEffect(() => { void reload(); }, [reload]);
 
@@ -122,51 +121,23 @@ export const WarehousePriceReviewSection: React.FC<{ returnId: string | null }> 
     }
   };
 
-  if (!returnId) {
-    return (
-      <section className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-2">
-        <h4 className="text-xs font-extrabold text-slate-800">بازبینی قیمت مرجوعی</h4>
-        <p className="text-[11px] leading-relaxed text-slate-500">
-          بازبینی قیمت را تو — انباردار — بررسی می‌کنی: مرسوله دست توست و مبلغ واقعی پرداختی در پست با فاکتور قابل راستی‌آزمایی است. اول یک مرجوعی از فهرست بالا انتخاب کن تا درخواست‌های بازبینی آن اینجا بیاید.
-        </p>
-      </section>
-    );
-  }
+  if (!returnId) return null;
 
   return (
-    <section className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-2.5">
-      <div className="flex items-center justify-between">
-        <h4 className="text-xs font-extrabold text-slate-800">بازبینی قیمت مرجوعی — تصمیم انباردار</h4>
-        <button
-          type="button"
-          onClick={() => void reload()}
-          disabled={loading}
-          className="p-1.5 rounded-xl border border-slate-200 text-slate-600 disabled:opacity-50"
-          title="به‌روزرسانی"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} strokeWidth={1.5} />
-        </button>
-      </div>
-      <p className="text-[11px] leading-relaxed text-slate-500">
-        مشتری قیمت تعرفه (سقف تعرفهٔ نرخنامهٔ پستی) را با مبلغی که واقعاً در پست پرداخته مقایسه می‌کند؛ اگر متفاوت بود، درخواست بازبینی می‌فرستد. با پذیرش، مبلغ توافقی جایگزین قیمت تعرفهٔ همان گروه در تسویه می‌شود. توافق بالاتر از سقف تعرفه فقط با فاکتور پیوست‌شده ممکن است.
-      </p>
-      {loading && !loaded ? (
-        <p className="text-[11px] text-slate-400 text-center py-2">در حال دریافت بازبینی‌های قیمت…</p>
-      ) : backendInactive ? (
-        <p className="text-[11px] leading-relaxed text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-2.5">
-          بخش بازبینی قیمت هنوز در بک‌اند فعال نشده است؛ پس از فعال‌شدن، درخواست‌های این مرجوعی اینجا نمایش داده می‌شوند.
-        </p>
-      ) : reviews.length === 0 ? (
-        <p className="text-[11px] text-slate-400 text-center py-2">برای این مرجوعی درخواست بازبینی قیمتی ثبت نشده است.</p>
-      ) : (
+    <section className="space-y-3">
+      <SupplierResourceState loading={loading} error={loadError} retry={() => void reload()} />
+      {!loading && !loadError && reviews.length === 0 && (
+        <p role="status" className="rounded-xl bg-brand-bg p-3 text-sm text-slate-700">برای این مرجوعی درخواست بازبینی قیمت ثبت نشده است.</p>
+      )}
+      {!loading && !loadError && reviews.length > 0 && (
         <div className="space-y-2.5">
           {reviews.map((review) => {
             const agreedPrice = agreedOf(review);
             const invoice = invoiceOf(review);
             const decisionReason = reasonOf(review);
             return (
-              <div key={review.id} className="rounded-xl border border-slate-200 p-3 space-y-2 text-xs bg-slate-50/50">
-                <div className="flex items-start justify-between gap-2">
+              <div key={review.id} className="space-y-3 rounded-2xl border border-brand-border bg-brand-bg p-3 text-sm">
+                <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
                     {review.groupKey && <span className="text-xs font-black text-slate-800">گروه {review.groupKey}</span>}
                     {review.note && <span className="text-[11px] text-slate-500 block mt-0.5">یادداشت مشتری: {review.note}</span>}
@@ -175,24 +146,24 @@ export const WarehousePriceReviewSection: React.FC<{ returnId: string | null }> 
                     {statusLabel[review.status] || review.status}
                   </span>
                 </div>
-                <div className="rounded-xl bg-white border border-slate-200 p-2.5 text-[11px] space-y-1">
-                  <div className="flex justify-between">
+                <div className="space-y-2 rounded-xl border border-brand-border bg-white p-3 text-sm">
+                  <div className="flex flex-wrap justify-between gap-2">
                     <span className="text-slate-500">مبلغ پیشنهادی مشتری (پرداختی در پست)</span>
                     <span className="font-bold text-slate-800">{new Intl.NumberFormat('fa-IR').format(priceOf(review))} تومان</span>
                   </div>
                   {agreedPrice !== null && (
-                    <div className="flex justify-between">
+                    <div className="flex flex-wrap justify-between gap-2">
                       <span className="text-slate-500">مبلغ توافقی</span>
                       <span className="font-bold text-slate-800">{new Intl.NumberFormat('fa-IR').format(agreedPrice)} تومان</span>
                     </div>
                   )}
                   {invoice ? (
-                    <div className="flex justify-between items-center">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="text-slate-500">فاکتور مبلغ پرداختی</span>
                       <a href={invoice} target="_blank" rel="noreferrer" className="font-bold text-blue-700 underline">مشاهدهٔ فاکتور</a>
                     </div>
                   ) : (
-                    <p className="text-slate-400">فاکتور پیوست نشده است — توافق بالاتر از سقف تعرفه بدون فاکتور ممکن نیست.</p>
+                    <p className="text-slate-700">برای توافق بالاتر از سقف تعرفه، فاکتور پرداخت لازم است.</p>
                   )}
                   {decisionReason && (
                     <p className="text-slate-500">دلیل تصمیم: <span className="text-slate-700">{decisionReason}</span></p>
@@ -207,7 +178,7 @@ export const WarehousePriceReviewSection: React.FC<{ returnId: string | null }> 
                         inputMode="numeric"
                         value={agreed[review.id] ?? String(priceOf(review))}
                         onChange={(e) => setAgreed((current) => ({ ...current, [review.id]: e.target.value }))}
-                        className="w-full rounded-xl border border-slate-200 bg-white p-2.5 text-sm font-mono font-bold text-center"
+                        className="min-h-11 w-full rounded-xl border border-slate-300 bg-white p-2.5 text-center font-mono text-sm font-bold"
                         dir="ltr"
                       />
                     </label>
@@ -218,7 +189,7 @@ export const WarehousePriceReviewSection: React.FC<{ returnId: string | null }> 
                         value={reasons[review.id] ?? ''}
                         onChange={(e) => setReasons((current) => ({ ...current, [review.id]: e.target.value }))}
                         placeholder="مثلاً: مطابق فاکتور پیوست"
-                        className="w-full rounded-xl border border-slate-200 bg-white p-2.5 text-xs"
+                        className="min-h-11 w-full rounded-xl border border-slate-300 bg-white p-2.5 text-sm"
                       />
                     </label>
                     <div className="grid grid-cols-2 gap-2">
@@ -226,7 +197,7 @@ export const WarehousePriceReviewSection: React.FC<{ returnId: string | null }> 
                         type="button"
                         disabled={busyId === review.id}
                         onClick={() => void decide(review, 'accept')}
-                        className="flex items-center justify-center gap-1.5 min-h-[44px] px-4 rounded-xl bg-blue-700 text-white text-xs font-bold hover:bg-blue-800 disabled:opacity-50"
+                        className="min-h-11 rounded-xl bg-brand-deep px-3 py-2 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60"
                       >
                         <span>تأیید با مبلغ توافقی</span>
                       </button>
@@ -234,7 +205,7 @@ export const WarehousePriceReviewSection: React.FC<{ returnId: string | null }> 
                         type="button"
                         disabled={busyId === review.id}
                         onClick={() => void decide(review, 'reject')}
-                        className="flex items-center justify-center gap-1.5 min-h-[44px] px-4 rounded-xl bg-rose-600 text-white text-xs font-bold hover:bg-rose-700 disabled:opacity-50"
+                        className="min-h-11 rounded-xl border border-rose-200 bg-white px-3 py-2 text-sm font-bold text-rose-800 focus-visible:ring-2 focus-visible:ring-rose-700 disabled:opacity-60"
                       >
                         <span>رد درخواست بازبینی</span>
                       </button>
@@ -250,54 +221,300 @@ export const WarehousePriceReviewSection: React.FC<{ returnId: string | null }> 
   );
 };
 
-export const WarehouseReturnsTab: React.FC = () => {
+type ParcelDraft = {
+  quantity: string;
+  carrierCode: string;
+  paymentMethod: 'sender_pays' | 'receiver_pays';
+  origin: string;
+  destination: string;
+  lengthMm: string;
+  widthMm: string;
+  heightMm: string;
+  weightGrams: string;
+  finalCharge: string;
+  finalChargeSource: 'manual' | 'tariff';
+  finalChargeReference: string;
+};
+
+const fa = new Intl.NumberFormat('fa-IR');
+const inputClass = 'min-h-11 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-base focus-visible:outline-2 focus-visible:outline-brand sm:text-sm';
+const primaryClass = 'inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-deep px-4 py-2 text-sm font-bold text-white hover:bg-brand-deep/90 focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60 sm:w-auto';
+const secondaryClass = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-brand-border bg-white px-3 py-2 text-sm font-bold text-brand-deep hover:bg-brand-bg focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60';
+
+function ParcelFields({ value, carriers, update, disabled, quote, create }: {
+  value: ParcelDraft;
+  carriers: CarrierOptionDto[];
+  update: (patch: Partial<ParcelDraft>) => void;
+  disabled: boolean;
+  quote: () => void;
+  create: () => void;
+}) {
+  const activeCarriers = carriers.filter(carrier =>
+    value.paymentMethod === 'sender_pays' ? carrier.supportsSenderPays : carrier.supportsReceiverPays);
+  const fields = [
+    ['quantity', 'تعداد اقلام'],
+    ['lengthMm', 'طول (میلی‌متر)'],
+    ['widthMm', 'عرض (میلی‌متر)'],
+    ['heightMm', 'ارتفاع (میلی‌متر)'],
+    ['weightGrams', 'وزن (گرم)'],
+    ['finalCharge', 'مبلغ نهایی (تومان)'],
+  ] as const;
+
+  return (
+    <form onSubmit={event => { event.preventDefault(); if (!disabled) create(); }} className="space-y-3 pt-2">
+      <fieldset disabled={disabled} className="grid min-w-0 gap-3 text-sm text-slate-700 sm:grid-cols-2">
+        <label className="min-w-0 space-y-1">مبدأ
+          <input value={value.origin} required onChange={event => update({ origin: event.target.value })} className={inputClass} />
+        </label>
+        <label className="min-w-0 space-y-1">مقصد
+          <input value={value.destination} required onChange={event => update({ destination: event.target.value })} className={inputClass} />
+        </label>
+        <label className="min-w-0 space-y-1">روش پرداخت
+          <select value={value.paymentMethod} onChange={event => update({ paymentMethod: event.target.value as ParcelDraft['paymentMethod'] })} className={inputClass}>
+            <option value="sender_pays">پرداخت فرستنده</option>
+            <option value="receiver_pays">پس‌کرایه گیرنده</option>
+          </select>
+        </label>
+        <label className="min-w-0 space-y-1">شرکت حمل
+          <select value={value.carrierCode} onChange={event => update({ carrierCode: event.target.value })} className={inputClass}>
+            {activeCarriers.map(carrier => <option key={carrier.code} value={carrier.code}>{carrier.displayName}</option>)}
+          </select>
+        </label>
+        {fields.map(([key, label]) => (
+          <label key={key} className="min-w-0 space-y-1">{label}
+            <input type="number" min={key === 'finalCharge' ? 0 : 1} step="1" required={key !== 'finalCharge'}
+              inputMode="numeric" dir="ltr" value={value[key]} onChange={event => update({ [key]: event.target.value })} className={inputClass} />
+          </label>
+        ))}
+        <label className="min-w-0 space-y-1 sm:col-span-2">مرجع مبلغ
+          <input value={value.finalChargeReference} onChange={event => update({ finalChargeReference: event.target.value })} className={inputClass} />
+        </label>
+      </fieldset>
+      <div className="flex flex-wrap gap-2">
+        <button type="submit" disabled={disabled} className={primaryClass}>ثبت مرسوله</button>
+        <button type="button" disabled={disabled || !value.origin.trim() || !value.destination.trim() || Number(value.weightGrams) <= 0}
+          onClick={quote} className={secondaryClass}>استعلام تعرفه</button>
+      </div>
+    </form>
+  );
+}
+
+export function WarehouseReturnsTab() {
   const { success, error } = useToast();
+  const priceReviewTitleId = useId();
   const [items, setItems] = useState<SupplierReturnRequestDto[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [qc, setQc] = useState<Record<string, { accepted: string; failed: string }>>({});
   const [parcels, setParcels] = useState<Record<string, ReturnParcelDto[]>>({});
-  const [parcelForm, setParcelForm] = useState<Record<string, { quantity:string; carrierCode:string; paymentMethod:'sender_pays'|'receiver_pays'; origin:string; destination:string; lengthMm:string; widthMm:string; heightMm:string; weightGrams:string; finalCharge:string; finalChargeSource:'manual'|'tariff'; finalChargeReference:string }>>({});
-  const [quotes, setQuotes] = useState<Record<string, number>>({});
+  const [parcelForm, setParcelForm] = useState<Record<string, ParcelDraft>>({});
   const [financialEvents, setFinancialEvents] = useState<Record<string, ReturnFinancialEventDto[]>>({});
   const [carriers, setCarriers] = useState<CarrierOptionDto[]>([]);
   const [priceReviewReturnId, setPriceReviewReturnId] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    setLoading(true);
+  const reload = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true);
+    setLoadError('');
     try { setItems((await warehouseReturnsApi.list()).returns || []); }
-    catch (cause) { error(cause instanceof Error ? cause.message : 'صف مرجوعی‌ها دریافت نشد.'); }
-    finally { setLoading(false); }
+    catch (cause) { setLoadError(cause instanceof Error ? cause.message : 'صف مرجوعی‌ها دریافت نشد.'); }
+    finally { if (showLoading) setLoading(false); }
+  }, []);
+  const loadParcels = useCallback(async (id: string) => {
+    try {
+      const [response, finance] = await Promise.all([warehouseReturnsApi.getParcels(id), warehouseReturnsApi.getFinancialEvents(id)]);
+      setParcels(current => ({ ...current, [id]: response.parcels || [] }));
+      setFinancialEvents(current => ({ ...current, [id]: finance.events || [] }));
+    } catch (cause) {
+      error(cause instanceof Error ? cause.message : 'مرسوله‌ها دریافت نشدند.');
+    }
   }, [error]);
 
-  useEffect(() => { void reload(); void warehouseReturnsApi.getCarrierOptions().then((response) => setCarriers(response.carriers || [])).catch(() => undefined); }, [reload]);
-  useEffect(() => { items.filter((item) => ['approved','packed','in_transit','received_pending_qc'].includes(item.status)).forEach((item) => { void loadParcels(item.id); }); }, [items]);
+  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => { void warehouseReturnsApi.getCarrierOptions().then(response => setCarriers(response.carriers || [])).catch(() => undefined); }, []);
+  useEffect(() => {
+    items.filter(item => ['approved', 'packed', 'pickup_pending', 'postal_pending', 'in_transit', 'received_pending_qc'].includes(item.status))
+      .forEach(item => { void loadParcels(item.id); });
+  }, [items, loadParcels]);
 
   const run = async (id: string, operation: () => Promise<unknown>, message: string) => {
+    if (busy) return;
     setBusy(id);
-    try { await operation(); success(message); await reload(); }
+    try { await operation(); success(message); await reload(false); }
     catch (cause) { error(cause instanceof Error ? cause.message : 'عملیات انجام نشد.'); }
     finally { setBusy(null); }
   };
 
-  const loadParcels = async (id: string) => { try { const [response, finance] = await Promise.all([warehouseReturnsApi.getParcels(id), warehouseReturnsApi.getFinancialEvents(id)]); setParcels((current) => ({ ...current, [id]: response.parcels || [] })); setFinancialEvents((current) => ({ ...current, [id]: finance.events || [] })); } catch (cause) { error(cause instanceof Error ? cause.message : 'مرسوله‌ها دریافت نشدند.'); } };
-  const parcelDefaults = (id: string) => parcelForm[id] || { quantity:'1', carrierCode:'tipax', paymentMethod:'sender_pays' as const, origin:'انبار مرکزی تهران', destination:'', lengthMm:'200', widthMm:'150', heightMm:'100', weightGrams:'1000', finalCharge:'', finalChargeSource:'manual' as const, finalChargeReference:'' };
-  const createParcel = async (item: SupplierReturnRequestDto) => { const value = parcelDefaults(item.id); if (!value.destination.trim() || Number(value.quantity) <= 0 || Number(value.lengthMm) <= 0 || Number(value.widthMm) <= 0 || Number(value.heightMm) <= 0 || Number(value.weightGrams) <= 0) { error('تعداد، مقصد، ابعاد و وزن باید معتبر باشند.'); return; } const finalCharge = value.finalCharge ? Number(value.finalCharge) : undefined; if (value.paymentMethod === 'sender_pays' && (!finalCharge || finalCharge <= 0)) { error('برای پرداخت فرستنده مبلغ نهایی الزامی است.'); return; } await run(item.id, async () => { await warehouseReturnsApi.createParcel(item.id, { quantity:Number(value.quantity), carrierCode:value.carrierCode, paymentMethod:value.paymentMethod, origin:value.origin, destination:value.destination, lengthMm:Number(value.lengthMm), widthMm:Number(value.widthMm), heightMm:Number(value.heightMm), weightGrams:Number(value.weightGrams), finalCharge, finalChargeSource: value.finalChargeSource, finalChargeReference:value.finalChargeReference }); await loadParcels(item.id); }, 'مرسوله ثبت شد.'); };
-  const quoteParcel = async (item: SupplierReturnRequestDto) => { const value = parcelDefaults(item.id); try { const quote = await warehouseReturnsApi.quote({ carrierCode:value.carrierCode, originRegion:value.origin, destinationRegion:value.destination, sizeClass:'size-4', weightGrams:Number(value.weightGrams) }); setQuotes((current) => ({ ...current, [item.id]: quote.charge })); setParcelForm((current) => ({ ...current, [item.id]: { ...value, finalCharge:String(quote.charge), finalChargeSource:'tariff' } })); success(`برآورد تعرفه نسخه ${quote.tariffVersion} ثبت شد.`); } catch (cause) { error(cause instanceof Error ? cause.message : 'تعرفه فعال برای این مسیر پیدا نشد.'); } };
+  const parcelDraft = (item: SupplierReturnRequestDto): ParcelDraft => parcelForm[item.id] || {
+    quantity: '1', carrierCode: 'tipax', paymentMethod: 'sender_pays',
+    origin: item.warehouseName || 'انبار مرکزی تهران', destination: '',
+    lengthMm: '200', widthMm: '150', heightMm: '100', weightGrams: '1000',
+    finalCharge: '', finalChargeSource: 'manual', finalChargeReference: '',
+  };
+
+  const createParcel = async (item: SupplierReturnRequestDto) => {
+    const value = parcelDraft(item);
+    const [quantity, lengthMm, widthMm, heightMm, weightGrams] = [value.quantity, value.lengthMm, value.widthMm, value.heightMm, value.weightGrams].map(Number);
+    if (!value.origin.trim() || !value.destination.trim() || [quantity, lengthMm, widthMm, heightMm, weightGrams].some(number => !Number.isSafeInteger(number) || number <= 0)) {
+      error('تعداد، مبدأ، مقصد، ابعاد و وزن را بررسی کنید.');
+      return;
+    }
+    const finalCharge = value.finalCharge ? Number(value.finalCharge) : undefined;
+    if (value.paymentMethod === 'sender_pays' && (!finalCharge || finalCharge <= 0)) {
+      error('برای پرداخت فرستنده مبلغ نهایی الزامی است.');
+      return;
+    }
+    await run(item.id, async () => {
+      await warehouseReturnsApi.createParcel(item.id, {
+        quantity, carrierCode: value.carrierCode, paymentMethod: value.paymentMethod, origin: value.origin,
+        destination: value.destination, lengthMm, widthMm, heightMm, weightGrams, finalCharge,
+        finalChargeSource: value.finalChargeSource, finalChargeReference: value.finalChargeReference,
+      });
+      await loadParcels(item.id);
+    }, 'مرسوله ثبت شد.');
+  };
+
+  const quoteParcel = async (item: SupplierReturnRequestDto) => {
+    if (busy) return;
+    setBusy(item.id);
+    const value = parcelDraft(item);
+    try {
+      const quote = await warehouseReturnsApi.quote({
+        carrierCode: value.carrierCode, originRegion: value.origin, destinationRegion: value.destination,
+        sizeClass: 'size-4', weightGrams: Number(value.weightGrams),
+      });
+      setParcelForm(current => ({ ...current, [item.id]: { ...value, finalCharge: String(quote.charge), finalChargeSource: 'tariff' } }));
+      success(`برآورد تعرفه نسخه ${quote.tariffVersion} ثبت شد.`);
+    } catch (cause) {
+      error(cause instanceof Error ? cause.message : 'تعرفه فعال برای این مسیر پیدا نشد.');
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const action = (item: SupplierReturnRequestDto) => {
     const note = notes[item.id] || '';
-    if (item.status === 'awaiting_return_test') return <div className="grid grid-cols-2 gap-2"><button disabled={busy === item.id} onClick={() => run(item.id, () => warehouseReturnsApi.review(item.id, 'approved', note || 'تأیید بررسی اولیه'), 'درخواست تأیید شد.')} className="flex items-center justify-center gap-1 rounded-xl bg-emerald-600 py-2 text-[10px] font-bold text-white disabled:opacity-50"><CheckCircle2 className="h-3.5 w-3.5"  strokeWidth={1.5}/>تأیید</button><button disabled={busy === item.id} onClick={() => run(item.id, () => warehouseReturnsApi.review(item.id, 'rejected', note || 'رد بررسی اولیه'), 'درخواست رد و رزرو آزاد شد.')} className="flex items-center justify-center gap-1 rounded-xl bg-rose-600 py-2 text-[10px] font-bold text-white disabled:opacity-50"><XCircle className="h-3.5 w-3.5"  strokeWidth={1.5}/>رد</button></div>;
-    if (item.status === 'approved') { const value = parcelDefaults(item.id); const activeCarriers = carriers.filter((carrier) => value.paymentMethod === 'sender_pays' ? carrier.supportsSenderPays : carrier.supportsReceiverPays); return <div className="space-y-2"><div className="grid grid-cols-2 gap-2"><input aria-label="تعداد parcel" type="number" min="1" value={value.quantity} onChange={(event)=>setParcelForm((current)=>({...current,[item.id]:{...value,quantity:event.target.value}}))} className="rounded-lg border p-2 text-xs" placeholder="تعداد"/><select aria-label="شرکت حمل" value={value.carrierCode} onChange={(event)=>setParcelForm((current)=>({...current,[item.id]:{...value,carrierCode:event.target.value}}))} className="rounded-lg border p-2 text-xs">{activeCarriers.map((carrier)=><option key={carrier.code} value={carrier.code}>{carrier.displayName}</option>)}</select><select aria-label="روش پرداخت" value={value.paymentMethod} onChange={(event)=>setParcelForm((current)=>({...current,[item.id]:{...value,paymentMethod:event.target.value as 'sender_pays'|'receiver_pays'}}))} className="rounded-lg border p-2 text-xs"><option value="sender_pays">پرداخت فرستنده</option><option value="receiver_pays">پس‌کرایه گیرنده</option></select><input aria-label="مقصد" value={value.destination} onChange={(event)=>setParcelForm((current)=>({...current,[item.id]:{...value,destination:event.target.value}}))} className="rounded-lg border p-2 text-xs" placeholder="مقصد واقعی"/></div><div className="grid grid-cols-4 gap-1"><input aria-label="طول" value={value.lengthMm} onChange={(event)=>setParcelForm((current)=>({...current,[item.id]:{...value,lengthMm:event.target.value}}))} className="rounded-lg border p-2 text-xs" placeholder="طول mm"/><input aria-label="عرض" value={value.widthMm} onChange={(event)=>setParcelForm((current)=>({...current,[item.id]:{...value,widthMm:event.target.value}}))} className="rounded-lg border p-2 text-xs" placeholder="عرض"/><input aria-label="ارتفاع" value={value.heightMm} onChange={(event)=>setParcelForm((current)=>({...current,[item.id]:{...value,heightMm:event.target.value}}))} className="rounded-lg border p-2 text-xs" placeholder="ارتفاع"/><input aria-label="وزن" value={value.weightGrams} onChange={(event)=>setParcelForm((current)=>({...current,[item.id]:{...value,weightGrams:event.target.value}}))} className="rounded-lg border p-2 text-xs" placeholder="وزن g"/></div><div className="grid grid-cols-2 gap-2"><input aria-label="مبلغ نهایی" value={value.finalCharge} onChange={(event)=>setParcelForm((current)=>({...current,[item.id]:{...value,finalCharge:event.target.value}}))} className="rounded-lg border p-2 text-xs" placeholder="مبلغ نهایی"/><input aria-label="مرجع مبلغ" value={value.finalChargeReference} onChange={(event)=>setParcelForm((current)=>({...current,[item.id]:{...value,finalChargeReference:event.target.value}}))} className="rounded-lg border p-2 text-xs" placeholder="مرجع استعلام دستی"/></div><div className="grid grid-cols-2 gap-2"><button disabled={busy === item.id} onClick={() => void quoteParcel(item)} className="rounded-xl bg-indigo-50 py-2 text-[10px] font-bold text-indigo-700 disabled:opacity-50">استعلام تعرفه</button><button disabled={busy === item.id} onClick={() => void createParcel(item)} className="rounded-xl bg-amber-600 py-2 text-[10px] font-bold text-white disabled:opacity-50">ثبت مرسوله</button></div></div>; }
-    if (['packed', 'pickup_pending', 'postal_pending'].includes(item.status)) return <button disabled={busy === item.id} onClick={() => run(item.id, () => warehouseReturnsApi.handover(item.id), 'تحویل فیزیکی ثبت شد.')} className="flex w-full items-center justify-center gap-1 rounded-xl bg-blue-600 py-2 text-[10px] font-bold text-white disabled:opacity-50"><Truck className="h-3.5 w-3.5"  strokeWidth={1.5}/>ثبت تحویل</button>;
-    if (item.status === 'in_transit') return <button disabled={busy === item.id} onClick={() => run(item.id, () => warehouseReturnsApi.receive(item.id), 'دریافت ثبت و کالا قرنطینه شد.')} className="flex w-full items-center justify-center gap-1 rounded-xl bg-indigo-600 py-2 text-[10px] font-bold text-white disabled:opacity-50"><PackageCheck className="h-3.5 w-3.5"  strokeWidth={1.5}/>ثبت دریافت</button>;
+    const noteField = <label className="block space-y-1 text-sm font-medium text-slate-700">یادداشت عملیات
+      <input aria-label={`یادداشت ${item.id}`} value={note} onChange={event => setNotes(current => ({ ...current, [item.id]: event.target.value }))} className={inputClass} />
+    </label>;
+    if (item.status === 'awaiting_return_test') return (
+      <div className="space-y-3">
+        {noteField}
+        <div className="flex flex-wrap gap-2">
+          <button type="button" disabled={busy !== null} className={primaryClass}
+            onClick={() => void run(item.id, () => warehouseReturnsApi.review(item.id, 'approved', note || 'تأیید بررسی اولیه'), 'درخواست تأیید شد.')}>
+            <CheckCircle2 aria-hidden="true" className="size-4" />تأیید درخواست
+          </button>
+          <button type="button" disabled={busy !== null} className={secondaryClass}
+            onClick={() => void run(item.id, () => warehouseReturnsApi.review(item.id, 'rejected', note || 'رد بررسی اولیه'), 'درخواست رد و رزرو آزاد شد.')}>
+            <XCircle aria-hidden="true" className="size-4 text-rose-700" />رد درخواست
+          </button>
+        </div>
+      </div>
+    );
+    if (item.status === 'approved') return (
+      <details className="rounded-xl border border-brand-border bg-brand-bg px-3">
+        <summary className="min-h-11 cursor-pointer py-2.5 text-sm font-extrabold text-brand-deep">ثبت مرسوله برگشت</summary>
+        <div className="pb-3">
+          <ParcelFields value={parcelDraft(item)} carriers={carriers} disabled={busy !== null}
+            update={patch => setParcelForm(current => ({ ...current, [item.id]: { ...parcelDraft(item), ...patch } }))}
+            quote={() => void quoteParcel(item)} create={() => void createParcel(item)} />
+        </div>
+      </details>
+    );
+    if (['packed', 'pickup_pending', 'postal_pending'].includes(item.status)) return (
+      <button type="button" disabled={busy !== null} className={primaryClass}
+        onClick={() => void run(item.id, () => warehouseReturnsApi.handover(item.id), 'تحویل فیزیکی ثبت شد.')}>
+        <Truck aria-hidden="true" className="size-4" />ثبت تحویل
+      </button>
+    );
+    if (item.status === 'in_transit') return (
+      <button type="button" disabled={busy !== null} className={primaryClass}
+        onClick={() => void run(item.id, () => warehouseReturnsApi.receive(item.id), 'دریافت ثبت و کالا قرنطینه شد.')}>
+        <PackageCheck aria-hidden="true" className="size-4" />ثبت دریافت
+      </button>
+    );
     if (item.status === 'received_pending_qc') {
       const value = qc[item.id] || { accepted: String(item.requestedQuantity), failed: '0' };
-      return <div className="space-y-2"><div className="grid grid-cols-2 gap-2"><input aria-label="تعداد سالم" type="number" min="0" value={value.accepted} onChange={(event) => setQc((current) => ({ ...current, [item.id]: { ...value, accepted: event.target.value } }))} className="rounded-lg border p-2 text-xs" placeholder="سالم" /><input aria-label="تعداد مردود" type="number" min="0" value={value.failed} onChange={(event) => setQc((current) => ({ ...current, [item.id]: { ...value, failed: event.target.value } }))} className="rounded-lg border p-2 text-xs" placeholder="مردود" /></div><button disabled={busy === item.id} onClick={() => run(item.id, () => warehouseReturnsApi.inspect(item.id, Number(value.accepted), Number(value.failed), note || 'نتیجه QC ثبت شد'), 'نتیجه QC ثبت شد.')} className="flex w-full items-center justify-center gap-1 rounded-xl bg-amber-600 py-2 text-[10px] font-bold text-white disabled:opacity-50"><ClipboardCheck className="h-3.5 w-3.5"  strokeWidth={1.5}/>ثبت نتیجه QC</button></div>;
+      return (
+        <form className="space-y-3" onSubmit={event => {
+          event.preventDefault();
+          void run(item.id, () => warehouseReturnsApi.inspect(item.id, Number(value.accepted), Number(value.failed), note || 'نتیجه QC ثبت شد'), 'نتیجه QC ثبت شد.');
+        }}>
+          <div className="grid grid-cols-2 gap-2 text-sm text-slate-700">
+            <label className="min-w-0 space-y-1">تعداد سالم
+              <input type="number" min="0" step="1" required value={value.accepted} className={inputClass}
+                onChange={event => setQc(current => ({ ...current, [item.id]: { ...value, accepted: event.target.value } }))} />
+            </label>
+            <label className="min-w-0 space-y-1">تعداد مردود
+              <input type="number" min="0" step="1" required value={value.failed} className={inputClass}
+                onChange={event => setQc(current => ({ ...current, [item.id]: { ...value, failed: event.target.value } }))} />
+            </label>
+          </div>
+          {noteField}
+          <button type="submit" disabled={busy !== null} className={primaryClass}>
+            <ClipboardCheck aria-hidden="true" className="size-4" />ثبت نتیجه کنترل کیفیت
+          </button>
+        </form>
+      );
     }
     return null;
   };
 
-  return <div className="space-y-3.5 pb-6"><div className="flex items-center justify-between rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs"><div><h3 className="text-xs font-bold text-slate-800">مرجوعی‌های تأمین‌کنندگان</h3><p className="mt-1 text-[10px] leading-relaxed text-slate-500">صف عملیاتی متصل به درخواست‌های واقعی، رزرو موجودی، handover و QC.</p></div><button onClick={() => void reload()} disabled={loading} className="rounded-xl border border-slate-200 p-2 text-slate-600 disabled:opacity-50" title="به‌روزرسانی"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`}  strokeWidth={1.5}/></button></div>{loading ? <div className="rounded-2xl bg-white p-6 text-center text-xs text-slate-500">در حال دریافت صف...</div> : items.length === 0 ? <div className="rounded-2xl bg-white p-6 text-center text-xs text-slate-500">درخواست مرجوعی فعالی وجود ندارد.</div> : <div className="space-y-3">{items.map((item) => <section key={item.id} className="space-y-2.5 rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs"><div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-2"><div><span className="font-mono text-xs font-black text-slate-800">{item.id}</span><span className="mt-0.5 block text-[10px] text-slate-400">کالا: {item.productTitle} · تعداد: {item.requestedQuantity}</span></div><span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">{labels[item.status] || item.status}</span></div><div className="rounded-xl bg-slate-50 p-2 text-[10px] text-slate-600"><p>روش: {item.collectionMethod === 'postal' ? 'ارسال با شرکت حمل' : 'تحویل توسط تأمین‌کننده'}</p><p className="mt-1 font-bold text-slate-800">علت: {item.reason}</p></div><input aria-label={`یادداشت ${item.id}`} value={notes[item.id] || ''} onChange={(event) => setNotes((current) => ({ ...current, [item.id]: event.target.value }))} placeholder="یادداشت عملیات / علت تصمیم" className="w-full rounded-lg border p-2 text-xs" />{action(item)}<button onClick={() => setPriceReviewReturnId(item.id)} className="w-full rounded-xl bg-indigo-50 py-2 text-[10px] font-bold text-indigo-700">بازبینی قیمت مرجوعی</button>{(parcels[item.id] || []).map((parcel) => <div key={parcel.id} className="space-y-1 rounded-xl border border-slate-200 p-2 text-[10px] text-slate-600"><p>مرسوله {parcel.parcelNumber} · {parcel.status} · {parcel.paymentMethod} · مبلغ نهایی: {parcel.finalCharge || 'ثبت نشده'}</p><p>{parcel.origin} ← {parcel.destination} · {parcel.weightGrams}g · {parcel.lengthMm}×{parcel.widthMm}×{parcel.heightMm}mm</p>{parcel.status === 'draft' && <button disabled={busy === item.id} onClick={() => run(item.id, () => warehouseReturnsApi.confirmCharge(item.id, parcel.id), 'اثر مالی مرسوله تأیید شد.')} className="rounded-lg bg-emerald-600 px-3 py-1.5 font-bold text-white disabled:opacity-50">تأیید مبلغ و اثر مالی</button>}{(financialEvents[item.id] || []).filter((event) => event.parcelId === parcel.id).map((event) => <p key={event.id} className="text-[9px] text-emerald-700">{event.operation} · {event.amount} · ledger: {event.ledgerEntryId || 'بدون debit'}</p>)}</div>)}</section>)}</div>}<WarehousePriceReviewSection returnId={priceReviewReturnId} /></div>;
-};
+  return (
+    <div className="space-y-4 pb-6">
+      <SupplierSectionHeading title="مرجوعی تأمین‌کنندگان" description="درخواست‌ها، تحویل مرسوله و نتیجه کنترل کیفیت را ثبت کنید." icon={<RotateCcw />}
+        action={<button type="button" onClick={() => void reload()} disabled={loading || busy !== null} className={secondaryClass}>
+          <RefreshCw aria-hidden="true" className={`size-4 ${loading ? 'motion-safe:animate-spin' : ''}`} />به‌روزرسانی
+        </button>} />
+      <SupplierResourceState loading={loading} error={loadError} retry={() => void reload()} />
+      {!loading && !loadError && items.length === 0 && <SupplierEmptyState icon={<RotateCcw />} title="درخواست مرجوعی فعالی وجود ندارد." />}
+      {!loading && !loadError && items.map(item => (
+        <section key={item.id} className="min-w-0 space-y-3 rounded-[22px] border border-brand-border bg-white p-4 shadow-sm sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div className="min-w-0">
+              <h3 className="break-words text-base font-extrabold text-slate-900">{item.productTitle}</h3>
+              <p className="text-sm text-slate-600">{fa.format(item.requestedQuantity)} عدد{item.warehouseName && ` · ${item.warehouseName}`}</p>
+            </div>
+            <span className="rounded-full bg-brand-soft px-3 py-1 text-xs font-bold text-brand-deep">{labels[item.status] || item.status}</span>
+          </div>
+          {action(item)}
+          {(parcels[item.id] || []).filter(parcel => parcel.status === 'draft').map(parcel => (
+            <div key={parcel.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-brand-bg p-3 text-sm text-slate-700">
+              <p>مرسوله {fa.format(parcel.parcelNumber)}{parcel.finalCharge != null && ` · ${fa.format(parcel.finalCharge)} تومان`}</p>
+              <button type="button" disabled={busy !== null} className={secondaryClass}
+                onClick={() => void run(item.id, async () => {
+                  await warehouseReturnsApi.confirmCharge(item.id, parcel.id);
+                  await loadParcels(item.id);
+                }, 'اثر مالی مرسوله تأیید شد.')}>تأیید مبلغ و اثر مالی</button>
+            </div>
+          ))}
+          <details className="border-t border-brand-border">
+            <summary className="min-h-11 cursor-pointer py-2.5 text-sm font-bold text-brand-deep">جزئیات مرجوعی و مرسوله‌ها</summary>
+            <div className="space-y-2 text-sm text-slate-700">
+              <p>شناسه <bdi className="break-all font-mono">{item.id}</bdi></p>
+              <p>{item.collectionMethod === 'postal' ? 'ارسال با شرکت حمل' : 'تحویل توسط تأمین‌کننده'}</p>
+              {item.reason && <p className="break-words">علت {item.reason}</p>}
+              {(parcels[item.id] || []).map(parcel => (
+                <div key={parcel.id} className="space-y-1 rounded-xl border border-brand-border p-3">
+                  <p>مرسوله {fa.format(parcel.parcelNumber)} · {labels[parcel.status] || parcel.status} · {parcel.paymentMethod === 'sender_pays' ? 'پرداخت فرستنده' : 'پس‌کرایه گیرنده'}</p>
+                  <p>{parcel.origin} ← {parcel.destination} · {fa.format(parcel.weightGrams)} گرم · {fa.format(parcel.lengthMm)} × {fa.format(parcel.widthMm)} × {fa.format(parcel.heightMm)} میلی‌متر</p>
+                  {parcel.finalCharge != null && <p>مبلغ نهایی {fa.format(parcel.finalCharge)} تومان</p>}
+                  {(financialEvents[item.id] || []).filter(event => event.parcelId === parcel.id).map(event => <p key={event.id} className="text-emerald-800">
+                    <bdi>{event.operation}</bdi> · {fa.format(event.amount)} تومان{event.ledgerEntryId && <> · سند <bdi className="break-all font-mono">{event.ledgerEntryId}</bdi></>}
+                  </p>)}
+                </div>
+              ))}
+              <button type="button" onClick={() => setPriceReviewReturnId(item.id)} className={secondaryClass}>بازبینی قیمت مرجوعی</button>
+            </div>
+          </details>
+        </section>
+      ))}
+      {priceReviewReturnId && <SupplierDialog titleId={priceReviewTitleId} onDismiss={() => setPriceReviewReturnId(null)} wide>
+        <SupplierDialogHeading id={priceReviewTitleId} title="بازبینی قیمت مرجوعی" onClose={() => setPriceReviewReturnId(null)} />
+        <WarehousePriceReviewSection key={priceReviewReturnId} returnId={priceReviewReturnId} />
+      </SupplierDialog>}
+    </div>
+  );
+}

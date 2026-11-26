@@ -27,6 +27,7 @@ before(async () => {
       }));
     } }],
     stdin: { loader: 'tsx', resolveDir: process.cwd(), contents: `
+      import { useState } from 'react';
       import { createRoot } from 'react-dom/client';
       import { ToastProvider } from './src/context/ToastContext';
       import { SupplierVariantsModal } from './src/components/supplier/SupplierVariantsModal';
@@ -35,6 +36,15 @@ before(async () => {
       import { WarehouseQCTab } from './src/components/warehouse/WarehouseQCTab';
       import { WarehousePackingTab } from './src/components/warehouse/WarehousePackingTab';
       import { WarehousePickingTab } from './src/components/warehouse/WarehousePickingTab';
+      import { WarehouseShippingTab } from './src/components/warehouse/WarehouseShippingTab';
+      function OutboundFixture() {
+        const [picked, setPicked] = useState(null);
+        const [packed, setPacked] = useState(null);
+        if (packed) return <WarehouseShippingTab selectedOrderNumber={packed.number} selectedOrderId={packed.id} />;
+        if (picked) return <WarehousePackingTab selectedOrderNumber={picked.number} selectedOrderId={picked.id}
+          onGoToShipping={(number, id) => setPacked({ number, id })} />;
+        return <WarehousePickingTab onGoToPacking={(number, id) => setPicked({ number, id })} />;
+      }
       const views = {
         supplier: <SupplierVariantsModal productId="p1" productTitle="محصول نمونه" onClose={() => {}} />,
         receive: <WarehouseReceiveTab />,
@@ -44,6 +54,8 @@ before(async () => {
         returns: <WarehouseCustomerReturnsTab />,
         packing: <WarehousePackingTab onGoToShipping={() => {}} />,
         picking: <WarehousePickingTab onGoToPacking={() => {}} />,
+        outbound: <OutboundFixture />,
+        shippingMissing: <WarehouseShippingTab selectedOrderNumber="ORDER-1" selectedOrderId="missing" />,
       };
       window.printCount = 0;
       window.print = () => {
@@ -82,7 +94,7 @@ async function open(view: string, reply: (request: Request) => unknown) {
       if (response === 'disconnect') { void request.abort(); return; }
       const status = response instanceof ApiReply ? response.status : response === undefined ? 404 : 200;
       const body = response instanceof ApiReply ? response.body : response;
-      void request.respond({ status, contentType: 'application/json', body: JSON.stringify(body ?? {}) });
+      void request.respond({ status, contentType: 'application/json', body: JSON.stringify(body === undefined ? {} : body) });
     } else void request.abort();
   });
   await page.goto(origin + '/#' + view);
@@ -111,6 +123,62 @@ test('packing displays the variant and allocated code, then hides code elements 
   } finally { await close(); }
 });
 
+test('outbound handoffs preserve the selected order ID and submit the carrier tracking for that package', async () => {
+  const other = { id: 'order-other', orderNumber: 'ORDER-1', customerName: 'گیرنده دیگر', items: [] };
+  const target = { id: 'order-target', orderNumber: 'ORDER-1', customerName: 'گیرنده انتخاب‌شده', items: [] };
+  let shipped = false;
+  const { page, requests, close } = await open('outbound', request => {
+    if (request.path.endsWith('/ready-to-pick')) return { orders: [{ ...target, status: 'picking' }] };
+    if (request.path.endsWith('/complete-picking')) return { success: true, status: 'picked' };
+    if (request.path.endsWith('/ready-to-pack')) return { orders: [other, target] };
+    if (request.path.endsWith('/pack')) return { success: true, status: 'packed', trackingNumber: 'SYSTEM-1' };
+    if (request.path.endsWith('/ready-to-ship')) return { orders: shipped ? [other] : [other, { ...target, trackingCode: 'SYSTEM-1' }] };
+    if (request.path.endsWith('/manifests')) return [];
+    if (request.path.endsWith('/ship')) {
+      shipped = true;
+      return { success: true, status: 'shipped', ...request.body as Record<string, unknown> };
+    }
+  });
+  try {
+    await clickText(page, 'پایان جمع‌آوری');
+    await waitText(page, target.customerName);
+    assert.equal(await page.$eval('input[name=weightGrams]', input => (input as HTMLInputElement).value), '');
+    assert.doesNotMatch(await page.$eval('form', form => form.textContent ?? ''), /گیرنده دیگر/);
+    await fillInput(page, 'input[name=weightGrams]', '۴۲۵');
+    await clickText(page, 'ثبت بسته‌بندی');
+    await waitText(page, 'SYSTEM-1');
+    assert.ok(!requests.some(request => request.path.endsWith('/ready-to-ship')));
+    await clickText(page, 'ادامه به تحویل');
+    await waitText(page, 'SYSTEM-1');
+    assert.doesNotMatch(await page.$eval('form', form => form.textContent ?? ''), /گیرنده دیگر/);
+    await fillInput(page, 'input[name=trackingNumber]', 'POST-455');
+    await page.keyboard.press('Enter');
+    assert.ok(!requests.some(request => request.path.endsWith('/ship')));
+    await clickText(page, 'ثبت تحویل به شرکت حمل');
+    await waitText(page, 'POST-455');
+    assert.deepEqual(requests.filter(request => request.method === 'POST').map(request => [request.path, request.body]), [
+      ['/api/v1/warehouse/orders/order-target/complete-picking', null],
+      ['/api/v1/warehouse/orders/order-target/pack', { weightGrams: 425, boxSize: 'سایز ۲ (۲۰×۱۵×۱۰ سانتی‌متر)' }],
+      ['/api/v1/warehouse/orders/order-target/ship', { carrier: 'پست پیشتاز', trackingNumber: 'POST-455' }],
+    ]);
+  } finally { await close(); }
+});
+
+test('a missing outbound handoff does not offer to dispatch another order with the same displayed number', async () => {
+  const { page, requests, close } = await open('shippingMissing', request => {
+    if (request.path.endsWith('/ready-to-ship')) return { orders: [{ id: 'order-other', orderNumber: 'ORDER-1', customerName: 'گیرنده دیگر' }] };
+    if (request.path.endsWith('/manifests')) return [];
+  });
+  try {
+    await waitText(page, 'سفارش انتخاب‌شده در صف تحویل نیست.');
+    assert.equal(await page.$('form input[name=carrier]'), null);
+    assert.ok(!requests.some(request => request.method === 'POST'));
+    await clickText(page, 'مشاهدهٔ صف تحویل');
+    await waitText(page, 'گیرنده دیگر');
+    assert.ok(await page.$('form input[name=carrier]'));
+  } finally { await close(); }
+});
+
 test('supplier preview marks selected issued codes before handing the response sheet to print', async () => {
   const { page, requests, close } = await open('supplier', request => {
     if (request.path.endsWith('/variants')) return [];
@@ -132,7 +200,7 @@ test('supplier preview marks selected issued codes before handing the response s
 
 test('shipment receive submits complete scans and exposes the server receipt line for printing', async () => {
   const { page, requests, close } = await open('receive', request => {
-    if (request.path.endsWith('/shipments/BOX-1')) return { shipment: { shipment_code: 'BOX-1', items: [{ variant_id: 'variant-1', expected_qty: 1 }] } };
+    if (request.path.endsWith('/shipments/BOX-1')) return { shipment: { shipment_code: 'BOX-1', status: 'in_transit', items: [{ variant_id: 'variant-1', expected_qty: 1, received_qty: 0 }] } };
     if (request.path.endsWith('/shipments/BOX-1/receive')) return receipt;
     if (request.path.endsWith('/warehouse/units/print')) return { units: [label] };
   });
@@ -148,6 +216,40 @@ test('shipment receive submits complete scans and exposes the server receipt lin
     await page.waitForFunction(code => document.querySelector('output')?.textContent === code, {}, code);
     assert.deepEqual(requests.find(request => request.path.endsWith('/receive'))?.body, { items: [{ variant_id: 'variant-1', received_qty: 1, qc_status: 'pass', unit_codes: [code] }] });
     assert.equal((requests.find(request => request.path.endsWith('/units/print'))?.body as { receipt_line_id: string }).receipt_line_id, 'line-1');
+  } finally { await close(); }
+});
+
+test('a partial carton keeps accepted counts visible and submits the next cumulative receipt without another lookup', async () => {
+  const { page, requests, close } = await open('receive', request => {
+    if (request.path.endsWith('/shipments/BOX-PART')) return { shipment: { shipment_code: 'BOX-PART', status: 'partially_received', items: [
+      { variant_id: 'variant-1', product_title: 'کالای نمونه', spnc: 'D0F91A60', expected_qty: 5, received_qty: 2, qc_status: 'failed' },
+    ] } };
+    if (request.path.endsWith('/shipments/BOX-PART/receive')) {
+      const body = request.body as { items: Array<{ received_qty: number }> };
+      const quantity = body.items[0].received_qty;
+      return { success: true, shipment_code: 'BOX-PART', status: quantity === 5 ? 'received' : 'partially_received', items: [{ ...receipt, quantity, unit_codes: [] }] };
+    }
+  });
+  try {
+    await fillInput(page, '#warehouse-carton-code', 'BOX-PART');
+    await page.keyboard.press('Enter');
+    const quantity = 'input[aria-label="تعداد کل دریافتی این قلم"]';
+    await page.waitForSelector(quantity);
+    assert.equal(await page.$eval(quantity, input => (input as HTMLInputElement).value), '2');
+    await fillInput(page, quantity, '۳');
+    await clickText(page, 'تأیید اسکن و QC این قلم');
+    await clickText(page, 'تأیید دریافت محموله (1 قلم تأییدشده)');
+    await waitText(page, 'دریافت محموله ثبت شد.');
+    assert.equal(await page.$eval(quantity, input => (input as HTMLInputElement).value), '3');
+    await fillInput(page, quantity, '5');
+    await clickText(page, 'تأیید اسکن و QC این قلم');
+    await clickText(page, 'تأیید دریافت محموله (1 قلم تأییدشده)');
+    await waitText(page, 'این محموله به‌طور کامل دریافت شده است.');
+    assert.deepEqual(requests.filter(request => request.method === 'POST').map(request => request.body), [
+      { items: [{ variant_id: 'variant-1', received_qty: 3, qc_status: 'fail' }] },
+      { items: [{ variant_id: 'variant-1', received_qty: 5, qc_status: 'fail' }] },
+    ]);
+    assert.equal(requests.filter(request => request.method === 'GET').length, 1);
   } finally { await close(); }
 });
 
@@ -182,10 +284,47 @@ test('ASN receive omits codes on quantity-only receipts and shows the issued res
     if (request.path.endsWith('/inbound-lines/line-1/receive')) return receipt;
   });
   try {
+    await clickText(page, 'بررسی محموله');
     await clickText(page, 'ثبت دریافت ردیف');
     await waitText(page, code);
     assert.deepEqual(requests.find(request => request.path.endsWith('/inbound-lines/line-1/receive'))?.body, { received_quantity: 1 });
     await waitText(page, 'چاپ برچسب واحد');
+  } finally { await close(); }
+});
+
+test('manifest scan opens inspection without posting and retries a recorded scan without duplicating it', async () => {
+  let scanned = false;
+  let completed = false;
+  const { page, requests, close } = await open('asn', request => {
+    if (request.path.endsWith('/inbounds')) return [{
+      id: 'ASN-RETRY', supplierName: 'تأمین‌کننده نمونه', status: completed ? 'received' : scanned ? 'receiving' : 'in_transit',
+      itemsCount: 2, cartonsCount: 1, items: [{ product_id: 'p1', quantity: 2 }],
+      scannedItems: scanned ? [{ productId: 'p1', quantity: 2 }] : [],
+    }];
+    if (request.path.endsWith('/start-receiving')) return { success: true, status: 'receiving' };
+    if (request.path.endsWith('/scan-item')) { scanned = true; return 'disconnect'; }
+    if (request.path.endsWith('/complete')) { completed = true; return { success: true, status: 'received' }; }
+  });
+  try {
+    await waitText(page, 'ASN-RETRY');
+    await fillInput(page, 'input[placeholder="کد محموله را اسکن یا وارد کنید"]', ' asn-retry ');
+    await page.keyboard.press('Enter');
+    await waitText(page, 'محتویات محموله');
+    assert.equal(requests.filter(request => request.method === 'POST').length, 0);
+    await clickText(page, 'تأیید دریافت محموله');
+    await page.waitForSelector('[role="alert"]');
+    await clickText(page, 'تأیید دریافت محموله');
+    await waitText(page, 'دریافت محموله ثبت شد.');
+    assert.deepEqual(requests.filter(request => request.method === 'POST').map(request => request.path.split('/').at(-1)), ['start-receiving', 'scan-item', 'complete']);
+  } finally { await close(); }
+});
+
+test('the manifest queue accepts the server’s null empty response', async () => {
+  const { page, requests, close } = await open('asn', request => request.path.endsWith('/inbounds') ? null : undefined);
+  try {
+    await waitText(page, 'محموله‌ای در صف دریافت نیست.');
+    assert.equal(await page.$('[role="alert"]'), null);
+    assert.deepEqual(requests.map(request => request.method), ['GET']);
   } finally { await close(); }
 });
 
@@ -573,13 +712,13 @@ test('mixed ASN line IDs expose one receive control and block manifest receive',
     }];
   });
   try {
-    await waitText(page, 'ثبت دریافت ردیف');
-    const controls = await page.$$eval('button', nodes => nodes
-      .filter(node => node.textContent === 'ثبت دریافت ردیف').map(node => node.parentElement?.querySelector('bdi')?.textContent));
-    assert.deepEqual(controls, ['line-1']);
     await fillInput(page, 'input[placeholder="کد محموله را اسکن یا وارد کنید"]', 'ASN-MIXED');
     await page.keyboard.press('Enter');
-    await waitText(page, 'برای این محموله، دریافت را در هر ردیف ورودی ثبت کنید.');
+    await waitText(page, 'ثبت دریافت ردیف');
+    const controls = await page.$$eval('button', nodes => nodes
+      .filter(node => node.textContent === 'ثبت دریافت ردیف').map(node => node.closest('article')?.querySelector('bdi')?.textContent));
+    assert.deepEqual(controls, ['line-1']);
+    assert.equal(await page.$('button[data-manifest-submit]'), null);
     assert.equal(requests.filter(request => request.method === 'POST').length, 0);
   } finally { await close(); }
 });

@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { ArrowRight, CheckCircle2, RefreshCw, ScanLine } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowLeft, CheckCircle2, ChevronDown, RefreshCw, ScanLine } from 'lucide-react';
 import { useToast } from '../../context/ToastContext';
 import { ApiError, apiRequest } from '../../services/apiClient';
 import { listUnits, type ListUnitsResponse } from '../../services/unitsApi';
+import { SupplierEmptyState, SupplierResourceState } from '../supplier/SupplierResourceState';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
 import { PickingRoutePlanner } from './WarehouseOptimizationTools';
 
 // Live contract (live bundles, read-only):
@@ -36,10 +38,11 @@ interface ServerPickOrder {
 }
 
 interface Props {
-  onGoToPacking: (orderNumber: string) => void;
+  onGoToPacking: (orderNumber: string, orderId: string) => void;
 }
 
 const QUANTITY_ONLY_NOTE = 'بدون کد واحد (سفارش پیش از سریال‌دار شدن)';
+const nf = new Intl.NumberFormat('fa-IR');
 
 function PickingUnitChecklist({ orderItemId }: { orderItemId: string }) {
   const [result, setResult] = useState<{ codes: string[]; truncated?: boolean; error?: string } | null>(null);
@@ -75,18 +78,16 @@ function PickingUnitChecklist({ orderItemId }: { orderItemId: string }) {
   }, [orderItemId]);
 
   if (!result) return <p role="status" className="mt-1 text-slate-500">در حال دریافت کدهای واحد…</p>;
-  if (!result.codes.length) return <div className="mt-1">
-    <p className="text-slate-500">{QUANTITY_ONLY_NOTE}</p>
-    {result.error && <p role="alert" className="text-rose-700"><bdi>{result.error}</bdi></p>}
-  </div>;
+  if (result.error) return <p role="alert" className="mt-1 text-rose-700">دریافت کدهای واحد انجام نشد. <bdi>{result.error}</bdi></p>;
+  if (!result.codes.length) return <p className="mt-1 text-slate-600">{QUANTITY_ONLY_NOTE}</p>;
 
   return <div className="mt-1 space-y-1">
     <p role="status" className="text-slate-500">{checkedCodes.length} از {result.codes.length} تیک خورد</p>
     {result.truncated && <p role="alert" className="text-amber-700">فهرست واحدها کامل بارگذاری نشد؛ پیش از جمع‌آوری، فهرست را دوباره بررسی کنید.</p>}
-    <ul className="space-y-1">
+    <ul className="flex flex-wrap gap-2">
       {result.codes.map(code => <li key={code}>
-        <label className="inline-flex items-center gap-1.5">
-          <input type="checkbox" checked={checkedCodes.includes(code)} onChange={event => {
+        <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 text-slate-800">
+          <input type="checkbox" className="size-4 shrink-0 accent-brand-deep focus-visible:ring-2 focus-visible:ring-brand" checked={checkedCodes.includes(code)} onChange={event => {
             const checked = event.target.checked;
             setCheckedCodes(current => checked ? [...current, code] : current.filter(value => value !== code));
           }} />
@@ -103,6 +104,8 @@ export const WarehousePickingTab: React.FC<Props> = ({ onGoToPacking }) => {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
+  const submitting = useRef(false);
+  const mounted = useRef(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -119,166 +122,117 @@ export const WarehousePickingTab: React.FC<Props> = ({ onGoToPacking }) => {
     }
   }, [error]);
 
-  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => {
+    mounted.current = true;
+    void reload();
+    return () => { mounted.current = false; };
+  }, [reload]);
 
   const startPicking = async (order: ServerPickOrder) => {
+    if (submitting.current) return;
+    submitting.current = true;
     setBusyId(order.id);
     try {
-      await apiRequest(`/warehouse/orders/${encodeURIComponent(order.id)}/start-picking`, { method: 'POST', auth: true });
+      const result = await apiRequest<{ success?: boolean; status?: string }>(`/warehouse/orders/${encodeURIComponent(order.id)}/start-picking`, { method: 'POST', auth: true });
+      if (!result?.success || result.status !== 'picking') throw new Error('آغاز جمع‌آوری تأیید نشد؛ صف را دوباره بررسی کنید.');
+      setOrders(current => current.map(entry => entry.id === order.id ? { ...entry, status: 'picking' } : entry));
       success('جمع‌آوری سفارش آغاز شد.');
-      await reload();
     } catch (cause) {
       error(cause instanceof Error ? cause.message : 'آغاز جمع‌آوری ناموفق بود. دوباره تلاش کنید.');
     } finally {
+      submitting.current = false;
       setBusyId(null);
     }
   };
 
   const completePicking = async (order: ServerPickOrder) => {
+    if (submitting.current) return;
+    submitting.current = true;
     setBusyId(order.id);
     try {
-      await apiRequest(`/warehouse/orders/${encodeURIComponent(order.id)}/complete-picking`, { method: 'POST', auth: true });
+      const result = await apiRequest<{ success?: boolean; status?: string }>(`/warehouse/orders/${encodeURIComponent(order.id)}/complete-picking`, { method: 'POST', auth: true });
+      if (!result?.success || result.status !== 'picked') throw new Error('پایان جمع‌آوری تأیید نشد؛ صف را دوباره بررسی کنید.');
       success(`جمع‌آوری سفارش ${order.orderNumber} کامل شد.`);
-      onGoToPacking(order.orderNumber);
+      setOrders(current => current.filter(entry => entry.id !== order.id));
+      if (mounted.current) onGoToPacking(order.orderNumber, order.id);
     } catch (cause) {
       error(cause instanceof Error ? cause.message : 'ثبت پایان جمع‌آوری ناموفق بود. دوباره تلاش کنید.');
     } finally {
+      submitting.current = false;
       setBusyId(null);
     }
   };
 
-  return (
-    <div className="space-y-3.5 pb-6">
-      <PickingRoutePlanner orderIds={orders.map((order) => order.id)} />
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-2">
-        <div className="flex items-center justify-between">
-          <h3 className="text-xs font-bold text-slate-800">برگه جمع‌آوری سفارش‌ها</h3>
-          <span className="text-[10px] bg-amber-50 text-amber-700 font-bold px-2 py-0.5 rounded-full border border-amber-200">
-            {loading ? 'در حال دریافت…' : `${new Intl.NumberFormat('fa-IR').format(orders.length)} سفارش در صف`}
-          </span>
-        </div>
-        <p className="text-[10px] text-slate-500 leading-relaxed">
-          سفارش‌ها مستقیماً از سرور خوانده می‌شوند. انباردار با مراجعه به جایگاه قفسه، اقلام هر سفارش را جمع‌آوری و سپس پایان جمع‌آوری را ثبت می‌کند.
-        </p>
-      </div>
-
+  const firstOrderId = orders.find(order => order.status === 'picking')?.id ?? orders[0]?.id;
+  return <div className="space-y-4 pb-6">
+    <SupplierSectionHeading title="جمع‌آوری سفارش" icon={<ScanLine />} description="سفارش را باز کنید و اقلام را از جایگاه‌های ثبت‌شده بردارید."
+      action={<button type="button" aria-label="به‌روزرسانی صف جمع‌آوری" onClick={() => void reload()} disabled={loading || !!busyId}
+        className="grid size-11 place-items-center rounded-xl border border-slate-200 bg-white text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">
+        <RefreshCw aria-hidden="true" className="size-4" />
+      </button>} />
+    <SupplierResourceState loading={loading} error={loadError} retry={() => void reload()} />
+    {!loading && !loadError && (orders.length ? <>
+      <p className="text-sm font-bold text-brand-deep">{nf.format(orders.length)} سفارش در صف</p>
       <div className="space-y-3">
-        {loading ? (
-          <div className="bg-white rounded-2xl p-6 text-center text-slate-400 text-xs">در حال دریافت صف جمع‌آوری…</div>
-        ) : loadError ? (
-          <div className="bg-rose-50 rounded-2xl p-6 text-center text-rose-700 text-xs space-y-2">
-            <p>{loadError}</p>
-            <button onClick={() => void reload()} className="font-bold underline">تلاش مجدد</button>
-          </div>
-        ) : orders.length === 0 ? (
-          <div className="bg-white rounded-2xl p-6 text-center text-slate-400 text-xs space-y-1">
-            <p>سفارشی در صف جمع‌آوری وجود ندارد.</p>
-            <p className="text-[10px]">فقط سفارش‌های پرداخت‌شده در این صف نمایش داده می‌شوند.</p>
-          </div>
-        ) : (
-          orders.map((order) => {
-            const picking = order.status === 'picking';
-            const busy = busyId === order.id;
-            return (
-              <div key={order.id} className="p-3.5 rounded-2xl border bg-white border-slate-200/90 shadow-2xs space-y-2.5">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                  <div>
-                    <span className="text-xs font-black text-slate-800 font-mono">{order.orderNumber}</span>
-                    <span className="text-[10px] text-slate-400 block mt-0.5">
-                      {order.storeName}{order.storeName && order.customerName ? ' • ' : ''}{order.customerName}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {order.fulfillmentMethod === 'mixed' && (
-                      <span
-                        className="text-[10px] font-bold px-2 py-0.5 rounded-full border bg-violet-50 text-violet-700 border-violet-200"
-                        title="این سفارش هم اقلام انباری و هم اقلام ارسال مستقیم دارد. فقط اقلام انباری برای جمع‌آوری نمایش داده شده‌اند."
-                      >
-                        سفارش ترکیبی
-                      </span>
-                    )}
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${picking ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
-                      {picking ? 'در حال جمع‌آوری' : 'در انتظار جمع‌آوری'}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  {(order.items || []).map((item, itemIdx) => (
-                    <div key={item.orderItemId || `${item.productId || 'item'}-${itemIdx}`} className="flex items-center justify-between gap-2 text-[11px] bg-slate-50 rounded-xl px-2.5 py-2">
-                      <div className="min-w-0">
-                        <span className="font-bold text-slate-800 block truncate">{item.productTitle || 'کالا'}</span>
-                        {item.variantName && (
-                          <span className="text-[10px] text-slate-600 font-bold block">تنوع: {item.variantName}</span>
-                        )}
-                        {item.variantSpnc && (
-                          <span className="inline-block text-[9px] font-mono font-bold px-1.5 py-px rounded-full border bg-violet-50 text-violet-700 border-violet-200 mt-0.5" dir="ltr">
-                            {item.variantSpnc}
-                          </span>
-                        )}
-                        {item.binLocation ? (
-                          <span className="text-[10px] text-slate-500 font-mono block" dir="ltr">{item.binLocation}</span>
-                        ) : (
-                          <span className="text-[10px] text-slate-400 block">جایگاه قفسه ثبت نشده است</span>
-                        )}
-                        <span className={`inline-block text-[9px] font-bold px-1.5 py-px rounded-full border mt-1 ${item.fulfillmentMethod === 'supplier_direct' ? 'bg-sky-50 text-sky-700 border-sky-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
-                          {item.fulfillmentMethod === 'supplier_direct' ? 'ارسال مستقیم تأمین‌کننده' : 'انبار'}
-                        </span>
-                        {item.orderItemId
-                          ? <PickingUnitChecklist orderItemId={item.orderItemId} />
-                          : <p className="mt-1 text-slate-500">{QUANTITY_ONLY_NOTE}</p>}
-                      </div>
-                      <span className="text-slate-700 font-bold shrink-0">
-                        {new Intl.NumberFormat('fa-IR').format(item.quantity || 0)} عدد
-                      </span>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="flex items-center justify-between text-[11px] text-slate-500 border-t border-slate-100 pt-2">
-                  <span className="flex items-center gap-1">
-                    مبلغ سفارش: <strong className="text-slate-700">{new Intl.NumberFormat('fa-IR').format(Math.round(order.totalAmount || 0))} تومان</strong>
-                  </span>
-                </div>
-
-                <div className="pt-1">
-                  {picking ? (
-                    <button
-                      onClick={() => void completePicking(order)}
-                      disabled={busy}
-                      className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-wait text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-1"
-                    >
-                      <CheckCircle2 className="w-4 h-4" strokeWidth={1.5} />
-                      <span>{busy ? 'در حال ثبت…' : 'پایان جمع‌آوری و انتقال به میز بسته‌بندی'}</span>
-                      <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.5} />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => void startPicking(order)}
-                      disabled={busy}
-                      className="w-full py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-60 disabled:cursor-wait text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-1"
-                    >
-                      <ScanLine className="w-4 h-4" strokeWidth={1.5} />
-                      <span>{busy ? 'در حال ثبت…' : 'شروع جمع‌آوری اقلام این سفارش'}</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })
-        )}
+        {orders.map(order => <PickingOrderCard key={order.id} order={order} initiallyOpen={order.id === firstOrderId}
+          busy={!!busyId} submitting={busyId === order.id} onStart={() => void startPicking(order)} onComplete={() => void completePicking(order)} />)}
       </div>
-
-      <div className="flex justify-end">
-        <button
-          onClick={() => void reload()}
-          disabled={loading}
-          className="rounded-xl border border-slate-200 p-2 text-slate-600 disabled:opacity-50"
-          title="به‌روزرسانی"
-        >
-          <RefreshCw className={loading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} strokeWidth={1.5} />
-        </button>
-      </div>
-    </div>
-  );
+      <PickingRoutePlanner orderIds={orders.map(order => order.id)} />
+    </> : <SupplierEmptyState icon={<ScanLine />} title="سفارشی در صف جمع‌آوری وجود ندارد." />)}
+  </div>;
 };
+
+function PickingOrderCard({ order, initiallyOpen, busy, submitting, onStart, onComplete }: {
+  order: ServerPickOrder;
+  initiallyOpen: boolean;
+  busy: boolean;
+  submitting: boolean;
+  onStart: () => void;
+  onComplete: () => void;
+}) {
+  const [open, setOpen] = useState(initiallyOpen);
+  const [openedBefore, setOpenedBefore] = useState(initiallyOpen);
+  const picking = order.status === 'picking';
+  return <details name="warehouse-picking-orders" open={open} onToggle={event => {
+    const nextOpen = event.currentTarget.open;
+    setOpen(nextOpen);
+    if (nextOpen) setOpenedBefore(true);
+  }} className="group rounded-[22px] border border-[#e6e2f0] bg-white shadow-sm">
+    <summary className="flex min-h-14 cursor-pointer list-none flex-wrap items-center justify-between gap-2 rounded-t-[22px] px-4 py-3 text-sm focus-visible:ring-2 focus-visible:ring-brand [&::-webkit-details-marker]:hidden">
+      <span className="min-w-0">
+        <strong className="break-words text-slate-900">سفارش <bdi className="font-mono">{order.orderNumber}</bdi></strong>
+        {(order.storeName || order.customerName) && <span className="mt-0.5 block break-words text-slate-600">{[order.storeName, order.customerName].filter(Boolean).join(' · ')}</span>}
+      </span>
+      <span className="flex items-center gap-2">
+        <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${picking ? 'bg-brand-soft text-brand-deep' : 'bg-slate-100 text-slate-700'}`}>
+          {picking ? 'در حال جمع‌آوری' : 'در انتظار جمع‌آوری'}
+        </span>
+        <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-brand-deep group-open:rotate-180" />
+      </span>
+    </summary>
+    {openedBefore && <div className="space-y-3 border-t border-[#e6e2f0] p-4" aria-busy={submitting}>
+      {order.fulfillmentMethod === 'mixed' && <p className="rounded-xl bg-brand-bg px-3 py-2 text-sm text-brand-deep">سفارش ترکیبی است. اقلام انباری در این فهرست آمده‌اند.</p>}
+      {order.items?.length ? <ul className="space-y-2">
+        {order.items.map((item, index) => <li key={item.orderItemId || `${item.productId || 'item'}-${index}`} className="space-y-2 rounded-xl bg-slate-50 p-3 text-sm">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <strong className="min-w-0 break-words text-slate-900">{item.productTitle || 'کالا'}{item.variantName && ` · ${item.variantName}`}</strong>
+            <span className="shrink-0 font-bold text-brand-deep">{nf.format(item.quantity || 0)} عدد</span>
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-slate-600">
+            {item.binLocation ? <span>قفسه <bdi className="font-mono font-bold text-slate-800" dir="ltr">{item.binLocation}</bdi></span> : <span>جایگاه قفسه ثبت نشده است</span>}
+            {item.variantSpnc && <bdi className="font-mono text-xs" dir="ltr">{item.variantSpnc}</bdi>}
+            {item.fulfillmentMethod === 'supplier_direct' && <span>ارسال مستقیم تأمین‌کننده</span>}
+          </div>
+          {item.orderItemId ? <PickingUnitChecklist orderItemId={item.orderItemId} /> : <p className="text-slate-600">{QUANTITY_ONLY_NOTE}</p>}
+        </li>)}
+      </ul> : <p className="text-sm text-slate-600">قلمی برای این سفارش نمایش داده نشده است.</p>}
+      {typeof order.totalAmount === 'number' && <p className="text-sm text-slate-600">مبلغ سفارش <strong>{nf.format(Math.round(order.totalAmount))} تومان</strong></p>}
+      <button type="button" onClick={picking ? onComplete : onStart} disabled={busy}
+        className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-deep px-4 py-2 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:opacity-60 sm:w-auto">
+        {picking ? <CheckCircle2 aria-hidden="true" className="size-4" /> : <ScanLine aria-hidden="true" className="size-4" />}
+        {submitting ? 'در حال ثبت…' : picking ? 'پایان جمع‌آوری' : 'شروع جمع‌آوری'}
+        {picking && !submitting && <ArrowLeft aria-hidden="true" className="size-4" />}
+      </button>
+    </div>}
+  </details>;
+}

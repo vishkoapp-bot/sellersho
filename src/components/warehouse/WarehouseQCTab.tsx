@@ -1,61 +1,96 @@
-import { WarehouseUnitPrint } from './WarehouseUnitPrint';
-import { UnitScanField } from '../common/UnitScanField';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowLeft, CheckCircle2, ChevronDown, RefreshCw, ShieldCheck } from 'lucide-react';
+import { type QCQueueItemDto, wmsApi } from '../../services/wmsApi';
 import { completeScan, unitMutationError, type ScannedUnit } from '../../utils/unitScan';
-import React, { useCallback, useEffect, useState } from 'react';
-import { CheckCircle2, RefreshCw, ShieldCheck } from 'lucide-react';
-import { useToast } from '../../context/ToastContext';
-import { QCQueueItemDto, wmsApi } from '../../services/wmsApi';
+import { UnitScanField } from '../common/UnitScanField';
+import { SupplierEmptyState, SupplierResourceState } from '../supplier/SupplierResourceState';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
+import { WarehouseUnitPrint } from './WarehouseUnitPrint';
 
-interface Props { onGoToPutaway: () => void; }
+interface Props {
+  initialInboundId?: string;
+  initialReceiptLineIds?: string[];
+  onGoToPutaway: (inboundId?: string) => void;
+}
+
 type QCForm = { passed: string; failed: string; shortage: string; reason: string };
 
-export const WarehouseQCTab: React.FC<Props> = ({ onGoToPutaway }) => {
-  const { success, error } = useToast();
+const numberField = 'mt-1 block min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 focus-visible:ring-2 focus-visible:ring-brand disabled:bg-slate-50';
+const primaryButton = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-deep px-4 py-2 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:opacity-50';
+const secondaryButton = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-brand-border bg-white px-3 py-2 text-sm font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50';
+
+function defaultForm(item: QCQueueItemDto): QCForm {
+  return {
+    passed: String(item.passedQuantity + item.failedQuantity > 0 ? item.passedQuantity : item.receivedQuantity),
+    failed: String(item.failedQuantity),
+    shortage: String(Math.max(0, item.expectedQuantity - item.receivedQuantity)),
+    reason: '',
+  };
+}
+
+export function WarehouseQCTab({ initialInboundId, initialReceiptLineIds, onGoToPutaway }: Props) {
   const [queue, setQueue] = useState<QCQueueItemDto[]>([]);
+  const [selectedId, setSelectedId] = useState('');
   const [forms, setForms] = useState<Record<string, QCForm>>({});
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState('');
   const [loadError, setLoadError] = useState('');
   const [scans, setScans] = useState<Record<string, ScannedUnit[]>>({});
   const [pending, setPending] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [outcome, setOutcome] = useState<{ codes: string[]; failed: boolean } | null>(null);
+  const [outcome, setOutcome] = useState<{ title: string; inboundId: string; codes: string[]; failed: boolean; hasPass: boolean } | null>(null);
+  const submitting = useRef(false);
+  const activeHeading = useRef<HTMLHeadingElement>(null);
 
   const reload = useCallback(async () => {
-    setLoading(true); setLoadError('');
+    setLoading(true);
+    setLoadError('');
     try { setQueue((await wmsApi.getQCQueue()).queue || []); }
-    catch (cause) { const message = cause instanceof Error ? cause.message : 'صف QC دریافت نشد.'; setLoadError(message); error(message); }
+    catch (cause) { setLoadError(cause instanceof Error ? cause.message : 'صف کنترل کیفیت دریافت نشد.'); }
     finally { setLoading(false); }
-  }, [error]);
+  }, []);
+
   useEffect(() => { void reload(); }, [reload]);
-  const valueFor = (item: QCQueueItemDto): QCForm => forms[item.id] || { passed: String(item.passedQuantity + item.failedQuantity > 0 ? item.passedQuantity : item.receivedQuantity), failed: String(item.failedQuantity), shortage: String(Math.max(0, item.expectedQuantity - item.receivedQuantity)), reason: '' };
-  const update = (id: string, patch: Partial<QCForm>) => setForms((current) => ({ ...current, [id]: { ...valueFor(queue.find((item) => item.id === id)!), ...patch } }));
-  const submit = async (item: QCQueueItemDto) => {
-    if (busy || pending[item.id]) return;
-    if (item.reconciliationRequired) { error('این دریافت به بررسی و تطبیق سوابق موجودی نیاز دارد.'); return; }
-    const form = valueFor(item);
+  useEffect(() => { if (selectedId) activeHeading.current?.focus(); }, [selectedId]);
+
+  const targetRequested = !!(initialInboundId || initialReceiptLineIds?.length);
+  const matchesTarget = (item: QCQueueItemDto) => initialReceiptLineIds?.includes(item.receiptLineId) || (!!initialInboundId && item.inboundId === initialInboundId);
+  const targeted = targetRequested ? queue.filter(matchesTarget) : [];
+  const rows = targeted.length ? [...targeted, ...queue.filter(item => !matchesTarget(item))] : queue;
+  const chosen = rows.find(item => item.id === selectedId) ?? (targetRequested ? targeted[0] : rows[0]);
+
+  const showError = (id: string, message: string) => setErrors(current => ({ ...current, [id]: message }));
+  const update = (item: QCQueueItemDto, patch: Partial<QCForm>) => setForms(current => ({
+    ...current, [item.id]: { ...(current[item.id] ?? defaultForm(item)), ...patch },
+  }));
+
+  async function submit(item: QCQueueItemDto) {
+    if (submitting.current || pending[item.id] || item.reconciliationRequired || loadError) return;
+    const form = forms[item.id] ?? defaultForm(item);
     const passed = Number(form.passed);
     const failed = Number(form.failed);
     const shortage = Number(form.shortage);
-    if ([passed, failed, shortage].some((value) => !Number.isSafeInteger(value) || value < 0 || value > 2147483647) ||
-      passed + failed <= 0 || passed + failed > item.receivedQuantity || !form.reason.trim()) {
-      error('مقادیر QC نامعتبر است؛ نتیجه و علت را کامل کنید.');
+    if ([form.passed, form.failed, form.shortage].some(value => !value.trim()) ||
+      [passed, failed, shortage].some(value => !Number.isSafeInteger(value) || value < 0 || value > 2147483647) ||
+      passed < item.passedQuantity || failed < item.failedQuantity ||
+      passed + failed <= 0 || passed + failed > item.receivedQuantity ||
+      shortage > Math.max(0, item.expectedQuantity - item.receivedQuantity) || !form.reason.trim()) {
+      showError(item.id, 'تعدادها را با نتیجه‌های قبلی و تعداد دریافتی تطبیق دهید و توضیح بازرسی را بنویسید.');
       return;
     }
     const lineScans = scans[item.id] ?? [];
     const newFailed = failed - item.failedQuantity;
     const newPassed = passed - item.passedQuantity;
-    const quantity = newFailed > 0 ? newFailed : newPassed;
-    if (!completeScan(lineScans, quantity)) {
-      setErrors(current => ({ ...current, [item.id]: 'همه واحدهای این نتیجه را اسکن کنید یا اسکن‌ها را پاک کنید.' }));
+    if (!completeScan(lineScans, newFailed > 0 ? newFailed : newPassed)) {
+      showError(item.id, 'همه واحدهای این نتیجه را اسکن کنید یا اسکن‌ها را پاک کنید.');
       return;
     }
+
     const unit_codes = lineScans.map(unit => unit.code);
+    submitting.current = true;
     setBusy(item.id);
-    setErrors(current => ({ ...current, [item.id]: '' }));
+    showError(item.id, '');
     try {
-      // The line-pass route advances a pure pass. The existing disposition
-      // command owns cumulative failures, shortage and mixed outcomes.
       const result = unit_codes.length && failed === 0 && shortage === 0 && item.receiptLineId
         ? await wmsApi.passReceiptLineQC(item.receiptLineId, { quantity: newPassed, unit_codes })
         : await wmsApi.completeQC(item.productId, {
@@ -63,34 +98,111 @@ export const WarehouseQCTab: React.FC<Props> = ({ onGoToPutaway }) => {
           failedQuantity: failed, shortageQuantity: shortage, defectReason: form.reason,
           ...(unit_codes.length ? { unit_codes } : {}),
         });
-      setOutcome({ codes: result.unit_codes ?? [], failed: newFailed > 0 });
+      if (!result || ('line_id' in result && result.line_id !== item.receiptLineId)) {
+        throw new Error('پاسخ ثبت کنترل کیفیت کامل نبود. همان نتیجه را دوباره ثبت کنید.');
+      }
+      setOutcome({ title: item.productTitle, inboundId: item.inboundId, codes: result.unit_codes ?? [], failed: newFailed > 0, hasPass: newPassed > 0 });
       setScans(current => ({ ...current, [item.id]: [] }));
       setForms(current => { const next = { ...current }; delete next[item.id]; return next; });
-      success(`نتیجه QC برای ${item.productTitle} ثبت شد.`);
       await reload();
     } catch (cause) {
-      setErrors(current => ({ ...current, [item.id]: unitMutationError(cause, 'ثبت نتیجه QC انجام نشد.') }));
-    } finally { setBusy(null); }
-  };
+      showError(item.id, unitMutationError(cause, 'ثبت نتیجه کنترل کیفیت انجام نشد.'));
+    } finally {
+      submitting.current = false;
+      setBusy('');
+    }
+  }
 
-  return <div className="space-y-3.5 pb-6"><div className="flex items-center justify-between rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs"><div className="flex items-center gap-1.5 text-blue-600"><ShieldCheck className="h-4 w-4"  strokeWidth={1.5}/><h3 className="text-xs font-bold text-slate-800">صف واقعی کنترل کیفیت</h3></div><button onClick={() => void reload()} disabled={loading} className="rounded-xl border border-slate-200 p-2 text-slate-600 disabled:opacity-50" title="به‌روزرسانی"><RefreshCw className={loading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'}  strokeWidth={1.5}/></button></div>
-    {loading ? <div className="rounded-2xl bg-white p-6 text-center text-xs text-slate-500">در حال دریافت صف QC...</div> : loadError ? <div className="rounded-2xl bg-rose-50 p-4 text-center text-xs text-rose-700">{loadError}<button onClick={() => void reload()} className="mt-2 block mx-auto font-bold underline">تلاش مجدد</button></div> : queue.length === 0 ? <div className="rounded-2xl bg-white p-6 text-center text-xs text-slate-500">قلمی در صف QC نیست.</div> : queue.map((item) => {
-      const form = valueFor(item);
-      const newFailed = Number(form.failed) - item.failedQuantity;
-      const scanQuantity = Math.max(0, newFailed > 0 ? newFailed : Number(form.passed) - item.passedQuantity) || 0;
-      return <section key={item.id} className="space-y-3 rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs"><div className="border-b border-slate-100 pb-2"><span className="font-mono text-[10px] text-slate-500">{item.inboundId} / {item.productId}</span><h4 className="mt-1 text-xs font-bold text-slate-800">{item.productTitle}</h4><p className="break-all text-[10px] text-slate-600">{item.variantId ? <>SKU: <bdi dir="ltr" className="font-mono">{item.variantId}</bdi></> : 'کالای قدیمی (بدون SKU)'}</p><p className="break-all text-[10px] text-slate-600">ردیف دریافت: <bdi dir="ltr" className="font-mono">{item.receiptLineId || 'فاقد شناسه؛ نیازمند تطبیق'}</bdi></p><p className="text-[10px] text-slate-500">مورد انتظار: {item.expectedQuantity} · دریافت فیزیکی: {item.receivedQuantity} · بررسی‌نشده: {item.remainingQuantity}</p></div><p className="text-[10px] text-amber-700">{item.reconciliationRequired ? 'ثبت QC تا بررسی و تطبیق سوابق موجودی بسته است.' : ''}</p><p className="text-[10px] text-slate-500">تعدادهای سالم و آسیب‌دیده را با احتساب نتایج قبلی وارد کنید. تأیید QC تا تکمیل جانمایی قابل فروش نیست.</p><div className="grid grid-cols-3 gap-2"><label className="text-[9px] font-bold text-emerald-700">سالم (تجمعی)<input type="number" min="0" value={form.passed} onChange={(event) => update(item.id, { passed: event.target.value })} className="mt-1 w-full rounded-xl border border-emerald-300 bg-emerald-50/50 p-2 text-xs" /></label><label className="text-[9px] font-bold text-rose-700">آسیب‌دیده (تجمعی)<input type="number" min="0" value={form.failed} onChange={(event) => update(item.id, { failed: event.target.value })} className="mt-1 w-full rounded-xl border border-rose-300 bg-rose-50/50 p-2 text-xs" /></label><label className="text-[9px] font-bold text-amber-700">کسری<input type="number" min="0" value={form.shortage} onChange={(event) => update(item.id, { shortage: event.target.value })} className="mt-1 w-full rounded-xl border border-amber-300 bg-amber-50/50 p-2 text-xs" /></label></div><textarea rows={2} value={form.reason} onChange={(event) => update(item.id, { reason: event.target.value })} placeholder="علت و توضیح بازرس QC" className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2 text-xs" />{item.receiptLineId && <>
-      <p className="text-xs">{newFailed > 0 ? 'اسکن واحدهای آسیب‌دیده' : 'اسکن واحدهای سالم'}</p>
-      <UnitScanField scans={scans[item.id] ?? []} quantity={scanQuantity} disabled={!!busy || item.reconciliationRequired}
-        onChange={value => setScans(current => ({ ...current, [item.id]: value }))}
-        onPending={value => setPending(current => ({ ...current, [item.id]: value }))} />
-      {!item.reconciliationRequired && <WarehouseUnitPrint receiptLineId={item.receiptLineId} />}
-    </>}
-    {errors[item.id] && <p role="alert" className="text-xs text-rose-700">{errors[item.id]}</p>}
-    <button data-qc-submit disabled={!!busy || pending[item.id] || item.reconciliationRequired} onClick={() => void submit(item)} className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-600 py-2.5 text-xs font-bold text-white disabled:opacity-50"><CheckCircle2 className="h-4 w-4"  strokeWidth={1.5}/>ثبت و تأیید نتیجه QC</button></section>; })}
-    {!!outcome?.codes.length && <div role="status" className="space-y-1 text-xs">
-      <p>{outcome.failed ? 'واحدهای آسیب‌دیده ثبت‌شده' : 'واحدهای سالم ثبت‌شده'}</p>
-      {outcome.codes.map(code => <code key={code} dir="ltr" className="me-2">{code}</code>)}
-    </div>}
-    {queue.length > 0 && <button onClick={onGoToPutaway} className="w-full rounded-xl bg-blue-50 py-2 text-xs font-bold text-blue-700">رفتن به صف جانمایی</button>}
-  </div>;
-};
+  return (
+    <div className="space-y-4 pb-6 sm:space-y-5">
+      <SupplierSectionHeading title="کنترل کیفیت" description="ردیف دریافت را باز کنید، کالا را بررسی کنید و نتیجه را ثبت کنید." icon={<ShieldCheck />}
+        action={<button type="button" onClick={() => void reload()} disabled={loading || !!busy} className={secondaryButton}>
+          <RefreshCw aria-hidden="true" className="size-4" /> به‌روزرسانی
+        </button>} />
+      <SupplierResourceState loading={loading} error={loadError} retry={() => void reload()} />
+      {outcome && (
+        <div role="status" className="space-y-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="flex items-center gap-2 font-bold"><CheckCircle2 aria-hidden="true" className="size-4 shrink-0" /> نتیجه کنترل کیفیت برای {outcome.title} ثبت شد.</p>
+            {outcome.hasPass && <button type="button" data-qc-next className={secondaryButton} onClick={() => onGoToPutaway(outcome.inboundId)}>
+              رفتن به صف جانمایی <ArrowLeft aria-hidden="true" className="size-4" />
+            </button>}
+          </div>
+          {!!outcome.codes.length && <div className="space-y-1">
+            <p className="font-bold">{outcome.failed ? 'واحدهای آسیب‌دیده ثبت‌شده' : 'واحدهای سالم ثبت‌شده'}</p>
+            <ul className="flex flex-wrap gap-2">{outcome.codes.map(code => <li key={code}><code dir="ltr" className="break-all">{code}</code></li>)}</ul>
+          </div>}
+        </div>
+      )}
+      {!loading && !loadError && targetRequested && targeted.length === 0 && !outcome && (
+        <p role="status" className="rounded-xl border border-brand-border bg-brand-bg p-3 text-sm text-brand-deep">برای این دریافت ردیف آماده کنترل کیفیت در صف وجود ندارد.</p>
+      )}
+      {!loading && !loadError && (rows.length === 0 ? (
+        <SupplierEmptyState icon={<ShieldCheck />} title="قلمی در صف کنترل کیفیت نیست." />
+      ) : rows.map(item => {
+        const active = chosen?.id === item.id;
+        const blocked = !!busy || item.reconciliationRequired;
+        const form = forms[item.id] ?? defaultForm(item);
+        const newFailed = Number(form.failed) - item.failedQuantity;
+        const scanQuantity = Math.max(0, newFailed > 0 ? newFailed : Number(form.passed) - item.passedQuantity) || 0;
+        return (
+          <section key={item.id} data-qc-active={active || undefined} data-receipt-line-id={item.receiptLineId}
+            className="space-y-4 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 space-y-1">
+                <h3 ref={active ? activeHeading : undefined} tabIndex={active ? -1 : undefined}
+                  className="text-sm font-extrabold text-[#261b41] sm:text-base">{item.productTitle}</h3>
+                <p className="break-all text-sm text-slate-700">{item.variantId ? <>SKU <bdi dir="ltr" className="font-mono font-bold">{item.variantId}</bdi></> : 'کالای قدیمی (بدون SKU)'}</p>
+                <p className="break-all text-sm text-slate-600">ردیف دریافت <bdi dir="ltr" className="font-mono">{item.receiptLineId || 'فاقد شناسه؛ نیازمند تطبیق'}</bdi></p>
+                <p className="break-all text-sm text-slate-600">محموله <bdi dir="ltr" className="font-mono">{item.inboundId}</bdi></p>
+              </div>
+              {!active && <button type="button" data-qc-open className={secondaryButton}
+                disabled={!!busy || Object.values(pending).some(Boolean)} onClick={() => setSelectedId(item.id)}>
+                بررسی ردیف <ChevronDown aria-hidden="true" className="size-4" />
+              </button>}
+            </div>
+            {item.reconciliationRequired && <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">ثبت کنترل کیفیت تا تطبیق سوابق موجودی بسته است.</p>}
+            {active && (
+              <>
+                <dl className="grid grid-cols-3 gap-2 rounded-xl bg-brand-bg p-3 text-sm">
+                  <div><dt className="text-slate-600">مورد انتظار</dt><dd className="font-extrabold">{item.expectedQuantity.toLocaleString('fa-IR')}</dd></div>
+                  <div><dt className="text-slate-600">دریافت‌شده</dt><dd className="font-extrabold">{item.receivedQuantity.toLocaleString('fa-IR')}</dd></div>
+                  <div><dt className="text-slate-600">باقی‌مانده بررسی</dt><dd className="font-extrabold">{item.remainingQuantity.toLocaleString('fa-IR')}</dd></div>
+                </dl>
+                {!item.reconciliationRequired && (
+                  <form onSubmit={event => { event.preventDefault(); void submit(item); }} className="space-y-3" noValidate>
+                    <p className="text-sm leading-6 text-slate-600">تعداد سالم و آسیب‌دیده را با احتساب نتیجه‌های قبلی وارد کنید. واحدهای سالم پس از جانمایی قابل فروش‌اند.</p>
+                    <div className="grid grid-cols-3 gap-2">
+                      <label className="text-sm font-bold text-slate-700">سالم<input type="number" inputMode="numeric" min={item.passedQuantity} value={form.passed} onChange={event => update(item, { passed: event.target.value })} disabled={blocked} className={numberField} /></label>
+                      <label className="text-sm font-bold text-slate-700">آسیب‌دیده<input type="number" inputMode="numeric" min={item.failedQuantity} value={form.failed} onChange={event => update(item, { failed: event.target.value })} disabled={blocked} className={numberField} /></label>
+                      <label className="text-sm font-bold text-slate-700">کسری<input type="number" inputMode="numeric" min={0} value={form.shortage} onChange={event => update(item, { shortage: event.target.value })} disabled={blocked} className={numberField} /></label>
+                    </div>
+                    <label className="block text-sm font-bold text-slate-700">
+                      توضیح بازرسی
+                      <textarea rows={2} value={form.reason} onChange={event => update(item, { reason: event.target.value })} disabled={blocked} className={numberField} />
+                    </label>
+                    {!!item.receiptLineId && (
+                      <div className="space-y-2 [&_button]:min-h-11 [&_input]:min-h-11 [&_input]:text-base">
+                        <p className="text-sm font-bold text-slate-700">{newFailed > 0 ? 'اسکن واحدهای آسیب‌دیده' : 'اسکن واحدهای سالم'}</p>
+                        <UnitScanField scans={scans[item.id] ?? []} quantity={scanQuantity} disabled={blocked}
+                          onChange={value => setScans(current => ({ ...current, [item.id]: value }))}
+                          onPending={value => setPending(current => ({ ...current, [item.id]: value }))} />
+                      </div>
+                    )}
+                    {errors[item.id] && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{errors[item.id]}</p>}
+                    <button type="submit" data-qc-submit disabled={blocked || pending[item.id]} className={primaryButton + ' w-full sm:w-auto'}>
+                      <CheckCircle2 aria-hidden="true" className="size-4" /> {busy ? 'در حال ثبت…' : 'ثبت و تأیید نتیجه QC'}
+                    </button>
+                  </form>
+                )}
+                {!item.reconciliationRequired && !!item.receiptLineId && <div className="border-t border-slate-200 pt-3 [&_button]:min-h-11">
+                  <WarehouseUnitPrint receiptLineId={item.receiptLineId} />
+                </div>}
+              </>
+            )}
+          </section>
+        );
+      }))}
+    </div>
+  );
+}

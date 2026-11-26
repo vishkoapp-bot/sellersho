@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { PackageCheck } from 'lucide-react';
 import { wmsApi, type UnitReceiptResult } from '../../services/wmsApi';
 import { unitsApi } from '../../services/unitsApi';
 import { completeScan, unitMutationError, type ScannedUnit } from '../../utils/unitScan';
@@ -12,6 +13,7 @@ interface ReturnItem {
   qty?: number;
   quantity?: number;
   productTitle?: string;
+  product_title?: string;
 }
 interface ReturnLine {
   id: string;
@@ -29,9 +31,9 @@ export function WarehouseReturnReceipt({ returnId, orderId, items }: { returnId:
   const lines = items.flatMap<ReturnLine>(item => {
     const id = item.order_item_id ?? item.orderItemId;
     const quantity = item.qty ?? item.quantity;
-    return id && quantity && quantity > 0 ? [{ id, quantity, title: item.productTitle }] : [];
+    return id && quantity && quantity > 0 ? [{ id, quantity, title: item.productTitle ?? item.product_title }] : [];
   });
-  if (!lines.length) return null;
+  if (!lines.length) return <p role="alert" className="text-sm text-amber-900">اطلاعات اقلام برای ثبت دریافت در دسترس نیست.</p>;
   const incomplete = lines.length !== items.length;
 
   async function submit() {
@@ -66,29 +68,37 @@ export function WarehouseReturnReceipt({ returnId, orderId, items }: { returnId:
     } finally { setBusy(false); }
   }
 
-  if (result) return <div className="space-y-2">
-    <p role="status">دریافت مرجوعی ثبت شد.</p>
-    {result.map(line => <ul key={line.line_id}>{line.unit_codes?.map(code => <li key={code} className="flex gap-2">
-      <code dir="ltr">{code}</code>
-      {outcomes[code] && <UnitStatusBadge status={outcomes[code]} />}
-    </li>)}</ul>)}
+  if (result) return <div className="space-y-3">
+    <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-900">دریافت مرجوعی ثبت شد.</p>
+    {result.map(line => line.unit_codes?.length > 0 && <ul key={line.line_id} className="space-y-2 rounded-xl bg-brand-bg p-3">
+      {line.unit_codes.map(code => <li key={code} className="flex flex-wrap items-center gap-2 text-sm text-slate-700">
+        <code dir="ltr" className="break-all">{code}</code>
+        {outcomes[code] && <UnitStatusBadge status={outcomes[code]} />}
+      </li>)}
+    </ul>)}
     <CustomerReturnBinEntry returnID={returnId} />
   </div>;
 
-  return <div className="space-y-2">
-    {lines.map(line => {
-      return <div key={line.id} className="space-y-2">
-        <label>{line.title || 'تعداد دریافتی'} <input type="number" value={line.quantity} readOnly className="rounded-lg border p-1" /></label>
+  return <div className="space-y-3">
+    {lines.map(line => (
+      <div key={line.id} className="space-y-3 rounded-xl border border-brand-border bg-brand-bg p-3">
+        {line.title && <p className="break-words text-sm font-bold text-slate-900">{line.title}</p>}
+        <label className="flex flex-wrap items-center justify-between gap-2 text-sm font-medium text-slate-700">
+          تعداد دریافتی
+          <input type="number" value={line.quantity} readOnly dir="ltr" className="min-h-11 w-24 rounded-xl border border-slate-300 bg-white px-3 text-center" />
+        </label>
         <UnitScanField scans={scans[line.id] ?? []} quantity={line.quantity} disabled={busy || incomplete || !orderId}
           onChange={units => setScans(current => ({ ...current, [line.id]: units }))}
           onPending={value => setPending(current => ({ ...current, [line.id]: value }))}
           validate={unit => unit.order?.order_id !== orderId ? 'این واحد متعلق به سفارش دیگری است.' :
             unit.status !== 'sold' ? 'این واحد در وضعیت فروخته‌شده نیست.' : undefined} />
-      </div>;
-    })}
-    {incomplete && <p role="alert" className="text-rose-700">اطلاعات همه اقلام مرجوعی برای ثبت دریافت کامل نیست.</p>}
-    {message && <p role="alert" className="text-rose-700">{message}</p>}
+      </div>
+    ))}
+    {incomplete && <p role="alert" className="text-sm text-rose-800">اطلاعات همه اقلام مرجوعی برای ثبت دریافت کامل نیست.</p>}
+    {message && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{message}</p>}
     <button type="button" disabled={busy || incomplete || Object.values(pending).some(Boolean)} onClick={() => void submit()}
-      className="rounded-lg bg-brand-deep p-2 text-xs text-white disabled:opacity-50">ثبت دریافت مرجوعی</button>
+      className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-deep px-4 py-2 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60 sm:w-auto">
+      <PackageCheck aria-hidden="true" className="size-4" />{busy ? 'در حال ثبت…' : 'ثبت دریافت مرجوعی'}
+    </button>
   </div>;
 }

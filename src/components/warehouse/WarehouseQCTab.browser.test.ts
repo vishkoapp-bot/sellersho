@@ -108,6 +108,8 @@ test('equal-quantity SKU rows expose exact identities and submit only the visibl
       }, value);
     };
     const blue = await visibleRow('sku-blue');
+    assert.equal(await blue.$('input[type=number]'), null);
+    await blue.$eval('button[data-qc-open]', button => (button as HTMLButtonElement).click());
     await fill(blue, 'label:nth-child(1) input', '0');
     await fill(blue, 'label:nth-child(2) input', '2');
     await fill(blue, 'textarea', 'blue failed inspection');

@@ -7,9 +7,11 @@ test('panel routes resolve to their guarded views and preserve seller tab deep l
   assert.deepEqual(parsePathname('/seller'), overview);
   assert.deepEqual(parsePathname('/seller/'), overview);
   assert.deepEqual(parsePathname('/supplier'), { view: 'supplier_dashboard' });
+  assert.deepEqual(parsePathname('/warehouse/', '?section=qc'), { view: 'warehouse_panel' });
   assert.equal(pathForView('seller_dashboard'), '/seller');
   assert.equal(pathForView('seller_dashboard', { sellerTab: 'overview' }), '/seller');
   assert.equal(pathForView('supplier_dashboard'), '/supplier');
+  assert.equal(pathForView('warehouse_panel'), '/warehouse');
   const orders = pathForView('seller_dashboard', { sellerTab: 'orders' });
   assert.equal(orders, '/?panel=seller&tab=orders');
   assert.deepEqual(parsePathname('/', orders.slice(1)), { view: 'seller_dashboard', sellerTab: 'orders' });

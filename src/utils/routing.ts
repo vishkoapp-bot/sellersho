@@ -129,6 +129,7 @@ export type ParsedRoute =
   | { view: 'catalog'; query?: string; category?: string }
   | { view: 'customer' }
   | { view: 'supplier_dashboard' }
+  | { view: 'warehouse_panel' }
   | { view: 'dashboard' }
   | { view: 'seller_dashboard'; sellerTab: SellerDashboardTab }
   | { view: 'seller_storefront'; slug: string; unsubscribe: boolean }
@@ -162,6 +163,7 @@ export function parsePathname(pathname: string, search = ''): ParsedRoute {
 
   if (path === '/seller') return { view: 'seller_dashboard', sellerTab: 'overview' };
   if (path === '/supplier') return { view: 'supplier_dashboard' };
+  if (path === '/warehouse') return { view: 'warehouse_panel' };
 
   // Seller dashboard tab URLs (live Wf): ?panel=seller&tab=<tab>.
   if (params.get('panel') === 'seller') {
@@ -278,6 +280,8 @@ export function pathForView(
         : '/seller';
     case 'supplier_dashboard':
       return '/supplier';
+    case 'warehouse_panel':
+      return '/warehouse';
     case 'not_found':
       return '/';
     default:

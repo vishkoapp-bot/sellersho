@@ -24,7 +24,8 @@ import { storeApi, type SellerProductCandidate } from '../../../src/services/sto
 const params = new URLSearchParams(window.location.search);
 history.replaceState(null, '', params.get('route') || '/');
 const routeParams = new URLSearchParams(window.location.search);
-const role = routeParams.has('admin') ? 'admin' : 'customer';
+const hasWarehouse = routeParams.has('warehouse');
+const role = routeParams.has('admin') ? 'admin' : hasWarehouse ? 'warehouse_staff' : 'customer';
 const hasSeller = routeParams.has('seller');
 const hasSupplier = routeParams.has('supplier');
 const fixtureImages = [
@@ -33,6 +34,7 @@ const fixtureImages = [
 ];
 
 const capabilities: string[] = [role];
+if (hasWarehouse) localStorage.setItem('seler_sho_jwt_token', 'fixture-warehouse-token');
 if (hasSeller) {
   localStorage.setItem('seler_sho_jwt_token', 'fixture-seller-token');
   capabilities.push('seller');
@@ -405,6 +407,78 @@ if (routeParams.has('fixture-orders')) {
       return Response.json({ orders: [{ ...fixtureOrder(0, 'both'), storeId: seller.id, storeName: seller.name }], hasMore: false });
     }
     return fetchCatalogFixture(input, options);
+  };
+}
+
+if (hasWarehouse) {
+  const originalFetch = window.fetch.bind(window);
+  let received = false;
+  const inboundId = 'fixture-inbound-carton';
+  const lineId = 'fixture-line-from-carton';
+  const warehouseReceipts: unknown[] = [];
+  let qualityPassed = false;
+  let reserved = false;
+  let placed = false;
+  Object.assign(fixture, { warehouseReceipts });
+  const queue = () => [
+    { id: 'fixture-other-line', receiptLineId: 'fixture-other-line', variantId: 'other-sku',
+      productId: 'other-product', productTitle: 'کالای محمولهٔ دیگر', inboundId: 'other-inbound' },
+    ...(received && !qualityPassed ? [{ id: lineId, receiptLineId: lineId, variantId: 'carton-sku',
+      productId: 'carton-product', productTitle: 'کالای همان کارتن', inboundId }] : []),
+  ].map(item => ({ ...item, supplierName: 'تأمین‌کننده نمونه', expectedQuantity: 1, receivedQuantity: 1,
+    passedQuantity: 0, failedQuantity: 0, shortageQuantity: 0, remainingQuantity: 1, createdAt: '2026-11-20T00:00:00Z' }));
+  const putaway = () => [
+    { id: 'other-task', productId: 'other-product', title: 'کالای محمولهٔ دیگر', inboundId: 'other-inbound', status: 'pending', binLocation: '' },
+    ...(qualityPassed && !placed ? [{ id: 'carton-task', productId: 'carton-product', title: 'کالای همان کارتن',
+      inboundId, status: reserved ? 'assigned' : 'pending', binLocation: reserved ? 'BIN-57' : '' }] : []),
+  ].map(task => ({ ...task, quantity: 1, measurementStatus: 'verified', lengthMm: 100, widthMm: 100, heightMm: 100, weightGrams: 500 }));
+  window.fetch = async (input, options) => {
+    const { pathname } = new URL(String(input), window.location.href);
+    if (pathname === '/api/v1/warehouse/overview') {
+      return Response.json({ warehouseName: 'انبار شهر نمونه', capacityVolumeCm3: 100000, occupiedVolumeCm3: 15000,
+        reservedVolumeCm3: 10000, capacityPercent: 25, inboundPending: 7, verifiedMovements: 11 });
+    }
+    if (pathname === '/api/v1/warehouse/shipments/CARTON-57') {
+      return Response.json({ shipment: { shipment_code: 'CARTON-57', supplier_name: 'تأمین‌کننده نمونه',
+        status: received ? 'received' : 'sent', items: [{ variant_id: 'carton-sku', variant_name: 'بسته نمونه',
+          product_title: 'کالای همان کارتن', spnc: 'SPNC-57', expected_qty: 1, received_qty: received ? 1 : 0 }] } });
+    }
+    if (pathname === '/api/v1/warehouse/shipments/CARTON-57/receive') {
+      warehouseReceipts.push(JSON.parse(String(options?.body)));
+      received = true;
+      return Response.json({ success: true, status: 'received', shipment_code: 'CARTON-57',
+        items: [{ line_id: lineId, quantity: 1, unit_codes: [], mismatched: [] }] });
+    }
+    if (pathname === '/api/v1/warehouse/qc/queue') return Response.json({ success: true, queue: queue() });
+    if (pathname === '/api/v1/warehouse/qc/carton-product/complete') {
+      const payload = JSON.parse(String(options?.body));
+      if (payload.receiptLineId !== lineId || payload.inboundId !== inboundId || payload.passedQuantity !== 1) {
+        return Response.json({ error: 'wrong receipt line' }, { status: 400 });
+      }
+      qualityPassed = true;
+      return Response.json({ success: true, status: 'completed', unit_codes: [] });
+    }
+    if (pathname === '/api/v1/warehouse/putaway/queue') return Response.json({ success: true, queue: putaway() });
+    if (pathname === '/api/v1/warehouse/putaway/tasks/carton-task/assign') {
+      reserved = JSON.parse(String(options?.body)).binLocation === 'BIN-57';
+      return Response.json({ success: reserved }, { status: reserved ? 200 : 400 });
+    }
+    if (pathname === '/api/v1/warehouse/putaway/carton-task/confirm') {
+      placed = reserved;
+      return Response.json({ success: placed }, { status: placed ? 200 : 400 });
+    }
+    if (pathname === '/api/v1/warehouse/bins') return Response.json([
+      { binCode: 'BIN-57', warehouseName: 'انبار شهر نمونه', hallName: 'سالن نمونه', aisle: '۱', shelf: '۱',
+        quantity: placed ? 1 : 0, capacityStatus: 'verified', capacityVolumeCm3: 25000, remainingVolumeCm3: 20000,
+        ...(placed ? { productId: 'carton-product', productTitle: 'کالای همان کارتن' } : {}) },
+      { binCode: 'BIN-OTHER', warehouseName: 'انبار شهر نمونه', quantity: 0, capacityStatus: 'verified', remainingVolumeCm3: 20000 },
+    ]);
+    if (pathname.startsWith('/api/v1/warehouse/orders/ready-to-')) return Response.json({ success: true, orders: [] });
+    if (pathname === '/api/v1/warehouse/notifications') return Response.json({ notifications: [], unreadCount: 0 });
+    if (pathname === '/api/v1/warehouse/return-backs' || pathname === '/api/v1/warehouses/returns' ||
+      pathname === '/api/v1/warehouse/returns' ||
+      pathname === '/api/v1/warehouse/inbounds') return Response.json([]);
+    return originalFetch(input, options);
   };
 }
 

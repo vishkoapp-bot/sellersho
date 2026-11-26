@@ -162,20 +162,20 @@ export const wmsApi = {
     });
     return Array.isArray(data) ? data : (data?.bins ?? data?.data ?? []);
   },
-  getOverview: () => apiRequest<WarehouseOverviewDto>('/warehouse/overview', { method: 'GET', auth: true }),
+  getOverview: (signal?: AbortSignal) => apiRequest<WarehouseOverviewDto>('/warehouse/overview', { method: 'GET', auth: true, signal }),
 
   getInbounds: async (): Promise<InboundShipmentDto[]> => {
-    const response = await apiRequest<InboundShipmentDto[] | { inbounds?: InboundShipmentDto[] }>('/warehouse/inbounds', {
+    const response = await apiRequest<InboundShipmentDto[] | { inbounds?: InboundShipmentDto[] } | null>('/warehouse/inbounds', {
       method: 'GET',
       auth: true,
     });
-    return Array.isArray(response) ? response : response.inbounds || [];
+    return Array.isArray(response) ? response : response?.inbounds ?? [];
   },
 
   startReceiving: (inboundId: string) => apiRequest<{ success: boolean; status: string }>(`/warehouse/inbounds/${encodeURIComponent(inboundId)}/start-receiving`, { method: 'POST', auth: true }),
   scanInboundItem: (inboundId: string, payload: { productId?: string; barcode?: string; quantity: number }) => apiRequest<{ success: boolean; scannedCount: number }>(`/warehouse/inbounds/${encodeURIComponent(inboundId)}/scan-item`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   completeReceiving: (inboundId: string) => apiRequest<{ success: boolean; status: string }>(`/warehouse/inbounds/${encodeURIComponent(inboundId)}/complete`, { method: 'POST', auth: true }),
-  getQCQueue: () => apiRequest<{ success: boolean; queue: QCQueueItemDto[] }>('/warehouse/qc/queue', { method: 'GET', auth: true }),
+  getQCQueue: (signal?: AbortSignal) => apiRequest<{ success: boolean; queue: QCQueueItemDto[] }>('/warehouse/qc/queue', { method: 'GET', auth: true, signal }),
   completeQC: async (productId: string, payload: { inboundId: string; receiptLineId: string; passedQuantity: number; failedQuantity: number; shortageQuantity: number; defectReason: string; unit_codes?: string[] }) => {
     const result = await apiRequest<{ success: boolean; status: string; unit_codes?: string[] }>(`/warehouse/qc/${encodeURIComponent(productId)}/complete`, { method: 'POST', auth: true, body: JSON.stringify(payload) });
     if (result?.success !== true || result.status !== 'completed') throw new Error('پاسخ ثبت QC کامل نیست؛ همان نتیجه را دوباره ارسال کنید.');
@@ -205,7 +205,7 @@ export const wmsApi = {
   recordMeasurement: (productId: string, payload: { variantId?: string; lengthMm: number; widthMm: number; heightMm: number; weightGrams: number; reason: string }) => apiRequest(`/warehouse/products/${encodeURIComponent(productId)}/measurements`, { method: 'POST', auth: true, body: JSON.stringify(payload) }),
   assignPutaway: (productId: string, binLocation: string, quantity: number) => apiRequest<{ taskId: string }>('/warehouse/putaway/' + encodeURIComponent(productId) + '/assign', { method: 'POST', auth: true, body: JSON.stringify({ binLocation, quantity }) }),
   confirmPutaway: (taskId: string) => apiRequest(`/warehouse/putaway/${encodeURIComponent(taskId)}/confirm`, { method: 'POST', auth: true }),
-  getPutawayQueue: () => apiRequest<{ success: boolean; queue: PutawayTaskDto[] }>('/warehouse/putaway/queue', { method: 'GET', auth: true }),
+  getPutawayQueue: (signal?: AbortSignal) => apiRequest<{ success: boolean; queue: PutawayTaskDto[] }>('/warehouse/putaway/queue', { method: 'GET', auth: true, signal }),
   assignPutawayTask: (taskId: string, binLocation: string) => apiRequest(`/warehouse/putaway/tasks/${encodeURIComponent(taskId)}/assign`, { method: 'POST', auth: true, body: JSON.stringify({ binLocation }) }),
   // FIX 17: warehouse new tabs. /warehouses/returns serves
   // customer returns (handleWarehousesReturns);

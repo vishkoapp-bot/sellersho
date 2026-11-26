@@ -453,7 +453,7 @@ export const StoreProvider: React.FC<{ children: ReactNode; allowUnselectedChild
         setActiveViewState('seller_dashboard');
         return;
       }
-      if (parsed.view === 'dashboard' || parsed.view === 'supplier_dashboard' || parsed.view === 'catalog') {
+      if (parsed.view === 'dashboard' || parsed.view === 'supplier_dashboard' || parsed.view === 'warehouse_panel' || parsed.view === 'catalog') {
         setActiveViewState(parsed.view);
         return;
       }

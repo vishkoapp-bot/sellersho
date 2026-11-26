@@ -1,18 +1,14 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { useStore } from '../../context/StoreContext';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { CheckCircle2, ChevronDown, ClipboardList, Printer, RefreshCw, Truck } from 'lucide-react';
 import { useToast } from '../../context/ToastContext';
-import { apiRequest } from '../../services/apiClient';
-import { wmsApi, ShippingManifestDto } from '../../services/wmsApi';
-import { Truck, CheckCircle2, Printer, RefreshCw } from 'lucide-react';
+import { ApiError, apiRequest } from '../../services/apiClient';
+import { wmsApi, type ShippingManifestDto } from '../../services/wmsApi';
+import { toPersianDigits } from '../../utils/formatters';
+import { SupplierEmptyState, SupplierResourceState } from '../supplier/SupplierResourceState';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
 
-// Live contract (live bundles, read-only):
-// - GET /warehouse/orders/ready-to-ship -> { orders } (ReturnWindowBadge-MERGED.js, getReadyToShip)
-// - POST /warehouse/orders/{id}/ship { carrier } (ReturnWindowBadge-MERGED.js, shipWarehouseOrder)
-// - GET /warehouse/manifests -> manifests (ReturnWindowBadge-MERGED.js, getManifests)
-// - POST /warehouse/manifests/{id}/dispatch (ReturnWindowBadge-MERGED.js, dispatchManifest)
-// Manifests come only from the server: when the server returns none, the tab
-// shows live's honest empty state, never a fabricated manifest row.
 interface ServerShipItem {
+  orderItemId?: string;
   productId?: string;
   productTitle?: string;
   variantName?: string;
@@ -25,253 +21,252 @@ interface ServerShipOrder {
   orderNumber: string;
   storeName?: string;
   customerName?: string;
-  paymentStatus?: string;
+  customerCity?: string;
+  trackingCode?: string;
   items?: ServerShipItem[];
 }
 
-export const WarehouseShippingTab: React.FC = () => {
-  const { toPersianDigits } = useStore();
-  const { success, error } = useToast();
+interface Props {
+  selectedOrderNumber?: string;
+  selectedOrderId?: string;
+}
 
+interface ShippedOrder {
+  orderNumber: string;
+  carrier: string;
+  trackingNumber?: string;
+}
+
+const primaryButton = 'flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-deep px-4 py-2 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:opacity-60';
+const secondaryButton = 'flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50';
+const fieldClass = 'mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-normal text-slate-900 focus-visible:ring-2 focus-visible:ring-brand';
+
+export const WarehouseShippingTab: React.FC<Props> = ({ selectedOrderNumber, selectedOrderId }) => {
+  const [orders, setOrders] = useState<ServerShipOrder[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [showQueue, setShowQueue] = useState(false);
+  const [chosenId, setChosenId] = useState<string | null>(null);
+  const [shipped, setShipped] = useState<ShippedOrder | null>(null);
+  const [busy, setBusy] = useState(false);
+  const receiptHeading = useRef<HTMLHeadingElement>(null);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    setLoadError('');
+    try {
+      const data = await apiRequest<{ orders?: ServerShipOrder[] } | ServerShipOrder[]>('/warehouse/orders/ready-to-ship', { auth: true });
+      setOrders(Array.isArray(data) ? data : (data.orders || []));
+    } catch (cause) {
+      setLoadError(cause instanceof Error ? cause.message : 'بسته‌های آماده تحویل دریافت نشدند.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => { if (shipped) receiptHeading.current?.focus(); }, [shipped]);
+
+  const fromPacking = !showQueue && Boolean(selectedOrderId || selectedOrderNumber);
+  const activeOrder = fromPacking
+    ? orders.find(order => selectedOrderId ? order.id === selectedOrderId : order.orderNumber === selectedOrderNumber)
+    : chosenId !== null ? orders.find(order => order.id === chosenId) : orders.length === 1 ? orders[0] : undefined;
+
+  const returnToQueue = () => {
+    setChosenId(null);
+    setShowQueue(true);
+    setShipped(null);
+    void reload();
+  };
+
+  return <div className="space-y-4 pb-6">
+    <SupplierSectionHeading title="رهگیری و تحویل" icon={<Truck />} description="پس از تحویل فیزیکی بسته، شرکت حمل و کد رهگیری آن را ثبت کنید."
+      action={!shipped && <button type="button" aria-label="به‌روزرسانی صف تحویل" onClick={() => void reload()} disabled={loading || busy}
+        className="grid size-11 place-items-center rounded-xl border border-slate-200 bg-white text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">
+        <RefreshCw aria-hidden="true" className="size-4" />
+      </button>} />
+    {shipped ? <section className="space-y-3 rounded-[22px] border border-emerald-200 bg-white p-4 shadow-sm sm:p-5">
+      <div role="status" className="space-y-2">
+        <h3 ref={receiptHeading} tabIndex={-1} className="flex items-center gap-2 text-base font-extrabold text-emerald-800">
+          <CheckCircle2 aria-hidden="true" className="size-5 shrink-0" /> تحویل سفارش <bdi className="font-mono">{shipped.orderNumber}</bdi> ثبت شد
+        </h3>
+        <p className="break-words text-sm text-slate-700">شرکت حمل <strong>{shipped.carrier}</strong></p>
+        {shipped.trackingNumber && <p className="break-words text-sm text-slate-700">کد رهگیری <bdi dir="ltr" className="font-mono font-bold">{shipped.trackingNumber}</bdi></p>}
+      </div>
+      <button type="button" onClick={returnToQueue} className={secondaryButton}>بازگشت به صف تحویل</button>
+    </section> : <>
+      <SupplierResourceState loading={loading} error={loadError} retry={() => void reload()} />
+      {!loading && !loadError && <>
+        {!fromPacking && orders.length > 1 && <label className="block rounded-2xl border border-[#e6e2f0] bg-white p-4 text-sm font-bold text-slate-800">
+          بسته آماده تحویل
+          <select aria-label="بسته آماده تحویل" className={fieldClass} value={chosenId ?? ''} disabled={busy} onChange={event => setChosenId(event.target.value || null)}>
+            <option value="">سفارش را انتخاب کنید</option>
+            {orders.map(order => <option key={order.id} value={order.id}>{[order.orderNumber, order.storeName, order.customerName].filter(Boolean).join(' · ')}</option>)}
+          </select>
+        </label>}
+        {activeOrder ? <ShipOrderForm key={activeOrder.id} order={activeOrder} busy={busy} setBusy={setBusy} onShipped={setShipped} />
+          : fromPacking || chosenId ? <SupplierEmptyState icon={<Truck />} title="سفارش انتخاب‌شده در صف تحویل نیست."
+            action={<button type="button" onClick={returnToQueue} className={`${secondaryButton} mx-auto`}>مشاهدهٔ صف تحویل</button>} />
+            : !orders.length && <SupplierEmptyState icon={<Truck />} title="بسته‌ای آماده تحویل نیست." description="سفارش پس از بسته‌بندی در این صف قرار می‌گیرد." />}
+        {fromPacking && activeOrder && <button type="button" className={secondaryButton} disabled={busy} onClick={returnToQueue}>مشاهدهٔ صف تحویل</button>}
+      </>}
+    </>}
+    <ShippingManifests />
+  </div>;
+};
+
+function ShipOrderForm({ order, busy, setBusy, onShipped }: {
+  order: ServerShipOrder;
+  busy: boolean;
+  setBusy: (value: boolean) => void;
+  onShipped: (order: ShippedOrder) => void;
+}) {
+  const { success } = useToast();
   const [carrier, setCarrier] = useState('پست پیشتاز');
-  const [shipOrders, setShipOrders] = useState<ServerShipOrder[]>([]);
-  const [shipLoading, setShipLoading] = useState(true);
-  const [shipError, setShipError] = useState('');
-  const [shippingId, setShippingId] = useState<string | null>(null);
+  const [trackingNumber, setTrackingNumber] = useState('');
+  const [formError, setFormError] = useState('');
+  const submitting = useRef(false);
 
-  const [manifests, setManifests] = useState<ShippingManifestDto[]>([]);
-  const [manifestsLoading, setManifestsLoading] = useState(true);
-  const [manifestsError, setManifestsError] = useState('');
-  const [dispatchingId, setDispatchingId] = useState<string | null>(null);
-
-  const reloadShip = useCallback(async () => {
-    setShipLoading(true);
-    setShipError('');
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (submitting.current) return;
+    const carrierName = carrier.trim();
+    if (!carrierName) { setFormError('نام شرکت حمل را وارد کنید.'); return; }
+    const carrierTracking = trackingNumber.trim();
+    setFormError('');
+    submitting.current = true;
+    setBusy(true);
     try {
-      const data = await apiRequest<{ orders?: ServerShipOrder[] } | ServerShipOrder[]>('/warehouse/orders/ready-to-ship', { method: 'GET', auth: true });
-      setShipOrders(Array.isArray(data) ? data : (data.orders || []));
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : 'بسته‌های آماده تحویل دریافت نشدند.';
-      setShipError(message);
-    } finally {
-      setShipLoading(false);
-    }
-  }, []);
-
-  const reloadManifests = useCallback(async () => {
-    setManifestsLoading(true);
-    setManifestsError('');
-    try {
-      const data = await wmsApi.getManifests();
-      setManifests(Array.isArray(data) ? data : []);
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : 'مانیفست‌ها دریافت نشدند.';
-      setManifestsError(message);
-    } finally {
-      setManifestsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { void reloadShip(); void reloadManifests(); }, [reloadShip, reloadManifests]);
-
-  const handleShipOrder = async (order: ServerShipOrder) => {
-    setShippingId(order.id);
-    try {
-      await apiRequest(`/warehouse/orders/${encodeURIComponent(order.id)}/ship`, {
-        method: 'POST',
-        auth: true,
-        body: JSON.stringify({ carrier }),
+      const result = await apiRequest<{ success?: boolean; status?: string; carrier?: string; trackingNumber?: string }>(`/warehouse/orders/${encodeURIComponent(order.id)}/ship`, {
+        method: 'POST', auth: true,
+        body: JSON.stringify({ carrier: carrierName, ...(carrierTracking ? { trackingNumber: carrierTracking } : {}) }),
       });
-      success(`سفارش ${order.orderNumber} به ${carrier} تحویل شد.`);
-      await reloadShip();
+      if (!result?.success || result.status !== 'shipped') throw new Error('تحویل بسته تأیید نشد؛ صف را دوباره بررسی کنید.');
+      onShipped({ orderNumber: order.orderNumber, carrier: result.carrier || carrierName, trackingNumber: result.trackingNumber || order.trackingCode });
+      success(`تحویل سفارش ${order.orderNumber} ثبت شد.`);
     } catch (cause) {
-      error(cause instanceof Error ? cause.message : 'ثبت تحویل به شرکت حمل ناموفق بود.');
+      setFormError(cause instanceof Error ? cause.message : 'ثبت تحویل به شرکت حمل ناموفق بود.');
     } finally {
-      setShippingId(null);
+      submitting.current = false;
+      setBusy(false);
     }
   };
 
-  const handleDispatchBatch = async (batchId: string, batchCarrier: string) => {
-    setDispatchingId(batchId);
+  return <form onSubmit={submit} className="space-y-4 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5" aria-busy={busy}>
+    <div className="space-y-2 border-b border-[#e6e2f0] pb-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="break-words text-base font-extrabold text-slate-900">سفارش <bdi className="font-mono">{order.orderNumber}</bdi></h3>
+        <span className="rounded-full bg-brand-soft px-2.5 py-1 text-xs font-bold text-brand-deep">آماده تحویل</span>
+      </div>
+      {(order.storeName || order.customerName || order.customerCity) && <p className="break-words text-sm text-slate-600">{[order.storeName, order.customerName, order.customerCity].filter(Boolean).join(' · ')}</p>}
+      {order.trackingCode && <p className="break-words text-sm text-slate-700">کد رهگیری سامانه <bdi dir="ltr" className="font-mono font-bold">{order.trackingCode}</bdi></p>}
+    </div>
+    {!!order.items?.length && <details className="group rounded-xl border border-slate-200 px-3">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 rounded-lg text-sm font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand [&::-webkit-details-marker]:hidden">
+        اقلام بسته <ChevronDown aria-hidden="true" className="size-4 group-open:rotate-180" />
+      </summary>
+      <ul className="space-y-2 pb-3 text-sm text-slate-700">
+        {order.items.map((item, index) => <li key={item.orderItemId || `${item.productId || 'item'}-${index}`} className="flex flex-wrap gap-x-2 gap-y-1 break-words rounded-lg bg-slate-50 px-2.5 py-2">
+          <span>{item.productTitle || 'کالا'}{item.variantName && ` · ${item.variantName}`}</span>
+          <span className="font-bold">{toPersianDigits(item.quantity || 0)} عدد</span>
+          {item.variantSpnc && <bdi className="font-mono text-xs text-brand-deep">{item.variantSpnc}</bdi>}
+        </li>)}
+      </ul>
+    </details>}
+    <fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2">
+      <label className="text-sm font-semibold text-slate-800">شرکت حمل
+        <input name="carrier" value={carrier} onChange={event => setCarrier(event.target.value)} required className={fieldClass} />
+      </label>
+      <label className="text-sm font-semibold text-slate-800">کد رهگیری شرکت حمل <span className="font-normal text-slate-600">(اختیاری)</span>
+        <input name="trackingNumber" dir="ltr" value={trackingNumber} onChange={event => setTrackingNumber(event.target.value)}
+          onKeyDown={event => { if (event.key === 'Enter') event.preventDefault(); }} maxLength={50} autoComplete="off" className={fieldClass} />
+      </label>
+    </fieldset>
+    {formError && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{formError}</p>}
+    <button type="submit" disabled={busy} className={`${primaryButton} w-full sm:w-auto`}>
+      <Truck aria-hidden="true" className="size-4" />{busy ? 'در حال ثبت…' : 'ثبت تحویل به شرکت حمل'}
+    </button>
+  </form>;
+}
+
+function ShippingManifests() {
+  const { success, error } = useToast();
+  const [manifests, setManifests] = useState<ShippingManifestDto[]>([]);
+  const [requested, setRequested] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [denied, setDenied] = useState(false);
+  const [dispatchingId, setDispatchingId] = useState<string | null>(null);
+  const submitting = useRef(false);
+
+  const reload = async () => {
+    setRequested(true);
+    setLoading(true);
+    setLoadError('');
+    setDenied(false);
     try {
-      await wmsApi.dispatchManifest(batchId);
-      await reloadManifests();
-      success(`مانیفست ${batchId} با موفقیت به ناوگان حمل (${batchCarrier}) تحویل شد.`);
+      const result = await wmsApi.getManifests();
+      setManifests(Array.isArray(result) ? result : []);
     } catch (cause) {
-      error(cause instanceof Error ? cause.message : 'خطا در ثبت خروج مانیفست در سرور');
+      if (cause instanceof ApiError && cause.status === 403) setDenied(true);
+      else setLoadError(cause instanceof Error ? cause.message : 'مانیفست‌ها دریافت نشدند.');
     } finally {
+      setLoading(false);
+    }
+  };
+
+  const dispatch = async (batch: ShippingManifestDto) => {
+    if (submitting.current) return;
+    submitting.current = true;
+    setDispatchingId(batch.id);
+    try {
+      const result = await wmsApi.dispatchManifest(batch.id);
+      if (!result?.success || result.status !== 'handed_over') throw new Error('تحویل مانیفست تأیید نشد؛ فهرست را دوباره بررسی کنید.');
+      success(`تحویل مانیفست ${batch.id} ثبت شد.`);
+      await reload();
+    } catch (cause) {
+      error(cause instanceof Error ? cause.message : 'ثبت خروج مانیفست ناموفق بود.');
+    } finally {
+      submitting.current = false;
       setDispatchingId(null);
     }
   };
 
-  const handlePrintManifest = (batch: ShippingManifestDto) => {
-    success(`رسید مانیفست ${batch.id} برای چاپ آماده شد.`);
-    window.print();
-  };
-
-  return (
-    <div className="space-y-3.5 pb-6">
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-2">
-        <h3 className="text-xs font-bold text-slate-800">تحویل بسته‌ها به شرکت حمل</h3>
-        <p className="text-[10px] text-slate-500 leading-relaxed">
-          سفارش‌های بسته‌بندی‌شده از سرور خوانده می‌شوند؛ با ثبت تحویل، وضعیت سفارش به «تحویل به شرکت حمل» تغییر می‌کند.
-        </p>
-        <div className="flex gap-2 items-center">
-          <label className="text-[10px] text-slate-600 shrink-0">شرکت حمل:</label>
-          <input
-            value={carrier}
-            onChange={(e) => setCarrier(e.target.value)}
-            className="flex-1 text-xs p-2 rounded-xl bg-slate-50 border border-slate-200 focus:outline-hidden"
-            placeholder="نام شرکت حمل"
-          />
-        </div>
-      </div>
-
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h4 className="text-xs font-bold text-slate-800">بسته‌های آماده تحویل</h4>
-          <span className="text-[10px] bg-blue-50 text-blue-700 font-bold px-2 py-0.5 rounded-full border border-blue-200">
-            {shipLoading ? 'در حال دریافت…' : `${toPersianDigits(shipOrders.length)} بسته`}
-          </span>
-        </div>
-        {shipLoading ? (
-          <div className="bg-white rounded-2xl p-6 text-center text-slate-400 text-xs">در حال دریافت بسته‌های آماده تحویل…</div>
-        ) : shipError ? (
-          <div className="bg-rose-50 rounded-2xl p-6 text-center text-rose-700 text-xs space-y-2">
-            <p>{shipError}</p>
-            <button onClick={() => void reloadShip()} className="font-bold underline">تلاش مجدد</button>
-          </div>
-        ) : shipOrders.length === 0 ? (
-          <div className="bg-white rounded-2xl p-6 text-center text-slate-400 text-xs">بسته‌ای آماده تحویل به شرکت حمل وجود ندارد.</div>
-        ) : (
-          shipOrders.map((order) => (
-            <div key={order.id} className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-2.5">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                <div>
-                  <span className="text-xs font-black text-slate-800 font-mono">{order.orderNumber}</span>
-                  <span className="text-[10px] text-slate-400 block mt-0.5">
-                    {order.storeName}{order.storeName && order.customerName ? ' • ' : ''}{order.customerName}
-                  </span>
-                </div>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
-                  بسته‌بندی شده
-                </span>
-              </div>
-              <div className="text-[11px] text-slate-600">
-                {(order.items || []).map((item) => `${item.productTitle || 'کالا'}${item.variantName ? ` — ${item.variantName}` : ''} (${toPersianDigits(item.quantity || 0)} عدد)`).join(' + ') || '—'}
-              </div>
-              {(order.items || []).some((item) => item.variantSpnc) && (
-                <div className="flex flex-wrap gap-1">
-                  {(order.items || []).filter((item) => item.variantSpnc).map((item, idx) => (
-                    <span
-                      key={`${item.productId || 'item'}-${idx}`}
-                      className="inline-block text-[9px] font-mono font-bold px-1.5 py-px rounded-full border bg-violet-50 text-violet-700 border-violet-200"
-                      dir="ltr"
-                      title={item.variantName || undefined}
-                    >
-                      {item.variantSpnc}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <button
-                type="button"
-                onClick={() => void handleShipOrder(order)}
-                disabled={shippingId === order.id}
-                className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-wait text-white font-bold text-[11px] rounded-xl flex items-center justify-center gap-1.5 transition-colors"
-              >
-                <Truck className="w-3.5 h-3.5" strokeWidth={1.5} />
-                <span>{shippingId === order.id ? 'در حال ثبت تحویل…' : 'تحویل به شرکت حمل'}</span>
-              </button>
+  return <details className="group rounded-[22px] border border-[#e6e2f0] bg-white px-4 shadow-sm" onToggle={event => {
+    if (event.currentTarget.open && !requested) void reload();
+  }}>
+    <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between gap-2 rounded-lg text-sm font-extrabold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand [&::-webkit-details-marker]:hidden">
+      <span className="flex items-center gap-2"><ClipboardList aria-hidden="true" className="size-4" />مانیفست‌های خروج</span>
+      <ChevronDown aria-hidden="true" className="size-4 group-open:rotate-180" />
+    </summary>
+    <div className="space-y-3 border-t border-[#e6e2f0] py-3">
+      <SupplierResourceState loading={loading} error={loadError} retry={() => void reload()} />
+      {denied && <p role="status" className="text-sm text-slate-700">مانیفست‌های خروج برای این نشست در دسترس نیستند.</p>}
+      {!loading && !loadError && !denied && requested && <>
+        <button type="button" onClick={() => void reload()} disabled={!!dispatchingId} className={secondaryButton}>
+          <RefreshCw aria-hidden="true" className="size-4" /> به‌روزرسانی مانیفست‌ها
+        </button>
+        {manifests.length ? <ul className="space-y-2">
+          {manifests.map(batch => <li key={batch.id} className="space-y-2 rounded-xl bg-slate-50 p-3 text-sm">
+            <div className="flex flex-wrap justify-between gap-2">
+              <bdi className="break-all font-mono font-bold text-slate-900">{batch.id}</bdi>
+              <span className="text-slate-700">{batch.status === 'handed_over' ? 'تحویل داده شد' : batch.status === 'pending_pickup' ? 'در انتظار تحویل' : 'وضعیت نامشخص'}</span>
             </div>
-          ))
-        )}
-      </div>
-
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-            <Truck className="w-4 h-4 text-blue-600" strokeWidth={1.5} />
-            مانیفست‌های خروج
-          </h4>
-          <button
-            type="button"
-            onClick={() => void reloadManifests()}
-            disabled={manifestsLoading}
-            className="rounded-xl border border-slate-200 p-1.5 text-slate-600 disabled:opacity-50"
-            title="به‌روزرسانی"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${manifestsLoading ? 'animate-spin' : ''}`} strokeWidth={1.5} />
-          </button>
-        </div>
-        {manifestsLoading ? (
-          <div className="bg-white rounded-2xl p-6 text-center text-slate-400 text-xs">در حال دریافت مانیفست‌ها…</div>
-        ) : manifestsError ? (
-          <div className="bg-rose-50 rounded-2xl p-6 text-center text-rose-700 text-xs space-y-2">
-            <p>{manifestsError}</p>
-            <button onClick={() => void reloadManifests()} className="font-bold underline">تلاش مجدد</button>
-          </div>
-        ) : manifests.length === 0 ? (
-          <div className="bg-white rounded-2xl p-6 text-center text-slate-400 text-xs">مانیفستی وجود ندارد.</div>
-        ) : (
-          manifests.map((batch) => (
-            <div key={batch.id} className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-2.5">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                <div>
-                  <span className="text-xs font-black text-slate-800 font-mono">{batch.id}</span>
-                  <span className="text-[10px] text-slate-400 block mt-0.5">
-                    {batch.createdAt ? new Date(batch.createdAt).toLocaleDateString('fa-IR') : '—'}
-                  </span>
-                </div>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${batch.status === 'handed_over' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
-                  {batch.status === 'handed_over' ? 'تحویل داده شد' : 'در انتظار تحویل'}
-                </span>
-              </div>
-
-              <div className="text-[11px] text-slate-600 space-y-1">
-                <div className="flex justify-between">
-                  <span className="text-slate-400">شرکت حمل:</span>
-                  <span className="font-bold text-slate-800">{batch.carrier}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">نماینده دریافت:</span>
-                  <span>{batch.driverName}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">تعداد بسته‌های پلمب:</span>
-                  <span className="font-bold text-blue-600">{toPersianDigits(batch.packagesCount)} مرسوله</span>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100">
-                {batch.status === 'pending_pickup' ? (
-                  <button
-                    type="button"
-                    onClick={() => void handleDispatchBatch(batch.id, batch.carrier)}
-                    disabled={dispatchingId === batch.id}
-                    className="py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-wait text-white font-bold text-[11px] rounded-xl flex items-center justify-center gap-1.5 transition-colors"
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5" strokeWidth={1.5} />
-                    <span>{dispatchingId === batch.id ? 'در حال ثبت…' : 'تحویل مرسولات به پیک'}</span>
-                  </button>
-                ) : (
-                  <div className="py-2 bg-emerald-50 text-emerald-700 font-bold text-[10px] rounded-xl text-center">
-                    بسته‌ها تحویل گردید
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={() => handlePrintManifest(batch)}
-                  className="py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 font-bold text-[11px] rounded-xl flex items-center justify-center gap-1.5 transition-colors"
-                >
-                  <Printer className="w-3.5 h-3.5 text-blue-600" strokeWidth={1.5} />
-                  <span>چاپ مانیفست بارنامه</span>
-                </button>
-              </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-slate-700">
+              {batch.carrier && <span>{batch.carrier}</span>}
+              {batch.driverName && <span>نماینده {batch.driverName}</span>}
+              <span>{toPersianDigits(batch.packagesCount)} مرسوله</span>
+              {batch.createdAt && <time dateTime={batch.createdAt}>{new Date(batch.createdAt).toLocaleDateString('fa-IR')}</time>}
             </div>
-          ))
-        )}
-      </div>
+            <div className="flex flex-wrap gap-2">
+              {batch.status === 'pending_pickup' && <button type="button" onClick={() => void dispatch(batch)} disabled={!!dispatchingId} className={primaryButton}>
+                <CheckCircle2 aria-hidden="true" className="size-4" />{dispatchingId === batch.id ? 'در حال ثبت…' : 'ثبت تحویل مانیفست'}
+              </button>}
+              <button type="button" onClick={() => window.print()} className={secondaryButton}><Printer aria-hidden="true" className="size-4" />چاپ مانیفست</button>
+            </div>
+          </li>)}
+        </ul> : <p role="status" className="text-sm text-slate-600">مانیفستی وجود ندارد.</p>}
+      </>}
     </div>
-  );
-};
+  </details>;
+}

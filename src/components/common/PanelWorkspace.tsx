@@ -6,9 +6,9 @@ import { PanelNavigation, type PanelNavigationGroup } from './PanelNavigation';
 export function PanelWorkspace<Section extends string>({
   id, label, name, title, current, groups, href, onNavigate, onBackToSite, onLogout,
   onOpenNotifications, unreadCount, formatCount, mainRef, headerActions, sidebarActions,
-  mobileActions, modal, children,
+  mobileActions, modal, logoutLabel = 'خروج از حساب', children,
 }: {
-  id: 'seller' | 'supplier';
+  id: 'seller' | 'supplier' | 'warehouse';
   label: string;
   name: string;
   title: string;
@@ -26,6 +26,7 @@ export function PanelWorkspace<Section extends string>({
   sidebarActions?: ReactNode;
   mobileActions?: ReactNode;
   modal?: ReactNode;
+  logoutLabel?: string;
   children: ReactNode;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -72,7 +73,7 @@ export function PanelWorkspace<Section extends string>({
                 <span aria-hidden="true" className="absolute -start-0.5 -top-0.5 grid min-h-5 min-w-5 place-items-center rounded-full bg-rose-700 px-1 text-[10px] font-bold text-white ring-2 ring-white">{formatCount(unreadCount)}</span>
               )}
             </button>
-            <button type="button" onClick={onLogout} aria-label="خروج از حساب"
+            <button type="button" onClick={onLogout} aria-label={logoutLabel}
               className="hidden min-h-11 items-center gap-2 rounded-xl px-3 text-sm font-bold text-slate-700 hover:bg-rose-50 hover:text-rose-800 focus-visible:outline-2 focus-visible:outline-rose-700 lg:flex">
               <LogOut aria-hidden="true" className="size-4" strokeWidth={1.75} /> خروج
             </button>
@@ -92,7 +93,7 @@ export function PanelWorkspace<Section extends string>({
             <button type="button" onClick={onBackToSite} className="inline-flex min-h-11 items-center gap-2 rounded-xl px-3 text-sm font-bold text-slate-700 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-brand">
               سایت اصلی <ArrowUpLeft aria-hidden="true" className="size-4" />
             </button>
-            <button type="button" onClick={onLogout} className="min-h-11 rounded-xl px-3 text-sm font-bold text-rose-800 hover:bg-rose-50 focus-visible:outline-2 focus-visible:outline-rose-700">خروج از حساب</button>
+            <button type="button" onClick={onLogout} className="min-h-11 rounded-xl px-3 text-sm font-bold text-rose-800 hover:bg-rose-50 focus-visible:outline-2 focus-visible:outline-rose-700">{logoutLabel}</button>
           </div>
         </SupplierDialog>
       )}

@@ -1,61 +1,276 @@
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { ArrowLeft, CheckCircle2, Package, RefreshCw, ScanBarcode } from 'lucide-react';
+import { type InboundShipmentDto, type UnitReceiptResult, wmsApi } from '../../services/wmsApi';
+import { SupplierEmptyState, SupplierResourceState } from '../supplier/SupplierResourceState';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
 import { WarehouseInboundLineReceipt } from './WarehouseInboundLineReceipt';
-import React, { useCallback, useEffect, useState } from 'react';
-import { ArrowRight, CheckCircle2, RefreshCw, ScanBarcode, Truck } from 'lucide-react';
-import { useToast } from '../../context/ToastContext';
-import { InboundShipmentDto, wmsApi } from '../../services/wmsApi';
 
-interface Props { onGoToQC: (inboundId: string) => void; }
+interface Props {
+  onGoToQC: (inboundId: string) => void;
+}
 
-export const WarehouseInboundTab: React.FC<Props> = ({ onGoToQC }) => {
-  const { success, error } = useToast();
-  const [inbounds, setInbounds] = useState<InboundShipmentDto[]>([]);
-  const [scannedCode, setScannedCode] = useState('');
+type ManifestLine = NonNullable<InboundShipmentDto['items']>[number] & {
+  variant_id?: string;
+  variantId?: string;
+  product_title?: string;
+  productTitle?: string;
+};
+
+const openStatuses = new Set(['pending', 'in_transit', 'receiving']);
+const statusLabels: Record<string, string> = {
+  scheduled: 'برنامه‌ریزی‌شده',
+  pending: 'در انتظار دریافت',
+  in_transit: 'در راه انبار',
+  receiving: 'در حال دریافت',
+  received: 'دریافت‌شده',
+  cancelled: 'لغوشده',
+  qc_passed: 'کنترل کیفیت تأیید شده',
+  qc_failed: 'کنترل کیفیت رد شده',
+};
+
+const primaryButton = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-deep px-4 py-2 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:opacity-50';
+const secondaryButton = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-brand-border px-3 py-2 text-sm font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50';
+const inputClass = 'min-h-11 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 focus-visible:ring-2 focus-visible:ring-brand disabled:bg-slate-50';
+
+function legacyCounts(shipment: InboundShipmentDto) {
+  const lines = new Map<string, { declared: number; scanned: number }>();
+  for (const item of shipment.items ?? []) {
+    const id = item.productId || item.product_id;
+    const quantity = item.quantity || (shipment.items?.length === 1 ? shipment.itemsCount : 0);
+    if (!id || !Number.isSafeInteger(quantity) || quantity < 1) return new Map<string, { declared: number; scanned: number }>();
+    lines.set(id, { declared: (lines.get(id)?.declared ?? 0) + quantity, scanned: 0 });
+  }
+  for (const scan of shipment.scannedItems ?? []) {
+    const id = scan.productId || scan.product_id;
+    const line = id && lines.get(id);
+    if (line) line.scanned += scan.quantity ?? 0;
+  }
+  return lines;
+}
+
+const lineIdFor = (item: ManifestLine) => item.line_id || item.lineId;
+
+export function WarehouseInboundTab({ onGoToQC }: Props) {
+  const [shipments, setShipments] = useState<InboundShipmentDto[]>([]);
+  const [selectedId, setSelectedId] = useState('');
+  const [code, setCode] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
-  const [busy, setBusy] = useState<string | null>(null);
-  const [lastReceived, setLastReceived] = useState<string | null>(null);
+  const [lookupError, setLookupError] = useState('');
+  const [receiptError, setReceiptError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [counts, setCounts] = useState<Record<string, string>>({});
+  const [receipts, setReceipts] = useState<Record<string, UnitReceiptResult>>({});
+  const [completed, setCompleted] = useState<Set<string>>(new Set());
+  const scanInput = useRef<HTMLInputElement>(null);
+  const detailHeading = useRef<HTMLHeadingElement>(null);
+  const submitting = useRef(false);
 
   const reload = useCallback(async () => {
-    setLoading(true); setLoadError('');
-    try { setInbounds(await wmsApi.getInbounds()); }
-    catch (cause) { const message = cause instanceof Error ? cause.message : 'صف ورودی دریافت نشد.'; setLoadError(message); error(message); }
+    setLoading(true);
+    setLoadError('');
+    try { setShipments(await wmsApi.getInbounds()); }
+    catch (cause) { setLoadError(cause instanceof Error ? cause.message : 'صف محموله‌های ورودی دریافت نشد.'); }
     finally { setLoading(false); }
-  }, [error]);
-  useEffect(() => { void reload(); }, [reload]);
+  }, []);
 
-  const handleScan = async (event: React.FormEvent) => {
+  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => { if (selectedId) detailHeading.current?.focus(); }, [selectedId]);
+
+  const shipment = shipments.find(item => item.id === selectedId);
+  const queue = shipments.filter(item => openStatuses.has(item.status));
+  const lines = (shipment?.items ?? []) as ManifestLine[];
+  const hasExactLines = lines.some(lineIdFor);
+  const isOpen = !!shipment && openStatuses.has(shipment.status);
+  const recorded = shipment ? legacyCounts(shipment) : new Map<string, { declared: number; scanned: number }>();
+  const hasReceipt = !!shipment && (
+    completed.has(shipment.id) || ['received', 'qc_passed', 'qc_failed'].includes(shipment.status) ||
+    lines.some(line => { const id = lineIdFor(line); return !!id && !!receipts[id]?.quantity; })
+  );
+
+  function inspect(item: InboundShipmentDto) {
+    if (submitting.current) return;
+    if (selectedId === item.id) {
+      detailHeading.current?.focus();
+    } else {
+      const recordedCounts = legacyCounts(item);
+      const hasScans = [...recordedCounts.values()].some(line => line.scanned > 0);
+      setCounts(Object.fromEntries([...recordedCounts].map(([id, line]) => [id, String(hasScans ? line.scanned : line.declared)])));
+      setSelectedId(item.id);
+      setReceiptError('');
+    }
+    setLookupError('');
+    setCode('');
+  }
+
+  function lookup(event: FormEvent) {
     event.preventDefault();
-    const query = scannedCode.trim().toUpperCase();
-    if (!query) return;
-    const inbound = inbounds.find((candidate) => candidate.id.toUpperCase() === query);
-    if (!inbound) { error('کد واردشده در مانیفست واقعی صف ورودی پیدا نشد.'); return; }
-    if (inbound.items?.some(item => item.line_id ?? item.lineId)) {
-      error('برای این محموله، دریافت را در هر ردیف ورودی ثبت کنید.');
+    if (loading || loadError || submitting.current) return;
+    const query = code.trim().toUpperCase();
+    const item = query && shipments.find(candidate => candidate.id.toUpperCase() === query);
+    if (item) inspect(item);
+    else setLookupError(query ? 'محموله‌ای با این کد پیدا نشد. کد روی مانیفست را بررسی کنید.' : 'کد محموله را وارد کنید.');
+  }
+
+  async function receiveManifest() {
+    if (!shipment || !isOpen || submitting.current || hasExactLines || recorded.size === 0) return;
+    const totals = new Map([...recorded].map(([id]) => [id, Number(counts[id])]));
+    if ([...totals].every(([, quantity]) => quantity === 0) || [...recorded].some(([id, line]) => {
+      const total = totals.get(id)!;
+      return !counts[id]?.trim() || !Number.isSafeInteger(total) || total < line.scanned || total > line.declared || total > 2147483647;
+    })) {
+      setReceiptError('تعداد کل دریافتی را با مانیفست و تعداد ثبت‌شده تطبیق دهید.');
       return;
     }
-    setBusy(inbound.id);
-    try {
-      await wmsApi.startReceiving(inbound.id);
-      const firstItem = inbound.items?.[0];
-      await wmsApi.scanInboundItem(inbound.id, { productId: firstItem?.productId || firstItem?.product_id, barcode: query, quantity: firstItem?.quantity || inbound.itemsCount });
-      await wmsApi.completeReceiving(inbound.id);
-      setLastReceived(inbound.id); setScannedCode(''); success(`دریافت محموله ${inbound.id} در backend ثبت شد.`); await reload();
-    } catch (cause) { error(cause instanceof Error ? cause.message : 'ثبت دریافت انجام نشد.'); }
-    finally { setBusy(null); }
-  };
 
-  return <div className="space-y-3.5 pb-6">
-    <form onSubmit={handleScan} className="space-y-2.5 rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs">
-      <div className="flex items-center gap-1.5 text-blue-600"><ScanBarcode className="h-4 w-4"  strokeWidth={1.5}/><h3 className="text-xs font-bold text-slate-800">ثبت دریافت با کد مانیفست واقعی</h3></div>
-      <div className="flex items-center gap-2"><input value={scannedCode} onChange={(event) => setScannedCode(event.target.value)} placeholder="کد محموله را اسکن یا وارد کنید" className="flex-1 rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs font-mono tracking-wider focus:outline-hidden" dir="ltr" /><button disabled={busy !== null} type="submit" className="shrink-0 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white disabled:opacity-50">ثبت دریافت</button></div>
-      {lastReceived && <div className="flex items-center gap-1.5 rounded-lg bg-emerald-50 p-2 text-[11px] font-bold text-emerald-700"><CheckCircle2 className="h-4 w-4"  strokeWidth={1.5}/>آخرین دریافت تکمیل‌شده: {lastReceived}</div>}
-    </form>
-    <div className="space-y-2.5"><div className="flex items-center justify-between"><h4 className="text-xs font-bold text-slate-800">صف واقعی محموله‌های ورودی</h4><button onClick={() => void reload()} disabled={loading} className="rounded-xl border border-slate-200 p-2 text-slate-600 disabled:opacity-50" title="به‌روزرسانی"><RefreshCw className={loading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'}  strokeWidth={1.5}/></button></div>
-      {loading ? <div className="rounded-2xl bg-white p-6 text-center text-xs text-slate-500">در حال دریافت صف...</div> : loadError ? <div className="rounded-2xl bg-rose-50 p-4 text-center text-xs text-rose-700">{loadError}<button onClick={() => void reload()} className="mt-2 block mx-auto font-bold underline">تلاش مجدد</button></div> : inbounds.length === 0 ? <div className="rounded-2xl bg-white p-6 text-center text-xs text-slate-500">محموله‌ای در صف ورودی نیست.</div> : inbounds.map((item) => <section key={item.id} className="space-y-2 rounded-2xl border border-slate-200/90 bg-white p-3 shadow-2xs"><div className="flex items-center justify-between border-b border-slate-100 pb-1.5"><span className="font-mono text-xs font-black text-slate-800">{item.id}</span><span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[9px] font-bold text-amber-700">{item.status}</span></div><div className="space-y-1 text-[11px] text-slate-600"><div className="flex justify-between"><span className="text-slate-400">تأمین‌کننده:</span><span className="font-bold text-slate-800">{item.supplierName}</span></div><div className="flex items-center justify-between"><span className="text-slate-400">حامل:</span><span className="flex items-center gap-1"><Truck className="h-3.5 w-3.5"  strokeWidth={1.5}/>{item.carrier || 'ثبت نشده'}</span></div><div className="flex justify-between"><span className="text-slate-400">کارتن / کالا:</span><span>{item.cartonsCount} / {item.itemsCount}</span></div></div>{item.items?.map(line => {
-      const lineId = line.line_id ?? line.lineId;
-      return lineId && <WarehouseInboundLineReceipt key={lineId} lineId={lineId} expected={line.quantity ?? 0} />;
-    })}
-      <button onClick={() => onGoToQC(item.id)} className="flex w-full items-center justify-center gap-1 rounded-xl bg-blue-50 py-2 text-[11px] font-bold text-blue-700"><span>مشاهده در میز QC</span><ArrowRight className="h-3.5 w-3.5"  strokeWidth={1.5}/></button></section>)}
+    submitting.current = true;
+    setBusy(true);
+    setReceiptError('');
+    try {
+      // A scan appends to the ledger. Read the stored totals first so an
+      // interrupted request can resume with only the missing quantities.
+      const latest = await wmsApi.getInbounds();
+      setShipments(latest);
+      const current = latest.find(item => item.id === shipment.id);
+      if (!current || current.items?.some(lineIdFor) || ![...openStatuses, 'received'].includes(current.status)) {
+        throw new Error('وضعیت محموله تغییر کرده است. دوباره آن را بررسی کنید.');
+      }
+      const latestCounts = legacyCounts(current);
+      if (latestCounts.size !== recorded.size || [...latestCounts].some(([id, line]) =>
+        line.declared !== recorded.get(id)?.declared || line.scanned > (totals.get(id) ?? 0) ||
+        (current.status === 'received' && line.scanned !== totals.get(id)))) {
+        throw new Error('تعدادهای ثبت‌شده تغییر کرده‌اند. جزئیات محموله را دوباره بررسی کنید.');
+      }
+      if (current.status !== 'receiving' && current.status !== 'received') {
+        const started = await wmsApi.startReceiving(shipment.id);
+        if (!started?.success) throw new Error('پاسخ شروع دریافت کامل نبود. دوباره تلاش کنید.');
+      }
+      for (const [productId, line] of latestCounts) {
+        const quantity = totals.get(productId)! - line.scanned;
+        if (!quantity) continue;
+        const scan = await wmsApi.scanInboundItem(shipment.id, { productId, barcode: shipment.id, quantity });
+        if (!scan?.success) throw new Error('پاسخ ثبت تعداد کامل نبود. دوباره تلاش کنید.');
+      }
+      const receipt = await wmsApi.completeReceiving(shipment.id);
+      if (!receipt?.success) throw new Error('پاسخ ثبت دریافت کامل نبود. دوباره تلاش کنید.');
+      setCompleted(previous => new Set(previous).add(shipment.id));
+      await reload();
+    } catch (cause) {
+      setReceiptError(cause instanceof Error ? cause.message : 'ثبت دریافت انجام نشد.');
+    } finally {
+      submitting.current = false;
+      setBusy(false);
+    }
+  }
+
+  function returnToQueue() {
+    setSelectedId('');
+    setReceiptError('');
+    scanInput.current?.focus();
+  }
+
+  return (
+    <div className="space-y-4 pb-6 sm:space-y-5">
+      <SupplierSectionHeading title="محموله‌های ورودی" description="کد مانیفست را اسکن کنید یا محموله را از صف باز کنید." icon={<Package />} />
+      <form onSubmit={lookup} className="space-y-2 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+        <label htmlFor="warehouse-manifest-code" className="block text-sm font-extrabold text-[#261b41]">کد مانیفست</label>
+        <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+          <input ref={scanInput} id="warehouse-manifest-code" value={code}
+            onChange={event => { setCode(event.target.value); setLookupError(''); }} disabled={busy}
+            placeholder="کد محموله را اسکن یا وارد کنید" className={inputClass + ' font-mono'} autoComplete="off" spellCheck={false}
+            autoCapitalize="characters" enterKeyHint="search" dir="ltr" />
+          <button disabled={loading || !!loadError || busy} type="submit" className={primaryButton}>
+            <ScanBarcode aria-hidden="true" className="size-4" /> جست‌وجوی محموله
+          </button>
+        </div>
+        {lookupError && <p role="alert" className="text-sm text-rose-800">{lookupError}</p>}
+      </form>
+
+      <SupplierResourceState loading={loading} error={loadError} retry={() => void reload()} />
+
+      {shipment ? (
+        <section aria-labelledby="warehouse-manifest-details" className="space-y-4 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3">
+            <div className="min-w-0">
+              <h3 ref={detailHeading} tabIndex={-1} id="warehouse-manifest-details" className="text-base font-extrabold text-[#261b41]">محتویات محموله</h3>
+              <bdi dir="ltr" className="break-all font-mono text-sm font-bold text-slate-700">{shipment.id}</bdi>
+            </div>
+            <button type="button" className={secondaryButton} disabled={busy} onClick={returnToQueue}>بازگشت به صف</button>
+          </div>
+          <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            <div><dt className="text-slate-600">تأمین‌کننده</dt><dd className="font-bold">{shipment.supplierName || 'ثبت نشده'}</dd></div>
+            <div><dt className="text-slate-600">حامل</dt><dd className="font-bold">{shipment.carrier || 'ثبت نشده'}</dd></div>
+            <div><dt className="text-slate-600">کارتن مورد انتظار</dt><dd className="font-bold">{shipment.cartonsCount?.toLocaleString('fa-IR') ?? '—'}</dd></div>
+            <div><dt className="text-slate-600">واحد مورد انتظار</dt><dd className="font-bold">{shipment.itemsCount?.toLocaleString('fa-IR') ?? '—'}</dd></div>
+          </dl>
+          {isOpen && hasExactLines && (
+            <div className="space-y-3">
+              <p className="text-sm leading-6 text-slate-600">محتویات را بشمارید و دریافت را برای هر ردیف دارای شناسه ثبت کنید.</p>
+              {lines.map(line => {
+                const lineId = lineIdFor(line);
+                return lineId && <WarehouseInboundLineReceipt key={lineId} lineId={lineId} expected={line.quantity ?? 0}
+                  title={line.productTitle || line.product_title} productId={line.productId || line.product_id}
+                  variantId={line.variantId || line.variant_id} receipt={receipts[lineId]}
+                  onReceived={result => setReceipts(current => ({ ...current, [lineId]: result }))} />;
+              })}
+              {lines.some(line => !lineIdFor(line)) && <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">بعضی اقلام این مانیفست شناسه ردیف دریافت ندارند و به بررسی نیاز دارند.</p>}
+            </div>
+          )}
+          {isOpen && !hasExactLines && recorded.size > 0 && (
+            <form onSubmit={event => { event.preventDefault(); void receiveManifest(); }} className="space-y-3">
+              <p className="text-sm leading-6 text-slate-600">کالاها را از روی مانیفست بشمارید و تعداد کل دریافتی هر کالا را ثبت کنید.</p>
+              {[...recorded].map(([id, line]) => (
+                <label key={id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-brand-bg p-3 text-sm">
+                  <span className="min-w-0">
+                    <bdi dir="ltr" className="block break-all font-mono font-bold">{id}</bdi>
+                    <span className="text-slate-600">مورد انتظار {line.declared.toLocaleString('fa-IR')} واحد{line.scanned > 0 && ' · شمارش ثبت‌شده ' + line.scanned.toLocaleString('fa-IR')}</span>
+                  </span>
+                  <span className="w-32">
+                    تعداد کل دریافتی
+                    <input type="number" inputMode="numeric" min={line.scanned} max={line.declared} required value={counts[id] ?? ''} disabled={busy}
+                      onChange={event => setCounts(current => ({ ...current, [id]: event.target.value }))} className={inputClass + ' mt-1'} />
+                  </span>
+                </label>
+              ))}
+              <button data-manifest-submit type="submit" className={primaryButton + ' w-full sm:w-auto'} disabled={busy || loading || !!loadError}>
+                {busy ? 'در حال ثبت دریافت…' : 'تأیید دریافت محموله'}
+              </button>
+            </form>
+          )}
+          {isOpen && !hasExactLines && recorded.size === 0 && <p role="status" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">اطلاعات اقلام این مانیفست برای ثبت دریافت کامل نیست.</p>}
+          {!isOpen && <p className="text-sm font-bold text-slate-700">{statusLabels[shipment.status] ?? 'وضعیت نامشخص'}</p>}
+          {receiptError && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{receiptError}</p>}
+          {hasReceipt && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+              <p role="status" className="flex items-center gap-2 text-sm font-bold text-emerald-800"><CheckCircle2 aria-hidden="true" className="size-4" />{completed.has(shipment.id) ? 'دریافت محموله ثبت شد.' : 'محموله دارای دریافت ثبت‌شده است.'}</p>
+              <button type="button" onClick={() => onGoToQC(shipment.id)} disabled={busy} className={secondaryButton + ' bg-white'}>
+                رفتن به کنترل کیفیت <ArrowLeft aria-hidden="true" className="size-4" />
+              </button>
+            </div>
+          )}
+        </section>
+      ) : !loading && !loadError && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-base font-extrabold text-[#261b41]">صف دریافت</h3>
+            <button type="button" onClick={() => void reload()} className={secondaryButton}>
+              <RefreshCw aria-hidden="true" className="size-4" /> به‌روزرسانی
+            </button>
+          </div>
+          {queue.length === 0 ? <SupplierEmptyState icon={<Package />} title="محموله‌ای در صف دریافت نیست." /> :
+            <ul className="space-y-2">
+              {queue.map(item => (
+                <li key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#e6e2f0] bg-white p-3 shadow-sm sm:p-4">
+                  <div className="min-w-0">
+                    <bdi dir="ltr" className="block break-all font-mono text-sm font-extrabold text-[#261b41]">{item.id}</bdi>
+                    <p className="text-sm leading-6 text-slate-600">{item.supplierName || 'تأمین‌کننده ثبت نشده'} · {statusLabels[item.status]}</p>
+                  </div>
+                  <button type="button" onClick={() => inspect(item)} className={secondaryButton}>بررسی محموله</button>
+                </li>
+              ))}
+            </ul>}
+        </div>
+      )}
     </div>
-  </div>;
-};
+  );
+}

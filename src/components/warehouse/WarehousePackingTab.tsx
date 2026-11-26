@@ -1,21 +1,18 @@
-import { unitsApi } from '../../services/unitsApi';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowLeft, CheckCircle2, ChevronDown, FileText, Package, Printer, RefreshCw } from 'lucide-react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { apiRequest } from '../../services/apiClient';
-import { Package, Printer, CheckCircle2, FileText, RefreshCw } from 'lucide-react';
+import { unitsApi } from '../../services/unitsApi';
+import { formatPrice, toPersianDigits } from '../../utils/formatters';
+import { normalizePersianText } from '../../utils/routing';
+import { SupplierEmptyState, SupplierResourceState } from '../supplier/SupplierResourceState';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
 
-// Live contract (live bundles, read-only):
-// - GET /warehouse/orders/ready-to-pack -> { orders } (ReturnWindowBadge-MERGED.js, getReadyToPack)
-// - POST /warehouse/orders/{id}/pack { weightGrams, boxSize, packagingLengthCm?,
-//   packagingWidthCm?, packagingHeightCm? } (index-MERGED.js, completeOrderPacking)
-// No customer name, city, product title or tracking code is ever defaulted here:
-// with no order in the server queue the tab shows live's honest empty state.
 interface ServerPackItem {
   id?: string;
   orderItemId?: string;
   order_item_id?: string;
-  productId?: string;
   productTitle?: string;
   variantName?: string;
   quantity?: number;
@@ -29,324 +26,235 @@ interface ServerPackOrder {
   orderNumber: string;
   storeName?: string;
   customerName?: string;
+  customerCity?: string;
   totalAmount?: number;
-  paymentStatus?: string;
-  trackingCode?: string;
-  status: string;
   items?: ServerPackItem[];
 }
 
 interface Props {
   selectedOrderNumber?: string;
-  onGoToShipping: () => void;
+  selectedOrderId?: string;
+  onGoToShipping: (orderNumber: string, orderId: string) => void;
 }
 
-export const WarehousePackingTab: React.FC<Props> = ({ selectedOrderNumber, onGoToShipping }) => {
-  const { stores, toPersianDigits } = useStore();
-  const { success, error } = useToast();
+interface PackedOrder {
+  id: string;
+  orderNumber: string;
+  trackingNumber?: string;
+}
+
+const primaryButton = 'flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-deep px-4 py-2 text-sm font-bold text-white hover:bg-[#382660] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:opacity-60';
+const secondaryButton = 'flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50';
+const fieldClass = 'mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-normal text-slate-900 focus-visible:ring-2 focus-visible:ring-brand';
+const boxOptions = [
+  ['سایز ۲ (۲۰×۱۵×۱۰ سانتی‌متر)', 'کارتن استاندارد سایز ۲'],
+  ['سایز ۳ (۲۵×۲۰×۱۵ سانتی‌متر)', 'کارتن پستی سایز ۳'],
+  ['پاکت حباب‌دار A4', 'پاکت پستی ضدضربه'],
+];
+const dimensionFields = [
+  ['packagingLengthMm', 'طول (سانتی‌متر)'],
+  ['packagingWidthMm', 'عرض (سانتی‌متر)'],
+  ['packagingHeightMm', 'ارتفاع (سانتی‌متر)'],
+] as const;
+
+export const WarehousePackingTab: React.FC<Props> = ({ selectedOrderNumber, selectedOrderId, onGoToShipping }) => {
   const [orders, setOrders] = useState<ServerPackOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
-  const [weightGrams, setWeightGrams] = useState('380');
-  const [boxSize, setBoxSize] = useState('سایز ۲ (۲۰×۱۵×۱۰ سانتی‌متر)');
-  const [lengthCm, setLengthCm] = useState('');
-  const [widthCm, setWidthCm] = useState('');
-  const [heightCm, setHeightCm] = useState('');
-  const [packed, setPacked] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [showQueue, setShowQueue] = useState(false);
+  const [chosenId, setChosenId] = useState<string | null>(null);
+  const [packed, setPacked] = useState<PackedOrder | null>(null);
+  const [busy, setBusy] = useState(false);
+  const receiptHeading = useRef<HTMLHeadingElement>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
     setLoadError('');
     try {
-      const data = await apiRequest<{ orders?: ServerPackOrder[] } | ServerPackOrder[]>('/warehouse/orders/ready-to-pack', { method: 'GET', auth: true });
+      const data = await apiRequest<{ orders?: ServerPackOrder[] } | ServerPackOrder[]>('/warehouse/orders/ready-to-pack', { auth: true });
       setOrders(Array.isArray(data) ? data : (data.orders || []));
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : 'صف بسته‌بندی دریافت نشد.';
-      setLoadError(message);
-      error(message);
+      setLoadError(cause instanceof Error ? cause.message : 'صف بسته‌بندی دریافت نشد.');
     } finally {
       setLoading(false);
     }
-  }, [error]);
+  }, []);
 
   useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => { if (packed) receiptHeading.current?.focus(); }, [packed]);
 
-  // A selected order that is no longer in this queue must NOT fall back
-  // to orders[0]: that silently presented (and could pack) a different
-  // store's order. With no match the tab shows its empty state instead.
-  const activeOrder = selectedOrderNumber
-    ? orders.find((o) => o.orderNumber === selectedOrderNumber)
-    : orders[0];
+  const fromPicking = !showQueue && Boolean(selectedOrderId || selectedOrderNumber);
+  const activeOrder = fromPicking
+    ? orders.find(order => selectedOrderId ? order.id === selectedOrderId : order.orderNumber === selectedOrderNumber)
+    : chosenId !== null ? orders.find(order => order.id === chosenId) : orders.length === 1 ? orders[0] : undefined;
 
-  // Package dimensions default to the largest item packaging dimension
-  // (mm -> cm), exactly as live prefills them; the queue items carry no
-  // packaging dimensions, so the fields stay empty until staff fill them.
-  useEffect(() => {
-    const items = activeOrder?.items || [];
-    const maxDim = (pick: (item: ServerPackItem) => number | undefined) => {
-      let max = 0;
-      items.forEach((item) => {
-        const value = pick(item);
-        if (typeof value === 'number' && value > max) max = value;
-      });
-      return max > 0 ? String(Math.round(max / 10)) : '';
-    };
-    setLengthCm(maxDim((item) => item.packagingLengthMm));
-    setWidthCm(maxDim((item) => item.packagingWidthMm));
-    setHeightCm(maxDim((item) => item.packagingHeightMm));
-  }, [activeOrder]);
-
-  const matchedStore = stores.find((s) => s.name === activeOrder?.storeName);
-  const storeDisplayName = activeOrder?.storeName || '';
-  const handlePrintStoreInvoice = () => {
-    if (!activeOrder) { error('سفارشی برای چاپ فاکتور انتخاب نشده است.'); return; }
-    success(`پیش‌نمایش فاکتور مشتری با سربرگ «${storeDisplayName}» آماده شد.`);
-    window.print();
+  const returnToQueue = () => {
+    setChosenId(null);
+    setShowQueue(true);
+    setPacked(null);
+    void reload();
   };
 
-  const handlePrintPostLabel = () => {
-    if (!activeOrder) { error('سفارشی برای چاپ فهرست بسته‌بندی انتخاب نشده است.'); return; }
-    success(`فهرست بسته‌بندی سفارش ${activeOrder.orderNumber} برای چاپ آماده شد.`);
-    window.print();
-  };
-
-  const handleFinishPacking = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!activeOrder) { error('سفارشی برای بسته‌بندی انتخاب نشده است.'); return; }
-    if (submitting) return;
-    const dims = [lengthCm, widthCm, heightCm];
-    const filled = dims.filter((value) => value.trim() !== '').length;
-    if (filled > 0 && filled < 3) {
-      error('ابعاد بسته را کامل وارد کنید: طول، عرض و ارتفاع (سانتی‌متر).');
-      return;
-    }
-    const parsed = dims.map((value) => Number(value));
-    if (filled === 3 && !parsed.every((value) => Number.isSafeInteger(value) && value > 0)) {
-      error('ابعاد بسته باید عددهای صحیح مثبت باشند (سانتی‌متر).');
-      return;
-    }
-    setSubmitting(true);
-    try {
-      await apiRequest(`/warehouse/orders/${encodeURIComponent(activeOrder.id)}/pack`, {
-        method: 'POST',
-        auth: true,
-        body: JSON.stringify({
-          weightGrams: Number(weightGrams) || 380,
-          boxSize,
-          ...(filled === 3
-            ? { packagingLengthCm: parsed[0], packagingWidthCm: parsed[1], packagingHeightCm: parsed[2] }
-            : {}),
-        }),
-      });
-      setPacked(true);
-      success(`بسته سفارش ${activeOrder.orderNumber} با موفقیت پلمب شد.`);
-      await reload();
-      setTimeout(() => { onGoToShipping(); }, 1500);
-    } catch (cause) {
-      error(cause instanceof Error ? cause.message : 'ثبت بسته‌بندی ناموفق بود. دوباره تلاش کنید.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  if (loading) {
-    return <div className="bg-white rounded-2xl p-6 text-center text-slate-400 text-xs">در حال دریافت صف بسته‌بندی…</div>;
-  }
-
-  if (loadError) {
-    return (
-      <div className="bg-rose-50 rounded-2xl p-6 text-center text-rose-700 text-xs space-y-2">
-        <p>{loadError}</p>
-        <button onClick={() => void reload()} className="font-bold underline">تلاش مجدد</button>
+  return <div className="space-y-4 pb-6">
+    <SupplierSectionHeading title="میز بسته‌بندی" icon={<Package />} description="اقلام را بررسی کنید و مشخصات بسته را ثبت کنید."
+      action={!packed && <button type="button" aria-label="به‌روزرسانی صف بسته‌بندی" onClick={() => void reload()} disabled={loading || busy}
+        className="grid size-11 place-items-center rounded-xl border border-slate-200 bg-white text-brand-deep hover:bg-brand-soft focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50">
+        <RefreshCw aria-hidden="true" className="size-4" />
+      </button>} />
+    {packed ? <section className="space-y-4 rounded-[22px] border border-emerald-200 bg-white p-4 shadow-sm sm:p-5">
+      <div role="status" className="space-y-2">
+        <h3 ref={receiptHeading} tabIndex={-1} className="flex items-center gap-2 text-base font-extrabold text-emerald-800">
+          <CheckCircle2 aria-hidden="true" className="size-5 shrink-0" /> بسته‌بندی سفارش <bdi className="font-mono">{packed.orderNumber}</bdi> ثبت شد
+        </h3>
+        {packed.trackingNumber && <p className="break-words text-sm text-slate-700">کد رهگیری سامانه <bdi dir="ltr" className="font-mono font-bold">{packed.trackingNumber}</bdi></p>}
       </div>
-    );
-  }
-
-  if (!activeOrder) {
-    return (
-      <div className="space-y-3.5 pb-6">
-        <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs">
-          <div className="flex items-center gap-1.5 text-blue-600">
-            <Package className="w-4 h-4" strokeWidth={1.5} />
-            <h3 className="text-xs font-bold text-slate-800">میز بسته‌بندی</h3>
-          </div>
-        </div>
-        <div className="bg-white rounded-2xl p-6 text-center text-slate-400 text-xs leading-relaxed">
-          سفارشی در صف بسته‌بندی وجود ندارد.
-          <span className="block mt-1">سفارش‌هایی که جمع‌آوری آن‌ها در میز جمع‌آوری کامل شود، اینجا نمایش داده می‌شوند.</span>
-        </div>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <button type="button" className={primaryButton} onClick={() => onGoToShipping(packed.orderNumber, packed.id)}>ادامه به تحویل <ArrowLeft aria-hidden="true" className="size-4" /></button>
+        <button type="button" className={secondaryButton} onClick={returnToQueue}>بازگشت به صف بسته‌بندی</button>
       </div>
-    );
-  }
-
-  return (
-    <form onSubmit={handleFinishPacking} className="space-y-3.5 pb-6">
-      <div className="bg-white rounded-2xl p-3.5 border border-slate-200/90 shadow-2xs space-y-3">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-          <div className="flex items-center gap-1.5 text-blue-600">
-            <Package className="w-4 h-4" strokeWidth={1.5} />
-            <h3 className="text-xs font-bold text-slate-800">میز بسته‌بندی</h3>
-          </div>
-          <span className="text-xs font-mono font-black text-slate-800">{activeOrder.orderNumber}</span>
-        </div>
-
-        <div className="bg-blue-50/70 border border-blue-200 p-2.5 rounded-xl space-y-1 text-xs">
-          <span className="text-[10px] text-blue-600 font-bold block">
-            نام ویترین روی فاکتور و برچسب بسته:
-          </span>
-          <div className="flex items-center gap-2">
-            {matchedStore?.logo && (
-              <img src={matchedStore.logo} alt={storeDisplayName} className="w-5 h-5 rounded-md object-cover" />
-            )}
-            <span className="font-extrabold text-blue-900 block">{storeDisplayName}</span>
-          </div>
-          <p className="text-[10px] text-blue-700/80 leading-relaxed">
-            بسته با لوگو و برند فروشگاه دراپ‌شیپر ارسال می‌شود و نامی از پلتفرم مرکزی یا انبار درج نمی‌گردد.
-          </p>
-        </div>
-
-        <div>
-          <div className="space-y-1 text-xs font-bold text-slate-800">
-            {activeOrder.items?.length ? activeOrder.items.map((item, index) => {
-              const lineId = item.orderItemId ?? item.order_item_id ?? item.id;
-              return <div key={lineId ?? index}>
-                <span>{item.productTitle || 'کالا'}{item.variantName && ` — ${item.variantName}`} ({toPersianDigits(item.quantity || 0)} عدد)</span>
-                {lineId && <PackingUnitCodes key={activeOrder.id + lineId} orderItemId={lineId} />}
-              </div>;
-            }) : '—'}
-          </div>
-          <span className="text-[11px] text-slate-500 mt-0.5 block">
-            گیرنده: {activeOrder.customerName} • مبلغ: {toPersianDigits(Math.round(activeOrder.totalAmount || 0))} تومان
-          </span>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="text-[10px] text-slate-600 block mb-1">کارتن بسته‌بندی</label>
-            <select
-              value={boxSize}
-              onChange={(e) => setBoxSize(e.target.value)}
-              className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:outline-hidden"
-            >
-              <option value="سایز ۲ (۲۰×۱۵×۱۰ سانتی‌متر)">کارتن استاندارد سایز ۲</option>
-              <option value="سایز ۳ (۲۵×۲۰×۱۵ سانتی‌متر)">کارتن پستی سایز ۳</option>
-              <option value="پاکت حباب‌دار A4">پاکت پستی ضدضربه</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="text-[10px] text-slate-600 block mb-1">وزن ترازوی دیجیتال (گرم)</label>
-            <input
-              type="number"
-              value={weightGrams}
-              onChange={(e) => setWeightGrams(e.target.value)}
-              className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 font-bold focus:outline-hidden"
-              required
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-3 gap-2">
-          <div>
-            <label className="text-[10px] text-slate-600 block mb-1">طول بسته (سانتی‌متر)</label>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={lengthCm}
-              onChange={(e) => setLengthCm(e.target.value)}
-              placeholder="پیش‌فرض کالا"
-              min="1"
-              className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:outline-hidden"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-slate-600 block mb-1">عرض بسته (سانتی‌متر)</label>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={widthCm}
-              onChange={(e) => setWidthCm(e.target.value)}
-              placeholder="پیش‌فرض کالا"
-              min="1"
-              className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:outline-hidden"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-slate-600 block mb-1">ارتفاع بسته (سانتی‌متر)</label>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={heightCm}
-              onChange={(e) => setHeightCm(e.target.value)}
-              placeholder="پیش‌فرض کالا"
-              min="1"
-              className="w-full text-xs p-2.5 rounded-xl bg-slate-50 border border-slate-200 focus:outline-hidden"
-            />
-          </div>
-        </div>
-        <p className="text-[10px] text-slate-500 leading-5">
-          ابعاد بسته از پیش‌فرض بسته‌بندی کالاها پر می‌شود (بزرگ‌ترین بُعد)؛ پیش از پلمب آن را با بسته واقعی چک و در صورت نیاز اصلاح کنید. خالی گذاشتنش یعنی بسته تأییدشده‌ای ثبت نمی‌شود.
-        </p>
-
-        <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100">
-          <button
-            type="button"
-            onClick={handlePrintStoreInvoice}
-            className="py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] rounded-xl flex items-center justify-center gap-1.5 transition-colors"
-          >
-            <FileText className="w-3.5 h-3.5 text-blue-600" strokeWidth={1.5} />
-            <span>چاپ فاکتور برنددار</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handlePrintPostLabel}
-            className="py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] rounded-xl flex items-center justify-center gap-1.5 transition-colors"
-          >
-            <Printer className="w-3.5 h-3.5 text-blue-600" strokeWidth={1.5} />
-            <span>چاپ فهرست بسته‌بندی</span>
-          </button>
-        </div>
-
-        <button
-          type="submit"
-          disabled={submitting}
-          className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-wait text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-1.5"
-        >
-          {submitting ? (
-            <span>در حال ثبت بسته‌بندی…</span>
-          ) : packed ? (
-            <>
-              <CheckCircle2 className="w-4 h-4" strokeWidth={1.5} />
-              <span>بسته پلمب شد • انتقال به سالن تحویل به حمل‌ونقل</span>
-            </>
-          ) : (
-            <>
-              <Package className="w-4 h-4" strokeWidth={1.5} />
-              <span>تأیید پلمب بسته و تحویل به حمل‌ونقل</span>
-            </>
-          )}
-        </button>
-      </div>
-
-      <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={() => void reload()}
-          disabled={loading}
-          className="rounded-xl border border-slate-200 p-2 text-slate-600 disabled:opacity-50"
-          title="به‌روزرسانی"
-        >
-          <RefreshCw className={loading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} strokeWidth={1.5} />
-        </button>
-      </div>
-    </form>
-  );
+    </section> : <>
+      <SupplierResourceState loading={loading} error={loadError} retry={() => void reload()} />
+      {!loading && !loadError && <>
+        {!fromPicking && orders.length > 1 && <label className="block rounded-2xl border border-[#e6e2f0] bg-white p-4 text-sm font-bold text-slate-800">
+          سفارش آماده بسته‌بندی
+          <select aria-label="سفارش آماده بسته‌بندی" className={fieldClass} value={chosenId ?? ''} disabled={busy} onChange={event => setChosenId(event.target.value || null)}>
+            <option value="">سفارش را انتخاب کنید</option>
+            {orders.map(order => <option key={order.id} value={order.id}>{[order.orderNumber, order.storeName, order.customerName].filter(Boolean).join(' · ')}</option>)}
+          </select>
+        </label>}
+        {activeOrder ? <PackingOrderForm key={activeOrder.id} order={activeOrder} busy={busy} setBusy={setBusy}
+          onPacked={trackingNumber => setPacked({ id: activeOrder.id, orderNumber: activeOrder.orderNumber, trackingNumber })} />
+          : fromPicking || chosenId ? <SupplierEmptyState icon={<Package />} title="سفارش انتخاب‌شده در صف بسته‌بندی نیست."
+            action={<button type="button" className={`${secondaryButton} mx-auto`} onClick={returnToQueue}>مشاهدهٔ صف بسته‌بندی</button>} />
+            : !orders.length && <SupplierEmptyState icon={<Package />} title="سفارشی در صف بسته‌بندی وجود ندارد." description="سفارش پس از پایان جمع‌آوری در این صف قرار می‌گیرد." />}
+        {fromPicking && activeOrder && <button type="button" className={secondaryButton} disabled={busy} onClick={returnToQueue}>مشاهدهٔ صف بسته‌بندی</button>}
+      </>}
+    </>}
+  </div>;
 };
 
+function PackingOrderForm({ order, busy, setBusy, onPacked }: {
+  order: ServerPackOrder;
+  busy: boolean;
+  setBusy: (value: boolean) => void;
+  onPacked: (trackingNumber?: string) => void;
+}) {
+  const { stores } = useStore();
+  const { success } = useToast();
+  const [weightGrams, setWeightGrams] = useState('');
+  const [boxSize, setBoxSize] = useState(boxOptions[0][0]);
+  const [dimensions, setDimensions] = useState(() => dimensionFields.map(([field]) => {
+    const max = Math.max(0, ...(order.items || []).map(item => item[field] || 0));
+    return max > 0 ? String(Math.max(1, Math.round(max / 10))) : '';
+  }));
+  const [formError, setFormError] = useState('');
+  const submitting = useRef(false);
+  const matchedStore = stores.find(store => store.name === order.storeName);
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (submitting.current) return;
+    const weight = parsePositiveInteger(weightGrams);
+    if (!weight) { setFormError('وزن بسته را به گرم و به‌صورت عدد صحیح مثبت وارد کنید.'); return; }
+    const filledDimensions = dimensions.filter(value => value.trim()).length;
+    const [length, width, height] = dimensions.map(parsePositiveInteger);
+    if (filledDimensions && !(length && width && height)) {
+      setFormError('طول، عرض و ارتفاع را کامل و به‌صورت عدد صحیح مثبت وارد کنید.');
+      return;
+    }
+    setFormError('');
+    submitting.current = true;
+    setBusy(true);
+    try {
+      const result = await apiRequest<{ success?: boolean; status?: string; trackingNumber?: string }>(`/warehouse/orders/${encodeURIComponent(order.id)}/pack`, {
+        method: 'POST', auth: true,
+        body: JSON.stringify({ weightGrams: weight, boxSize, ...(filledDimensions ? {
+          packagingLengthCm: length, packagingWidthCm: width, packagingHeightCm: height,
+        } : {}) }),
+      });
+      if (!result?.success || result.status !== 'packed') throw new Error('بسته‌بندی تأیید نشد؛ صف را دوباره بررسی کنید.');
+      onPacked(result.trackingNumber);
+      success(`بسته‌بندی سفارش ${order.orderNumber} ثبت شد.`);
+    } catch (cause) {
+      setFormError(cause instanceof Error ? cause.message : 'ثبت بسته‌بندی انجام نشد.');
+    } finally {
+      submitting.current = false;
+      setBusy(false);
+    }
+  };
+
+  return <form onSubmit={submit} className="space-y-4 rounded-[22px] border border-[#e6e2f0] bg-white p-4 shadow-sm sm:p-5" aria-busy={busy}>
+    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[#e6e2f0] pb-3">
+      <div className="min-w-0">
+        <h3 className="break-words text-base font-extrabold text-slate-900">سفارش <bdi className="font-mono">{order.orderNumber}</bdi></h3>
+        {(order.customerName || order.customerCity) && <p className="mt-1 break-words text-sm text-slate-600">{[order.customerName, order.customerCity].filter(Boolean).join(' · ')}</p>}
+      </div>
+      {order.storeName && <div className="flex min-w-0 items-center gap-2 rounded-lg bg-brand-soft px-2.5 py-1.5 text-sm font-bold text-brand-deep">
+        {matchedStore?.logo && <img src={matchedStore.logo} alt="" className="size-6 shrink-0 rounded-md object-cover" />}
+        <span className="break-words">{order.storeName}</span>
+      </div>}
+    </div>
+
+    {order.items?.length ? <ul className="space-y-2">
+      {order.items.map((item, index) => {
+        const lineId = item.orderItemId ?? item.order_item_id ?? item.id;
+        return <li key={lineId ?? index} className="space-y-1 rounded-xl bg-slate-50 p-3 text-sm">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <strong className="min-w-0 break-words text-slate-900">{item.productTitle || 'کالا'}{item.variantName && ` — ${item.variantName}`}</strong>
+            <span className="font-bold text-brand-deep">{toPersianDigits(item.quantity || 0)} عدد</span>
+          </div>
+          {lineId && <PackingUnitCodes orderItemId={lineId} />}
+        </li>;
+      })}
+    </ul> : <p className="text-sm text-slate-600">قلمی برای این سفارش نمایش داده نشده است.</p>}
+
+    <fieldset disabled={busy} className="space-y-3 print:hidden">
+      <legend className="mb-2 text-sm font-extrabold text-slate-900">مشخصات بسته</legend>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="text-sm font-semibold text-slate-800">وزن روی ترازو (گرم)
+          <input type="text" inputMode="numeric" dir="ltr" name="weightGrams" value={weightGrams} onChange={event => setWeightGrams(event.target.value)} required className={fieldClass} />
+        </label>
+        <label className="text-sm font-semibold text-slate-800">نوع بسته
+          <select value={boxSize} onChange={event => setBoxSize(event.target.value)} className={fieldClass}>
+            {boxOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </label>
+      </div>
+      <details className="group rounded-xl border border-slate-200 px-3">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-2 rounded-lg text-sm font-bold text-brand-deep focus-visible:ring-2 focus-visible:ring-brand [&::-webkit-details-marker]:hidden">
+          بررسی ابعاد بسته (اختیاری) <ChevronDown aria-hidden="true" className="size-4 group-open:rotate-180" />
+        </summary>
+        <div className="grid grid-cols-1 gap-3 pb-3 sm:grid-cols-3">
+          {dimensionFields.map(([field, label], index) => <label key={field} className="text-sm font-semibold text-slate-800">{label}
+            <input type="text" inputMode="numeric" dir="ltr" value={dimensions[index]} className={fieldClass}
+              onChange={event => setDimensions(current => current.map((value, position) => position === index ? event.target.value : value))} />
+          </label>)}
+        </div>
+      </details>
+    </fieldset>
+
+    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#e6e2f0] pt-3">
+      {typeof order.totalAmount === 'number' && <span className="text-sm text-slate-700">مبلغ سفارش <strong>{formatPrice(order.totalAmount)} تومان</strong></span>}
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={() => window.print()} className={secondaryButton}><FileText aria-hidden="true" className="size-4" />چاپ فاکتور برنددار</button>
+        <button type="button" onClick={() => window.print()} className={secondaryButton}><Printer aria-hidden="true" className="size-4" />چاپ فهرست بسته‌بندی</button>
+      </div>
+    </div>
+    {formError && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-800">{formError}</p>}
+    <button type="submit" disabled={busy} className={`${primaryButton} w-full sm:w-auto`}>
+      <Package aria-hidden="true" className="size-4" />{busy ? 'در حال ثبت…' : 'ثبت بسته‌بندی'}
+    </button>
+  </form>;
+}
+
+function parsePositiveInteger(value: string) {
+  const normalized = normalizePersianText(value.trim());
+  const parsed = Number(normalized);
+  return /^\d+$/.test(normalized) && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
 function PackingUnitCodes({ orderItemId }: { orderItemId: string }) {
-  const [codes, setCodes] = useState<string[]>([]);
+  const [result, setResult] = useState<{ codes: string[]; failed?: boolean } | null>(null);
   useEffect(() => {
     let current = true;
     async function load() {
@@ -357,14 +265,16 @@ function PackingUnitCodes({ orderItemId }: { orderItemId: string }) {
         codes.push(...page.units.map(unit => unit.code));
         cursor = page.next_cursor ?? undefined;
       } while (cursor && current);
-      if (current) setCodes(codes);
+      if (current) setResult({ codes });
     }
-    void load().catch(() => { if (current) setCodes([]); });
+    void load().catch(() => { if (current) setResult({ codes: [], failed: true }); });
     return () => { current = false; };
   }, [orderItemId]);
 
-  if (!codes.length) return null;
-  return <div className="spncx-pack-unit-code flex flex-wrap gap-x-2 text-[11px]">
-    {codes.map(code => <code key={code} dir="ltr" className="spncx-pack-unit-code font-mono">{code}</code>)}
+  if (!result) return <p role="status" className="spncx-pack-unit-code text-xs text-slate-600">در حال دریافت کدهای واحد…</p>;
+  if (result.failed) return <p role="alert" className="spncx-pack-unit-code text-xs text-rose-700">کدهای واحد دریافت نشدند.</p>;
+  if (!result.codes.length) return null;
+  return <div className="spncx-pack-unit-code flex flex-wrap gap-2 text-xs">
+    {result.codes.map(code => <code key={code} dir="ltr" className="spncx-pack-unit-code rounded-md bg-white px-2 py-1 font-mono text-brand-deep">{code}</code>)}
   </div>;
 }

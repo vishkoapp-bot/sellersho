@@ -1,347 +1,115 @@
-import { WarehouseUnitPrint } from './WarehouseUnitPrint';
-import { WarehouseReturnReceipt } from './WarehouseReturnReceipt';
-import { UnitLookup } from '../common/UnitLookup';
-import { UnitScanField } from '../common/UnitScanField';
-import { completeScan, unitMutationError, type ScannedUnit } from '../../utils/unitScan';
-import React, { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect, type ReactNode } from 'react';
 import { CustomerReturnBinEntry } from './CustomerReturnBinEntry';
-import { wmsApi, type UnitReceiptResult } from '../../services/wmsApi';
-import { apiRequest } from '../../services/apiClient';
-import { useToast } from '../../context/ToastContext';
-import { RotateCcw, Undo2, ScanLine, CheckCircle2, XCircle } from 'lucide-react';
+import { WarehouseReturnReceipt } from './WarehouseReturnReceipt';
+import { wmsApi } from '../../services/wmsApi';
+import { RefreshCw, RotateCcw, Undo2 } from 'lucide-react';
+import { SupplierEmptyState, SupplierResourceState } from '../supplier/SupplierResourceState';
+import { SupplierSectionHeading } from '../supplier/SupplierSectionHeading';
 
-// Live contract (live bundles, read-only) for the receive tab:
-// - GET /warehouse/shipments/{code} -> { shipment } (skuApi-MERGED.js, getShipmentByCode)
-// - POST /warehouse/shipments/{code}/receive { items: [{ variant_id, received_qty,
-//   qc_status }] } (skuApi-MERGED.js, receiveShipment)
-// Shipment items render only server fields: variant_name, product_title, spnc,
-// expected_qty. QC values are live's own "pass"/"fail"; the candidate backend
-// stores them as "passed"/"failed" (see report).
+export { WarehouseReceiveTab } from './WarehouseReceiveTab';
 
-interface ShipmentItem {
-  variant_id: string;
-  variant_name?: string;
-  product_title?: string;
-  spnc?: string;
-  expected_qty?: number;
-}
-
-interface Shipment {
-  shipment_code: string;
-  supplier_name?: string;
+type ReturnItem = Parameters<typeof WarehouseReturnReceipt>[0]['items'][number];
+interface ReturnRow {
+  id?: string;
+  orderId?: string;
+  order_id?: string;
+  orderNumber?: string;
   status?: string;
-  items?: ShipmentItem[];
+  reason?: string;
+  trackingNumber?: string;
+  returnCode?: string;
+  destinationName?: string;
+  destinationCity?: string;
+  supplierName?: string;
+  supplier_name?: string;
+  title?: string;
+  items?: ReturnItem[];
+  orderItems?: ReturnItem[];
+  order_items?: ReturnItem[];
 }
 
-export const WarehouseReceiveTab: React.FC = () => {
-  const { success, error } = useToast();
-  const [code, setCode] = useState('');
-  const [lookingUp, setLookingUp] = useState(false);
-  const [shipment, setShipment] = useState<Shipment | null>(null);
-  const [receivedQty, setReceivedQty] = useState<Record<string, string>>({});
-  const [qc, setQc] = useState<Record<string, 'pass' | 'fail'>>({});
-  const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
-  const [submitting, setSubmitting] = useState(false);
-  const [scans, setScans] = useState<Record<string, ScannedUnit[]>>({});
-  const [pending, setPending] = useState<Record<string, boolean>>({});
-  const [receipts, setReceipts] = useState<UnitReceiptResult[]>([]);
-  const [receiveError, setReceiveError] = useState('');
-
-  const alreadyReceived = shipment?.status === 'received' || shipment?.status === 'qc_passed';
-
-  const lookup = async () => {
-    const shipmentCode = code.trim().toUpperCase();
-    if (submitting || lookingUp) return;
-    if (!shipmentCode) { error('کد محموله را وارد کنید.'); return; }
-    setLookingUp(true);
-    try {
-      const data = await apiRequest<{ shipment: Shipment }>(`/warehouse/shipments/${encodeURIComponent(shipmentCode)}`, { method: 'GET', auth: true });
-      const found = data.shipment;
-      setShipment(found);
-      setScans({});
-      setPending({});
-      setReceipts([]);
-      setReceiveError('');
-      const qty: Record<string, string> = {};
-      const qcState: Record<string, 'pass' | 'fail'> = {};
-      const confirmedState: Record<string, boolean> = {};
-      (found.items || []).forEach((item) => {
-        qty[item.variant_id] = String(item.expected_qty ?? '');
-        qcState[item.variant_id] = 'pass';
-        confirmedState[item.variant_id] = false;
-      });
-      setReceivedQty(qty);
-      setQc(qcState);
-      setConfirmed(confirmedState);
-    } catch (cause) {
-      error(cause instanceof Error ? cause.message : 'محموله‌ای با این کد پیدا نشد.');
-      setShipment(null);
-    } finally {
-      setLookingUp(false);
-    }
-  };
-
-  const submit = async () => {
-    if (!shipment || submitting) return;
-    const items = (shipment.items || []).filter((item) => confirmed[item.variant_id]);
-    if (items.length === 0) { error('حداقل یک قلم را با «تأیید اسکن» تأیید کنید.'); return; }
-    const payload = items.map((item) => {
-      const parsed = Number(receivedQty[item.variant_id]);
-      return {
-        variant_id: item.variant_id,
-        received_qty: Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0,
-        qc_status: qc[item.variant_id] || 'pass',
-        ...(scans[item.variant_id]?.length ? { unit_codes: scans[item.variant_id].map(unit => unit.code) } : {}),
-      };
-    });
-    if (payload.some(item => pending[item.variant_id] || !completeScan(scans[item.variant_id] ?? [], item.received_qty))) {
-      setReceiveError('همه واحدهای ردیف را اسکن کنید یا اسکن‌ها را پاک کنید.');
-      return;
-    }
-    setSubmitting(true);
-    setReceiveError('');
-    try {
-      const result = await wmsApi.receiveShipment(shipment.shipment_code, { items: payload });
-      setReceipts(result && 'line_id' in result ? [result] : result?.items ?? []);
-      success('دریافت محموله ثبت شد.');
-      setShipment(null);
-      setCode('');
-    } catch (cause) {
-      setReceiveError(unitMutationError(cause, 'ثبت دریافت انجام نشد.'));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const confirmedCount = (shipment?.items || []).filter((item) => confirmed[item.variant_id]).length;
-
-  return (
-    <div className="space-y-3.5 pb-6">
-      <section aria-labelledby="warehouse-unit-lookup-heading" className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-2.5">
-        <h3 id="warehouse-unit-lookup-heading" className="text-xs font-extrabold text-slate-800">جست‌وجوی واحد</h3>
-        <UnitLookup compact />
-      </section>
-      <section className="rounded-2xl border border-slate-200/90 bg-white p-3.5 shadow-2xs space-y-2.5">
-        <h3 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
-          <ScanLine className="w-4 h-4 text-amber-600" strokeWidth={1.5} />
-          <span>دریافت محموله تأمین‌کننده</span>
-        </h3>
-        <div className="flex gap-2">
-          <input
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') void lookup(); }}
-            placeholder="کد محموله روی کارتن (اسکن یا تایپ دستی)"
-            className="flex-1 rounded-xl border border-slate-200 p-2.5 text-sm font-mono font-bold tracking-wider text-center focus:outline-hidden"
-            dir="ltr"
-          />
-          <button
-            type="button"
-            onClick={() => void lookup()}
-            disabled={lookingUp || submitting}
-            className="px-4 py-2.5 rounded-xl bg-amber-600 text-white text-xs font-bold hover:bg-amber-700 disabled:opacity-50 flex items-center gap-1.5"
-          >
-            <ScanLine className="w-4 h-4" strokeWidth={1.5} />
-            <span>اسکن</span>
-          </button>
-        </div>
-      </section>
-
-      {receiveError && <p role="alert" className="text-xs text-rose-700">{receiveError}</p>}
-      {receipts.map(receipt => <section key={receipt.line_id} className="space-y-2 rounded-xl border bg-white p-3">
-        <p>ردیف دریافت <bdi>{receipt.line_id}</bdi></p>
-        <div>{receipt.unit_codes?.map(code => <code dir="ltr" className="me-2" key={code}>{code}</code>)}</div>
-        <WarehouseUnitPrint receiptLineId={receipt.line_id} unitCodes={receipt.unit_codes} />
-      </section>)}
-      {shipment && (
-        <section className="space-y-3">
-          <div className="rounded-2xl border-2 border-amber-200 bg-amber-50 p-3.5 flex items-center justify-between">
-            <div>
-              <span className="font-mono text-lg font-black text-slate-900 tracking-widest" dir="ltr">{shipment.shipment_code}</span>
-              <span className="text-[11px] text-slate-600 block mt-0.5">تأمین‌کننده: {shipment.supplier_name}</span>
-            </div>
-            <span className="text-[10px] font-bold bg-white text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full">
-              {shipment.status}
-            </span>
-          </div>
-
-          <div className="space-y-2">
-            {(shipment.items || []).map((item) => {
-              const isConfirmed = !!confirmed[item.variant_id];
-              return (
-                <div
-                  key={item.variant_id}
-                  className={`rounded-2xl border bg-white p-3 space-y-2.5 ${isConfirmed ? 'border-emerald-300 ring-1 ring-emerald-200' : 'border-slate-200/90'}`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <span className="text-xs font-extrabold text-slate-900 block truncate">{item.variant_name}</span>
-                      <span className="text-[10px] text-slate-400 block truncate">{item.product_title}</span>
-                      <span className="font-mono text-[11px] font-bold text-slate-600" dir="ltr">SPNC: {item.spnc}</span>
-                    </div>
-                    <span className="text-[11px] font-bold text-slate-600 shrink-0 bg-slate-100 px-2 py-1 rounded-lg">
-                      مورد انتظار: {item.expected_qty}
-                    </span>
-                  </div>
-
-                  <button
-                    type="button"
-                    disabled={alreadyReceived || submitting}
-                    onClick={() => setConfirmed((current) => ({ ...current, [item.variant_id]: !current[item.variant_id] }))}
-                    className={`w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-[11px] font-extrabold border-2 border-dashed transition-colors disabled:opacity-50 ${isConfirmed ? 'bg-emerald-50 text-emerald-700 border-emerald-400 border-solid' : 'bg-slate-50 text-slate-600 border-slate-300'}`}
-                  >
-                    <CheckCircle2 className="w-4 h-4" strokeWidth={1.5} />
-                    <span>{isConfirmed ? 'اسکن تأیید شد — برای لغو بزنید' : 'تأیید اسکن و QC این قلم'}</span>
-                  </button>
-
-                  {!alreadyReceived && <UnitScanField
-                    key={shipment.shipment_code}
-                    disabled={submitting}
-                    scans={scans[item.variant_id] ?? []}
-                    quantity={Math.max(0, Number(receivedQty[item.variant_id]) || 0)}
-                    onChange={value => setScans(current => ({ ...current, [item.variant_id]: value }))}
-                    onPending={value => setPending(current => ({ ...current, [item.variant_id]: value }))}
-                  />}
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className="block">
-                      <span className="text-[10px] font-bold text-slate-500 block mb-1">تعداد دریافتی</span>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        min="0"
-                        disabled={alreadyReceived || submitting}
-                        value={receivedQty[item.variant_id] ?? ''}
-                        onChange={(e) => setReceivedQty((current) => ({ ...current, [item.variant_id]: e.target.value }))}
-                        className="w-full rounded-xl border border-slate-200 p-2 text-sm font-mono font-bold text-center disabled:bg-slate-50"
-                        dir="ltr"
-                      />
-                    </label>
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-500 block mb-1">نتیجه QC</span>
-                      <div className="grid grid-cols-2 gap-1.5">
-                        <button
-                          type="button"
-                          disabled={alreadyReceived || submitting}
-                          onClick={() => setQc((current) => ({ ...current, [item.variant_id]: 'pass' }))}
-                          className={`flex items-center justify-center gap-1 py-2 rounded-xl text-[11px] font-bold border transition-colors disabled:opacity-50 ${qc[item.variant_id] !== 'fail' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-emerald-700 border-emerald-200'}`}
-                        >
-                          <CheckCircle2 className="w-3.5 h-3.5" strokeWidth={1.5} />
-                          <span>سالم</span>
-                        </button>
-                        <button
-                          type="button"
-                          disabled={alreadyReceived || submitting}
-                          onClick={() => setQc((current) => ({ ...current, [item.variant_id]: 'fail' }))}
-                          className={`flex items-center justify-center gap-1 py-2 rounded-xl text-[11px] font-bold border transition-colors disabled:opacity-50 ${qc[item.variant_id] === 'fail' ? 'bg-rose-600 text-white border-rose-600' : 'bg-white text-rose-700 border-rose-200'}`}
-                        >
-                          <XCircle className="w-3.5 h-3.5" strokeWidth={1.5} />
-                          <span>مردود</span>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {alreadyReceived ? (
-            <p className="text-center text-[11px] text-slate-500 bg-white rounded-2xl border border-slate-200 p-3">
-              این محموله قبلاً دریافت شده است.
-            </p>
-          ) : (
-            <>
-              <p className="text-center text-[10px] text-slate-500">فقط اقلامی که «تأیید اسکن» شده‌اند ثبت می‌شوند.</p>
-              <button
-                type="button"
-                onClick={() => void submit()}
-                disabled={submitting || confirmedCount === 0 || Object.values(pending).some(Boolean)}
-                className="w-full py-3 rounded-2xl bg-amber-600 text-white text-sm font-extrabold hover:bg-amber-700 disabled:opacity-50 flex items-center justify-center gap-1.5"
-              >
-                <span>{submitting ? 'در حال ثبت…' : `تأیید دریافت محموله (${confirmedCount} قلم تأییدشده)`}</span>
-              </button>
-            </>
-          )}
-        </section>
-      )}
-    </div>
-  );
+const statuses: Record<string, string> = {
+  requested: 'درخواست‌شده', approved: 'آماده دریافت', in_transit: 'در مسیر انبار',
+  received: 'دریافت‌شده', refunded: 'وجه مسترد شد', rejected: 'ردشده', cancelled: 'لغوشده',
 };
+const card = 'min-w-0 space-y-3 rounded-[22px] border border-brand-border bg-white p-4 shadow-sm sm:p-5';
 
-function useList(fetch: () => Promise<any[]>) {
-  const [items, setItems] = useState<any[]>([]);
+function useList(fetch: () => Promise<ReturnRow[]>) {
+  const [items, setItems] = useState<ReturnRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  useEffect(() => {
-    let on = true;
-    fetch()
-      .then((list) => { if (on) setItems(list); })
-      .catch((err: any) => { if (on) setLoadError(err?.message || 'خطا در دریافت داده'); })
-      .finally(() => { if (on) setLoading(false); });
-    return () => { on = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return { items, loading, loadError };
+  const [loadError, setLoadError] = useState('');
+  const reload = useCallback(async () => {
+    setLoading(true);
+    setLoadError('');
+    try { setItems(await fetch()); }
+    catch (cause) { setLoadError(cause instanceof Error ? cause.message : 'فهرست مرجوعی‌ها دریافت نشد.'); }
+    finally { setLoading(false); }
+  }, [fetch]);
+  useEffect(() => { void reload(); }, [reload]);
+  return { items, loading, loadError, reload };
 }
 
-function ListShell({ title, icon, loading, loadError, empty, children }: {
-  title: string; icon: React.ReactNode; loading: boolean; loadError: string | null; empty: boolean; children: React.ReactNode;
+function ListShell({ title, description, icon, loading, loadError, reload, empty, children }: {
+  title: string; description: string; icon: ReactNode; loading: boolean; loadError: string; reload: () => Promise<void>; empty: boolean; children: ReactNode;
 }) {
   return (
-    <div className="space-y-3">
-      <div className="bg-white rounded-2xl border border-slate-200 p-4 flex items-center gap-2">
-        {icon}
-        <h3 className="text-xs font-bold text-slate-800">{title}</h3>
-      </div>
-      {loading && <div className="bg-white rounded-2xl border border-slate-200 p-4 text-xs text-slate-500">در حال بارگذاری…</div>}
-      {loadError && <div className="bg-white rounded-2xl border border-rose-200 p-4 text-xs text-rose-600">{loadError}</div>}
-      {!loading && !loadError && empty && (
-        <div className="bg-white rounded-2xl border border-slate-200 p-4 text-xs text-slate-500">موردی یافت نشد.</div>
-      )}
+    <div className="space-y-4 pb-6">
+      <SupplierSectionHeading title={title} description={description} icon={icon}
+        action={<button type="button" disabled={loading} onClick={() => void reload()}
+          className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-brand-border bg-white px-3 text-sm font-bold text-brand-deep hover:bg-brand-bg focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60">
+          <RefreshCw aria-hidden="true" className={`size-4 ${loading ? 'motion-safe:animate-spin' : ''}`} />به‌روزرسانی
+        </button>} />
+      <SupplierResourceState loading={loading} error={loadError} retry={() => void reload()} />
+      {!loading && !loadError && empty && <SupplierEmptyState icon={icon} title="درخواست مرجوعی در این فهرست نیست." />}
       {!loading && !loadError && !empty && children}
     </div>
   );
 }
 
-const pick = (item: any, keys: string[]): string => {
-  for (const k of keys) {
-    const v = item?.[k];
-    if (v !== undefined && v !== null && v !== '') return String(v);
-  }
-  return '—';
-};
-
-export const WarehouseCustomerReturnsTab: React.FC = () => {
-  const { items, loading, loadError } = useList(() => wmsApi.getCustomerReturns());
+export function WarehouseCustomerReturnsTab() {
+  const { items, ...state } = useList(wmsApi.getCustomerReturns);
   return (
-    <ListShell title="دریافت مرجوعی (SKU)" icon={<RotateCcw className="w-4 h-4 text-slate-500" />} loading={loading} loadError={loadError} empty={items.length === 0}>
-      {items.map((r: any, i: number) => (
-        <div key={r.id || i} className="bg-white rounded-2xl border border-slate-200 p-4 space-y-1">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-bold text-slate-800">سفارش {pick(r, ['orderId', 'order_id', 'orderNumber'])}</span>
-            <span className="text-[10px] font-bold bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full">{pick(r, ['status'])}</span>
+    <ListShell title="مرجوعی مشتریان" description="دریافت و جانمایی اقلام برگشتی را ثبت کنید." icon={<RotateCcw />} empty={items.length === 0} {...state}>
+      {items.map((item, i) => (
+        <section key={item.id || i} className={card}>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <h3 className="min-w-0 break-words text-base font-extrabold text-slate-900">سفارش <bdi className="font-mono">{item.orderNumber || item.orderId || item.order_id || '—'}</bdi></h3>
+            {item.status && <span className="rounded-full bg-brand-soft px-3 py-1 text-xs font-bold text-brand-deep">{statuses[item.status] || item.status}</span>}
           </div>
-          {r.reason && <p className="text-[11px] text-slate-600">دلیل: {r.reason}</p>}
-          {r.trackingNumber && <p className="text-[11px] text-slate-500">کد رهگیری: {r.trackingNumber}</p>}
-          {(r.status === 'received' || r.status === 'refunded') ? <CustomerReturnBinEntry returnID={r.id} /> :
-            <WarehouseReturnReceipt returnId={r.id} orderId={r.orderId ?? r.order_id} items={r.items ?? r.orderItems ?? r.order_items ?? []} />}
-        </div>
+          {item.destinationName && <p className="text-sm text-slate-700">مقصد {item.destinationName}{item.destinationCity && ` · ${item.destinationCity}`}</p>}
+          {item.id ? (
+            item.status === 'received' || item.status === 'refunded' ? <CustomerReturnBinEntry returnID={item.id} /> :
+              <WarehouseReturnReceipt returnId={item.id} orderId={item.orderId ?? item.order_id} items={item.items ?? item.orderItems ?? item.order_items ?? []} />
+          ) : <p role="alert" className="text-sm text-rose-800">شناسه مرجوعی در دسترس نیست.</p>}
+          {(item.reason || item.trackingNumber || item.returnCode) && <details className="border-t border-brand-border">
+            <summary className="min-h-11 cursor-pointer py-2.5 text-sm font-bold text-brand-deep">جزئیات مرجوعی</summary>
+            <dl className="space-y-1 text-sm text-slate-700">
+              {item.returnCode && <div><dt className="inline font-bold">کد مرجوعی </dt><dd className="inline"><bdi className="break-all font-mono">{item.returnCode}</bdi></dd></div>}
+              {item.trackingNumber && <div><dt className="inline font-bold">کد رهگیری </dt><dd className="inline"><bdi className="break-all font-mono">{item.trackingNumber}</bdi></dd></div>}
+              {item.reason && <div><dt className="inline font-bold">دلیل </dt><dd className="inline break-words">{item.reason}</dd></div>}
+            </dl>
+          </details>}
+        </section>
       ))}
     </ListShell>
   );
-};
+}
 
-export const WarehouseReturnBacksTab: React.FC = () => {
-  const { items, loading, loadError } = useList(() => wmsApi.getReturnBacks());
+export function WarehouseReturnBacksTab() {
+  const { items, ...state } = useList(wmsApi.getReturnBacks);
   return (
-    <ListShell title="درخواست‌های برگشت تأمین‌کننده" icon={<Undo2 className="w-4 h-4 text-slate-500" />} loading={loading} loadError={loadError} empty={items.length === 0}>
-      {items.map((r: any, i: number) => (
-        <div key={r.id || i} className="bg-white rounded-2xl border border-slate-200 p-4 space-y-1">
-          <span className="text-xs font-bold text-slate-800 block">{pick(r, ['supplierName', 'supplier_name', 'title', 'id'])}</span>
-          <span className="text-[11px] text-slate-500 block">وضعیت: {pick(r, ['status'])}</span>
-          {r.reason && <p className="text-[11px] text-slate-600">دلیل: {r.reason}</p>}
-        </div>
+    <ListShell title="پیگیری برگشت‌ها" description="وضعیت مرجوعی‌های در راه انبار یا دریافت‌شده را ببینید." icon={<Undo2 />} empty={items.length === 0} {...state}>
+      {items.map((item, i) => (
+        <section key={item.id || i} className={card}>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <h3 className="min-w-0 break-words text-base font-extrabold text-slate-900">
+              {item.supplierName || item.supplier_name || item.title || <>سفارش <bdi className="break-all font-mono">{item.orderNumber || item.orderId || item.order_id || item.id || '—'}</bdi></>}
+            </h3>
+            {item.status && <span className="rounded-full bg-brand-soft px-3 py-1 text-xs font-bold text-brand-deep">{statuses[item.status] || item.status}</span>}
+          </div>
+          {item.reason && <p className="break-words text-sm text-slate-700">{item.reason}</p>}
+        </section>
       ))}
     </ListShell>
   );
-};
+}

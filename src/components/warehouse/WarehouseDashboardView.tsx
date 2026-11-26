@@ -1,196 +1,128 @@
-import React, { useState, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { 
-  ArrowRight, 
-  LayoutDashboard, 
-  Truck, 
-  ShieldCheck, 
-  Layers, 
-  ScanLine, 
-  Package, 
-  Send, 
-  RotateCcw,
-  PackageCheck,
-  Undo2,
-  LogOut,
-  Bell
-} from 'lucide-react';
-
-import { WarehouseAuthGuard } from './WarehouseAuthGuard';
-import { RoleNotificationDrawer } from '../common/RoleNotificationDrawer';
 import { warehouseNotificationsApi } from '../../services/notificationsApi';
-import { WarehouseOverviewTab } from './WarehouseOverviewTab';
+import { ErrorBoundary } from '../ErrorBoundary';
+import { PanelWorkspace } from '../common/PanelWorkspace';
+import { RoleNotificationDrawer } from '../common/RoleNotificationDrawer';
+import { WarehouseAuthGuard } from './WarehouseAuthGuard';
 import { WarehouseInboundTab } from './WarehouseInboundTab';
-import { WarehouseQCTab } from './WarehouseQCTab';
-import { WarehousePutawayTab } from './WarehousePutawayTab';
-import { WarehousePickingTab } from './WarehousePickingTab';
+import { WarehouseInventoryTab } from './WarehouseInventoryTab';
+import {
+  warehouseNavigation, warehouseSections, warehouseSectionFromSearch, warehouseSectionHref,
+  WarehouseWorkflow, type WarehouseSection,
+} from './WarehouseNavigation';
+import { WarehouseCustomerReturnsTab, WarehouseReceiveTab, WarehouseReturnBacksTab } from './WarehouseNewTabs';
+import { WarehouseOverviewTab } from './WarehouseOverviewTab';
 import { WarehousePackingTab } from './WarehousePackingTab';
-import { WarehouseShippingTab } from './WarehouseShippingTab';
+import { WarehousePickingTab } from './WarehousePickingTab';
+import { WarehousePutawayTab } from './WarehousePutawayTab';
+import { WarehouseQCTab } from './WarehouseQCTab';
 import { WarehouseReturnsTab } from './WarehouseReturnsTab';
-import { WarehouseReceiveTab, WarehouseCustomerReturnsTab, WarehouseReturnBacksTab } from './WarehouseNewTabs';
+import { WarehouseShippingTab } from './WarehouseShippingTab';
 
-interface Props {
-  onBackToCustomerSite: () => void;
+interface Handoff {
+  inboundId?: string;
+  receiptLineIds?: string[];
+  binCode?: string;
+  orderNumber?: string;
+  orderId?: string;
 }
 
-export const WarehouseDashboardView: React.FC<Props> = ({ onBackToCustomerSite }) => {
-  const { warehouseSession, logoutWarehouse } = useStore();
-  const [activeTab, setActiveTab] = useState('overview');
-  const [selectedPackingOrderId, setSelectedPackingOrderId] = useState<string | undefined>();
-  // Warehouse notification inbox (Phase 2, W2): the bell count is
-  // fetched once on mount so it is live on first paint; the drawer
-  // re-fetches on every open.
-  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
-  const [isNotifOpen, setIsNotifOpen] = useState(false);
+interface WarehouseLocation {
+  section: WarehouseSection;
+  scope?: string;
+  handoff?: Handoff;
+}
+
+function readWarehouseLocation(): WarehouseLocation {
+  if (typeof window === 'undefined') return { section: 'overview' };
+  const section = warehouseSectionFromSearch(window.location.search);
+  const saved: WarehouseLocation | undefined = window.history.state?.warehouseWorkflow;
+  return saved?.section === section ? { section, scope: saved.scope, handoff: saved.handoff } : { section };
+}
+
+export function WarehouseDashboardView({ onBackToCustomerSite }: { onBackToCustomerSite: () => void }) {
+  const { warehouseSession, logoutWarehouse, toPersianDigits } = useStore();
+  const [location, setLocation] = useState(readWarehouseLocation);
+  const mainRef = useRef<HTMLElement>(null);
+  const scope = warehouseSession ? `${warehouseSession.staffId}:${warehouseSession.warehouseId}` : undefined;
+  const { section } = location;
+  const activeTitle = warehouseSections.find(item => item.id === section)?.label ?? 'پیشخوان انبار';
+  const handoff = scope && location.scope === scope ? location.handoff : undefined;
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+
   useEffect(() => {
+    if (!warehouseSession?.token) return;
     let cancelled = false;
     warehouseNotificationsApi.getNotifications()
-      .then((res) => { if (!cancelled) setUnreadNotifCount(res.unreadCount); })
+      .then(result => { if (!cancelled) setUnreadCount(result.unreadCount); })
       .catch(() => undefined);
     return () => { cancelled = true; };
+  }, [warehouseSession?.token]);
+
+  useEffect(() => {
+    const restoreLocation = () => {
+      setLocation(readWarehouseLocation());
+      window.requestAnimationFrame(() => mainRef.current?.focus({ preventScroll: true }));
+    };
+    window.addEventListener('popstate', restoreLocation);
+    return () => window.removeEventListener('popstate', restoreLocation);
   }, []);
 
-  // FIX 17: live warehouse menu (WarehouseDashboardView-MERGED.js):
-  // 11 live tabs in this exact order. 'receive', 'customer-returns'
-  // and 'return-backs' were missing; 'returns' is relabelled to
-  // live's meaning (supplier returns), not customer returns.
-  const menuItems = [
-    { id: 'overview', label: 'نمای کلی انبار', icon: LayoutDashboard },
-    { id: 'receive', label: 'دریافت محموله (SKU)', icon: PackageCheck },
-    { id: 'inbound', label: 'بارانداز ورودی', icon: Truck },
-    { id: 'qc', label: 'کنترل کیفیت (QC)', icon: ShieldCheck },
-    { id: 'putaway', label: 'جانمایی در قفسه', icon: Layers },
-    { id: 'picking', label: 'جمع‌آوری (Pick)', icon: ScanLine },
-    { id: 'packing', label: 'میز بسته‌بندی', icon: Package },
-    { id: 'shipping', label: 'مانیفست خروج', icon: Send },
-    { id: 'returns', label: 'مرجوعی‌های تأمین‌کنندگان', icon: RotateCcw },
-    { id: 'customer-returns', label: 'دریافت مرجوعی (SKU)', icon: RotateCcw },
-    { id: 'return-backs', label: 'درخواست‌های برگشت تأمین‌کننده', icon: Undo2 },
-  ];
-
-  // Header back button: from inside any tab it first returns to the
-  // panel's own main view (the overview tab, which is what the panel
-  // opens on; this panel has no per-tab permissions, so the home tab
-  // is always 'overview'). Only on that main view does the button
-  // leave the panel for the customer site.
-  const panelHomeTab = 'overview';
-  const panelHomeLabel = menuItems.find((item) => item.id === panelHomeTab)?.label;
-  const isPanelHome = activeTab === panelHomeTab;
-  const handleHeaderBack = () => {
-    if (!isPanelHome) {
-      setActiveTab(panelHomeTab);
-    } else {
-      onBackToCustomerSite();
+  const navigate = useCallback((next: WarehouseSection, task?: Handoff) => {
+    const href = warehouseSectionHref(next);
+    const current = readWarehouseLocation();
+    const entry: WarehouseLocation = { section: next, scope, handoff: task };
+    if (href !== window.location.pathname + window.location.search + window.location.hash ||
+      current.scope !== scope || JSON.stringify(current.handoff) !== JSON.stringify(task)) {
+      // Task identities follow this history entry. The shareable URL only
+      // identifies the queue, and another signed-in operator gets its own view.
+      window.history.pushState({ activeView: 'warehouse_panel', warehouseWorkflow: entry }, '', href);
     }
-  };
+    setLocation(entry);
+    window.requestAnimationFrame(() => {
+      mainRef.current?.focus({ preventScroll: true });
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    });
+  }, [scope]);
+
+  const goToQC = (inboundId?: string) => navigate('qc', inboundId ? { inboundId } : undefined);
+  const goToPutaway = (inboundId?: string) => navigate('putaway', inboundId ? { inboundId } : undefined);
+  const outboundSelection = { selectedOrderNumber: handoff?.orderNumber, selectedOrderId: handoff?.orderId };
 
   return (
     <WarehouseAuthGuard onBackToCustomerSite={onBackToCustomerSite}>
-    <div className="flex-1 flex flex-col bg-[#f8fafc]">
-      {/* Top Header */}
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 px-3.5 py-2.5 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleHeaderBack}
-            className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
-            title={isPanelHome ? 'بازگشت به سایت اصلی' : `بازگشت به ${panelHomeLabel}`}
-            aria-label={isPanelHome ? 'بازگشت به سایت اصلی' : `بازگشت به ${panelHomeLabel}`}
-          >
-            <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
-          </button>
-          <div>
-            <h1 className="text-xs font-bold text-slate-800">سامانه مدیریت انبار مکانیزه مرکزی (WMS)</h1>
-            <span className="text-[10px] text-slate-400 block">
-              {warehouseSession ? `${warehouseSession.warehouseName} • ${warehouseSession.staffName}` : 'پذیرش، کنترل کیفیت، جمع‌آوری و ارسال'}
-            </span>
+      <PanelWorkspace id="warehouse" label="انبار" name={warehouseSession?.staffName || 'پنل انبار'}
+        title={activeTitle} current={section} groups={warehouseNavigation} href={warehouseSectionHref} onNavigate={navigate}
+        onBackToSite={onBackToCustomerSite} onLogout={logoutWarehouse} logoutLabel="خروج از شیفت انبار"
+        onOpenNotifications={() => setNotificationsOpen(true)} unreadCount={unreadCount}
+        formatCount={toPersianDigits} mainRef={mainRef}>
+        <ErrorBoundary key={`${scope}:${section}:${JSON.stringify(handoff ?? {})}`}
+          title={activeTitle} onReset={() => navigate('overview')}>
+          <div className="space-y-4 select-text">
+            <WarehouseWorkflow section={section} navigate={navigate} />
+            {section === 'overview' && <WarehouseOverviewTab onNavigateTab={navigate} />}
+            {section === 'receive' && <WarehouseReceiveTab onGoToQC={receiptLineIds => navigate('qc', { receiptLineIds })} />}
+            {section === 'inbound' && <WarehouseInboundTab onGoToQC={goToQC} />}
+            {section === 'qc' && <WarehouseQCTab initialInboundId={handoff?.inboundId}
+              initialReceiptLineIds={handoff?.receiptLineIds} onGoToPutaway={goToPutaway} />}
+            {section === 'putaway' && <WarehousePutawayTab initialInboundId={handoff?.inboundId}
+              onGoToPicking={() => navigate('picking')} onGoToInventory={binCode => navigate('inventory', { binCode })} />}
+            {section === 'inventory' && <WarehouseInventoryTab initialBinCode={handoff?.binCode} />}
+            {section === 'picking' && <WarehousePickingTab onGoToPacking={(orderNumber, orderId) => navigate('packing', { orderId, orderNumber })} />}
+            {section === 'packing' && <WarehousePackingTab {...outboundSelection}
+              onGoToShipping={(orderNumber, orderId) => navigate('shipping', { orderId, orderNumber })} />}
+            {section === 'shipping' && <WarehouseShippingTab {...outboundSelection} />}
+            {section === 'returns' && <WarehouseReturnsTab />}
+            {section === 'customer-returns' && <WarehouseCustomerReturnsTab />}
+            {section === 'return-backs' && <WarehouseReturnBacksTab />}
           </div>
-        </div>
-        {warehouseSession && (
-          <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => setIsNotifOpen(true)}
-            className="relative p-2 rounded-xl hover:bg-slate-100 text-slate-600 transition-colors"
-            title="اعلان‌ها"
-            aria-label={unreadNotifCount > 0 ? `اعلان‌ها (${unreadNotifCount} خوانده‌نشده)` : 'اعلان‌ها'}
-          >
-            <Bell className="w-5 h-5" strokeWidth={1.5} />
-            {unreadNotifCount > 0 && (
-              <span className="absolute -top-0.5 -left-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold flex items-center justify-center">
-                {unreadNotifCount}
-              </span>
-            )}
-          </button>
-          <button
-            onClick={logoutWarehouse}
-            className="flex items-center gap-1 text-[11px] font-bold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 px-2.5 py-1 rounded-xl transition-colors border border-rose-200"
-            title="خروج از شیفت انبار"
-          >
-            <LogOut className="w-3.5 h-3.5"  strokeWidth={1.5}/>
-            <span>خروج شیفت</span>
-          </button>
-          </div>
-        )}
-      </header>
-
-      {/* Horizontal Tabs */}
-      <div className="bg-white border-b border-slate-200/80 px-2 py-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-        {menuItems.map((item) => {
-          const Icon = item.icon;
-          const isActive = activeTab === item.id;
-          return (
-            <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all shrink-0 ${
-                isActive
-                  ? 'bg-amber-600 text-white shadow-xs'
-                  : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
-              }`}
-            >
-              <Icon className="w-3.5 h-3.5" />
-              <span>{item.label}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Main Tab Content */}
-      <div className="p-3.5 flex-1">
-        {activeTab === 'overview' && <WarehouseOverviewTab onNavigateTab={setActiveTab} />}
-        {activeTab === 'inbound' && <WarehouseInboundTab onGoToQC={() => setActiveTab('qc')} />}
-        {activeTab === 'qc' && <WarehouseQCTab onGoToPutaway={() => setActiveTab('putaway')} />}
-        {activeTab === 'putaway' && <WarehousePutawayTab onGoToPicking={() => setActiveTab('picking')} />}
-        {activeTab === 'picking' && (
-          <WarehousePickingTab
-            onGoToPacking={(orderNumber) => {
-              setSelectedPackingOrderId(orderNumber);
-              setActiveTab('packing');
-            }}
-          />
-        )}
-        {activeTab === 'packing' && (
-          <WarehousePackingTab
-            selectedOrderNumber={selectedPackingOrderId}
-            onGoToShipping={() => setActiveTab('shipping')}
-          />
-        )}
-        {activeTab === 'shipping' && <WarehouseShippingTab />}
-        {activeTab === 'returns' && <WarehouseReturnsTab />}
-        {activeTab === 'receive' && <WarehouseReceiveTab />}
-        {activeTab === 'customer-returns' && <WarehouseCustomerReturnsTab />}
-        {activeTab === 'return-backs' && <WarehouseReturnBacksTab />}
-      </div>
-    </div>
-      <RoleNotificationDrawer
-        isOpen={isNotifOpen}
-        onClose={() => setIsNotifOpen(false)}
-        title="اعلان‌های انبار"
-        emptyTitle="اعلان جدیدی نیست."
-        emptyHint="محموله ورودی یا مرجوعی آماده کنترل کیفیت که به شما برسد اینجا می‌آید."
-        accent="amber"
-        api={warehouseNotificationsApi}
-        onUnreadCountChange={setUnreadNotifCount}
-      />
+        </ErrorBoundary>
+      </PanelWorkspace>
+      <RoleNotificationDrawer isOpen={notificationsOpen} onClose={() => setNotificationsOpen(false)} title="اعلان‌های انبار"
+        emptyTitle="اعلان جدیدی نیست." emptyHint="ورود محموله و مرجوعیِ آمادهٔ کنترل کیفیت اینجا نمایش داده می‌شوند."
+        accent="brand" api={warehouseNotificationsApi} onUnreadCountChange={setUnreadCount} panelDialogId="warehouse-notifications-title" />
     </WarehouseAuthGuard>
   );
-};
+}

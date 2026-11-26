@@ -1,31 +1,160 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { apiRequest } from '../../services/apiClient';
 import { useStore } from '../../context/StoreContext';
-interface Point { x: number; y: number; z: number; }
-const nf = new Intl.NumberFormat('fa-IR', { maximumFractionDigits: 2 });
-const CoordinateInputs: React.FC<{ value: Point; onChange: (p: Point) => void }> = ({ value, onChange }) => <div className="grid grid-cols-3 gap-2" dir="ltr">{(['x', 'y', 'z'] as const).map((axis) => <label key={axis} className="text-[11px] text-slate-500">{axis.toUpperCase()} (متر)<input aria-label={`مختصات ${axis}`} type="number" step="0.01" value={value[axis]} onChange={(e) => onChange({ ...value, [axis]: Number(e.target.value) })} className="mt-1 w-full rounded-lg border px-2 py-2 text-xs" /></label>)}</div>;
 
-export const BinSuggestions: React.FC<{ taskId: string; onSelect: (bin: string) => void }> = ({ taskId, onSelect }) => {
+interface Point { x: number; y: number; z: number; }
+interface Route { stops: { binCode: string; items: string[] }[]; missingBins: string[]; distanceMeters: number; algorithm: string; }
+
+const nf = new Intl.NumberFormat('fa-IR', { maximumFractionDigits: 2 });
+const detailClass = 'rounded-2xl border border-brand-border bg-white px-4';
+const summaryClass = 'min-h-11 cursor-pointer py-3 text-sm font-extrabold text-brand-deep';
+const inputClass = 'min-h-11 w-full min-w-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-base focus-visible:outline-2 focus-visible:outline-brand sm:text-sm';
+const actionClass = 'min-h-11 rounded-xl bg-brand-deep px-4 py-2 text-sm font-bold text-white hover:bg-brand-deep/90 focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60';
+
+function CoordinateInputs({ value, onChange }: { value: Point; onChange: (point: Point) => void }) {
+  return (
+    <div className="grid grid-cols-3 gap-2" dir="ltr">
+      {(['x', 'y', 'z'] as const).map(axis => (
+        <label key={axis} className="min-w-0 space-y-1 text-sm font-medium text-slate-700">
+          <span className="block">{axis.toUpperCase()} (متر)</span>
+          <input aria-label={`مختصات ${axis}`} type="number" step="0.01" value={value[axis]}
+            onFocus={event => event.currentTarget.select()}
+            onChange={event => onChange({ ...value, [axis]: Number(event.target.value) })} className={inputClass} />
+        </label>
+      ))}
+    </div>
+  );
+}
+
+export function BinSuggestions({ taskId, onSelect }: { taskId: string; onSelect: (bin: string) => void }) {
   const [origin, setOrigin] = useState<Point>({ x: 0, y: 0, z: 0 });
   const [rows, setRows] = useState<{ binCode: string; distanceMeters: number }[] | null>(null);
-  const [busy, setBusy] = useState(false); const [error, setError] = useState('');
-  const suggest = async () => { setBusy(true); setError(''); try { setRows(await apiRequest(`/warehouse/putaway/tasks/${encodeURIComponent(taskId)}/suggestions`, { method: 'POST', auth: true, body: JSON.stringify(origin) })); } catch (e) { setError(e instanceof Error ? e.message : 'دریافت پیشنهاد ناموفق بود.'); } finally { setBusy(false); } };
-  return <details className="rounded-xl border border-teal-100 bg-teal-50/40 p-3 text-xs"><summary className="cursor-pointer font-bold text-teal-800">پیشنهاد نزدیک‌ترین قفسهٔ مناسب</summary><div className="mt-3 space-y-3"><p className="text-[11px] leading-5 text-slate-500">محل فعلی کالا را بر حسب متر وارد کنید. فقط قفسه‌های همین انبار با مختصات، ظرفیت و وزن مجاز تأییدشده پیشنهاد می‌شوند.</p><CoordinateInputs value={origin} onChange={setOrigin} /><button type="button" disabled={busy} onClick={() => void suggest()} className="rounded-xl bg-teal-700 px-3 py-2 text-white disabled:opacity-50">{busy ? 'در حال محاسبه…' : 'محاسبهٔ پیشنهادها'}</button>{error && <p role="alert" className="text-rose-700">{error}</p>}{rows?.length === 0 && <p>قفسهٔ مناسب پیدا نشد؛ مختصات و ظرفیت‌ها را بررسی کنید.</p>}{rows?.map((b) => <button type="button" key={b.binCode} onClick={() => onSelect(b.binCode)} className="flex w-full justify-between rounded-lg border bg-white px-3 py-2"><span dir="ltr">{b.binCode}</span><span>{nf.format(b.distanceMeters)} متر · انتخاب</span></button>)}</div></details>;
-};
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
 
-interface Route { stops: { binCode: string; items: string[] }[]; missingBins: string[]; distanceMeters: number; algorithm: string; }
-export const PickingRoutePlanner: React.FC<{ orderIds: string[] }> = ({ orderIds }) => {
-  const [start, setStart] = useState<Point>({ x: 0, y: 0, z: 0 }); const [warehouse, setWarehouse] = useState('');
-  const [route, setRoute] = useState<Route | null>(null); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
-  const optimize = async () => { setError(''); setRoute(null); setBusy(true); try { setRoute(await apiRequest('/warehouse/picking-route', { method: 'POST', auth: true, body: JSON.stringify({ start, warehouse, orderIds }) })); } catch (e) { setError(e instanceof Error ? e.message : 'محاسبهٔ مسیر ناموفق بود.'); } finally { setBusy(false); } };
-  return <section className="space-y-3 rounded-2xl border border-teal-200 bg-white p-4 text-xs"><h3 className="font-bold text-teal-900">مسیر جمع‌آوری گروهی سفارش‌ها</h3><p className="leading-6 text-slate-500">نام انبار و مختصات میز شروع را وارد کنید. مسیر به میز شروع بازمی‌گردد؛ تا ۱۴ قفسه حل دقیق TSP و برای دسته‌های بزرگ‌تر روش تقریبی به کار می‌رود.</p><input aria-label="نام انبار مسیر" value={warehouse} onChange={(e) => setWarehouse(e.target.value)} placeholder="نام ثبت‌شدهٔ انبار" className="w-full rounded-xl border px-3 py-2" /><CoordinateInputs value={start} onChange={setStart} /><button type="button" disabled={busy || !warehouse.trim() || orderIds.length === 0} onClick={() => void optimize()} className="rounded-xl bg-teal-700 px-4 py-2 text-white disabled:opacity-50">{busy ? 'در حال محاسبه…' : `محاسبه برای ${nf.format(orderIds.length)} سفارش صف`}</button>{error && <p role="alert" className="text-rose-700">{error}</p>}{route && <div className="space-y-2">{route.missingBins.length > 0 && <p role="alert" className="rounded-xl bg-amber-50 p-3 text-amber-900">مسیر ناقص است؛ این جایگاه‌ها مختصات معتبر در این انبار ندارند: {route.missingBins.join('، ')}</p>}<strong>{nf.format(route.distanceMeters)} متر · {route.algorithm === 'held-karp' ? 'حل دقیق' : 'مسیر تقریبی'}</strong><ol className="space-y-2">{route.stops.map((s, i) => <li key={s.binCode} className="rounded-xl bg-slate-50 p-3"><strong>{nf.format(i + 1)}. <bdi>{s.binCode}</bdi></strong>{s.items.map((item) => <p key={item} className="mt-1 text-slate-500">{item}</p>)}</li>)}</ol><p className="text-slate-500">پایان: بازگشت به میز شروع</p></div>}</section>;
-};
+  const suggest = async () => {
+    setBusy(true);
+    setError('');
+    setRows(null);
+    try {
+      setRows(await apiRequest(`/warehouse/putaway/tasks/${encodeURIComponent(taskId)}/suggestions`, {
+        method: 'POST', auth: true, body: JSON.stringify(origin),
+      }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'دریافت پیشنهاد ناموفق بود.');
+    } finally {
+      setBusy(false);
+    }
+  };
 
-export const WarehousePositionEditor: React.FC = () => {
+  return (
+    <details className={detailClass}>
+      <summary className={summaryClass}>پیشنهاد قفسه نزدیک</summary>
+      <form onSubmit={event => { event.preventDefault(); if (!busy) void suggest(); }} className="space-y-3 pb-4">
+        <p className="text-sm leading-6 text-slate-600">مختصات فعلی کالا را بر حسب متر وارد کنید.</p>
+        <CoordinateInputs value={origin} onChange={value => { setOrigin(value); setRows(null); }} />
+        <button type="submit" disabled={busy} className={actionClass}>{busy ? 'در حال محاسبه…' : 'پیدا کردن قفسه مناسب'}</button>
+        {error && <p role="alert" className="text-sm text-rose-800">{error}</p>}
+        {rows?.length === 0 && <p role="status" className="text-sm text-slate-700">قفسهٔ مناسب پیدا نشد. مختصات و ظرفیت‌ها را بررسی کنید.</p>}
+        {rows?.map(bin => (
+          <button type="button" key={bin.binCode} onClick={() => onSelect(bin.binCode)}
+            className="flex min-h-11 w-full flex-wrap items-center justify-between gap-2 rounded-xl border border-brand-border bg-brand-bg px-3 py-2 text-sm font-medium text-brand-deep focus-visible:ring-2 focus-visible:ring-brand">
+            <bdi className="break-all font-mono">{bin.binCode}</bdi>
+            <span>{nf.format(bin.distanceMeters)} متر · انتخاب</span>
+          </button>
+        ))}
+      </form>
+    </details>
+  );
+}
+
+export function PickingRoutePlanner({ orderIds }: { orderIds: string[] }) {
+  const [start, setStart] = useState<Point>({ x: 0, y: 0, z: 0 });
+  const [warehouse, setWarehouse] = useState('');
+  const [route, setRoute] = useState<Route | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const canOptimize = !busy && warehouse.trim() && orderIds.length > 0;
+
+  const optimize = async () => {
+    setError('');
+    setRoute(null);
+    setBusy(true);
+    try {
+      setRoute(await apiRequest('/warehouse/picking-route', { method: 'POST', auth: true, body: JSON.stringify({ start, warehouse, orderIds }) }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'محاسبهٔ مسیر ناموفق بود.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <details className={detailClass}>
+      <summary className={summaryClass}>مسیر جمع‌آوری گروهی سفارش‌ها</summary>
+      <form onSubmit={event => { event.preventDefault(); if (canOptimize) void optimize(); }} className="space-y-3 pb-4">
+        <p className="text-sm leading-6 text-slate-600">نام انبار و مختصات میز شروع را وارد کنید.</p>
+        <label className="block space-y-1 text-sm font-medium text-slate-700">
+          <span className="block">نام ثبت‌شدهٔ انبار</span>
+          <input aria-label="نام انبار مسیر" value={warehouse} onChange={event => setWarehouse(event.target.value)} className={inputClass} />
+        </label>
+        <CoordinateInputs value={start} onChange={setStart} />
+        <button type="submit" disabled={!canOptimize} className={actionClass}>
+          {busy ? 'در حال محاسبه…' : `محاسبه مسیر برای ${nf.format(orderIds.length)} سفارش`}
+        </button>
+        {error && <p role="alert" className="text-sm text-rose-800">{error}</p>}
+        {route && <div className="space-y-2 text-sm text-slate-700">
+          {route.missingBins.length > 0 && <p role="alert" className="rounded-xl bg-amber-50 p-3 text-amber-900">مسیر ناقص است. مختصات این قفسه‌ها در انبار ثبت نشده است. {route.missingBins.map(bin => <bdi className="me-2 break-all font-mono" key={bin}>{bin}</bdi>)}</p>}
+          <p role="status" className="font-bold">{nf.format(route.distanceMeters)} متر · {route.algorithm === 'held-karp' ? 'مسیر دقیق' : 'مسیر تقریبی'}</p>
+          <ol className="space-y-2">{route.stops.map((stop, i) => <li key={stop.binCode} className="rounded-xl bg-brand-bg p-3">
+            <strong>{nf.format(i + 1)}. <bdi className="break-all font-mono">{stop.binCode}</bdi></strong>
+            {stop.items.map(item => <p key={item} className="mt-1 break-words text-slate-700">{item}</p>)}
+          </li>)}</ol>
+          <p>پس از آخرین قفسه به میز شروع برگردید.</p>
+        </div>}
+      </form>
+    </details>
+  );
+}
+
+export function WarehousePositionEditor() {
   const { warehouseSession, adminSession } = useStore();
   const canEdit = !!adminSession || warehouseSession?.role === 'logistics_specialist';
-  const [bin, setBin] = useState(''); const [position, setPosition] = useState<Point>({ x: 0, y: 0, z: 0 }); const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false);
+  const [bin, setBin] = useState('');
+  const [position, setPosition] = useState<Point>({ x: 0, y: 0, z: 0 });
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
   if (!canEdit) return null;
-  const save = async () => { setBusy(true); setMessage(''); try { await apiRequest(`/warehouse/bins/${encodeURIComponent(bin)}/position`, { method: 'PUT', auth: true, body: JSON.stringify(position) }); setMessage('مختصات قفسه ثبت شد.'); } catch (e) { setMessage(e instanceof Error ? e.message : 'ثبت انجام نشد.'); } finally { setBusy(false); } };
-  return <details className="rounded-xl border bg-white p-3 text-xs"><summary className="cursor-pointer font-bold">ثبت مختصات قفسه‌ها</summary><div className="mt-3 space-y-3"><p className="leading-5 text-slate-500">مختصات را از نقشهٔ فیزیکی انبار، در دستگاه مختصات مشترک و بر حسب متر وارد کنید.</p><input aria-label="کد قفسه" dir="ltr" value={bin} onChange={(e) => setBin(e.target.value)} placeholder="Bin code" className="w-full rounded-lg border p-2" /><CoordinateInputs value={position} onChange={setPosition} /><button type="button" onClick={() => void save()} disabled={busy || !bin} className="rounded-xl bg-slate-800 px-3 py-2 text-white disabled:opacity-50">ثبت مختصات</button>{message && <p role="status">{message}</p>}</div></details>;
-};
+
+  const save = async () => {
+    setBusy(true);
+    setMessage('');
+    try {
+      await apiRequest(`/warehouse/bins/${encodeURIComponent(bin)}/position`, {
+        method: 'PUT', auth: true, body: JSON.stringify(position),
+      });
+      setMessage('مختصات قفسه ثبت شد.');
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : 'ثبت انجام نشد.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <details className={detailClass}>
+      <summary className={summaryClass}>ثبت مختصات قفسه‌ها</summary>
+      <form onSubmit={event => { event.preventDefault(); if (!busy && bin.trim()) void save(); }} className="space-y-3 pb-4">
+        <p className="text-sm leading-6 text-slate-600">مختصات را از نقشه انبار و بر حسب متر وارد کنید.</p>
+        <label className="block space-y-1 text-sm font-medium text-slate-700">
+          <span className="block">کد قفسه</span>
+          <input aria-label="کد قفسه" dir="ltr" value={bin} autoCapitalize="off" autoComplete="off" spellCheck={false}
+            onChange={event => setBin(event.target.value)} className={inputClass} />
+        </label>
+        <CoordinateInputs value={position} onChange={setPosition} />
+        <button type="submit" disabled={busy || !bin.trim()} className={actionClass}>{busy ? 'در حال ثبت…' : 'ثبت مختصات'}</button>
+        {message && <p role="status" className="text-sm text-slate-700">{message}</p>}
+      </form>
+    </details>
+  );
+}

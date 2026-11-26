@@ -34,7 +34,10 @@ function BannerTiles({ id, position }: { id: string; position: 'promo' | 'tile' 
             onClick={address ? undefined : event => followStoreLink(event, () => openCatalogCategory(categorySlug))}>
             {banner.imageUrl && <img src={banner.imageUrl} alt={title ? '' : 'پیشنهاد فروشگاه'} width="640" height="320"
               loading="lazy" decoding="async" onError={event => { event.currentTarget.hidden = true; }} />}
-            {title && <span>{title}<ArrowLeft size={17} aria-hidden="true" /></span>}
+            {title && <span className="central-promo-caption">
+              <span><strong>{title}</strong>{banner.subtitle && <small>{banner.subtitle}</small>}</span>
+              <ArrowLeft size={17} aria-hidden="true" />
+            </span>}
           </a>
         );
       })}

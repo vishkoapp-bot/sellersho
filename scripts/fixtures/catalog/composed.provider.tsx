@@ -274,6 +274,11 @@ if (hasSupplier) {
 }
 bannersApi.getBanners = async position => {
   if (!['hero', 'secondary', 'promo', 'tile'].includes(position)) return [];
+  if (position === 'hero' && routeParams.has('editorial')) return [{
+    id: 'editorial-digital', title: 'دیجیتال برای هر روز', subtitle: 'موبایل، هدفون و لوازم جانبی',
+    imageUrl: '/static/uploads/banners/selersho-editorial-digital-v1.webp',
+    linkUrl: '/?category=digital', position, sortOrder: 0, isActive: true,
+  }];
   return [{
     id: `fixture-banner-${position}`,
     title: position === 'hero'

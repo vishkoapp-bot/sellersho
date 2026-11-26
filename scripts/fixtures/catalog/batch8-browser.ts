@@ -18,6 +18,8 @@ export function batch8Browser({
   let html: string;
   let javascript: string;
   let styles: string;
+  let editorialBanner: Buffer;
+  const editorialPath = '/static/uploads/banners/selersho-editorial-digital-v1.webp';
   before(async () => {
     cacheDir = await mkdtemp(join(tmpdir(), 'batch8-vite-'));
     const bundle = await build({
@@ -44,6 +46,7 @@ export function batch8Browser({
     const compiled = await server.transformRequest('/src/index.css?direct');
     if (!compiled) throw new Error('Missing compiled fixture stylesheet');
     styles = compiled.code + '\n' + await readFile('src/components/storefront/templates/fashion.css', 'utf8');
+    editorialBanner = await readFile('public/storefront/campaigns/selersho-editorial-digital-v1.webp');
     if (inlineVazirmatn) {
       // Geometry tests need the app font; the hermetic browser aborts asset requests.
       const sources = [...new Set([...styles.matchAll(/(?:[^"'()\s]*\/)?(Vazirmatn-[A-Za-z]+\.woff2)/g)].map(match => match[0]))];
@@ -77,6 +80,8 @@ export function batch8Browser({
         const url = new URL(request.url());
         if (request.isNavigationRequest() && url.origin === origin && url.pathname === '/fixture') {
           void request.respond({ status: 200, contentType: 'text/html', body: html });
+        } else if (url.origin === origin && url.pathname === editorialPath) {
+          void request.respond({ status: 200, contentType: 'image/webp', body: editorialBanner });
         } else if (url.protocol === 'data:') {
           void request.continue();
         } else {

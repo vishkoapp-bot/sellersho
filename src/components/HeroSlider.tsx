@@ -32,9 +32,10 @@ export const HeroSlider: React.FC<{ position?: 'hero' | 'secondary' }> = ({ posi
 
   const banner = banners[index];
   const title = cleanBannerTitle(banner?.title);
+  const editorialHero = position === 'hero' && title && banner?.imageUrl.startsWith('/static/uploads/banners/selersho-editorial-');
   const address = banner ? campaignAddress(banner) : null;
   const categorySlug = categories.find(category => title && category.title === title)?.slug ?? 'all';
-  const hasCampaignAction = Boolean(address || categorySlug !== 'all');
+  const hasCampaignAction = address ? address !== pathForView('catalog') : categorySlug !== 'all';
   const show = (delta: number) => setIndex(current => (current + delta + banners.length) % banners.length);
   const controls = banners.length > 1 && (
     <div className="central-campaign-controls">
@@ -51,12 +52,16 @@ export const HeroSlider: React.FC<{ position?: 'hero' | 'secondary' }> = ({ posi
         <img className="central-hero-fallback" src="/storefront/central-hero.webp"
           srcSet="/storefront/central-hero-small.webp 640w, /storefront/central-hero.webp 1200w"
           sizes="(min-width: 1352px) 1280px, 94vw" alt="" width="1200" height="800" fetchPriority="high" decoding="async" />
-        {banner && <img key={banner.id} className="central-hero-banner" src={banner.imageUrl.trim()}
-          alt={[title, banner.subtitle?.trim()].filter(Boolean).join('، ') || 'بنر فروشگاه سلرشو'}
+        {banner && <img key={banner.id} className={editorialHero ? 'central-hero-banner central-hero-banner--editorial' : 'central-hero-banner'} src={banner.imageUrl.trim()}
+          alt={editorialHero ? '' : [title, banner.subtitle?.trim()].filter(Boolean).join('، ') || 'بنر فروشگاه سلرشو'}
           fetchPriority="high" decoding="async" onError={() => {
             setBanners(current => current.filter(item => item.id !== banner.id));
             setIndex(current => Math.min(current, Math.max(0, banners.length - 2)));
           }} />}
+        {editorialHero && <div className="central-hero-caption" aria-live="polite">
+          <h2>{title}</h2>
+          {banner.subtitle && <p>{banner.subtitle}</p>}
+        </div>}
       </div>
       <div className="central-hero-bar">
         <div className="central-hero-actions">

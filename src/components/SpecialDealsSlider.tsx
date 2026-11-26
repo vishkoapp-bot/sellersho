@@ -71,7 +71,7 @@ export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products
             onClick={() => openCatalogCategory("all")}
             className="w-[110px] h-[120px] self-center shrink-0 bg-white/15 hover:bg-white/25 backdrop-blur-md rounded-xl flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-all border border-white/20 group"
           >
-            <div className="w-10 h-10 rounded-full bg-white text-[#5d44f8] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform" style={storeBrand?.accentColor ? { color: storeBrand.accentColor } : undefined}>
+            <div className="w-10 h-10 rounded-full bg-white text-[color:var(--shop-forest,#5d44f8)] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform" style={storeBrand?.accentColor ? { color: storeBrand.accentColor } : undefined}>
               <ArrowLeft className="w-5 h-5"  strokeWidth={1.5}/>
             </div>
             <span className="text-xs font-bold text-white">مشاهده همه کالاها</span>
@@ -90,7 +90,7 @@ export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products
                   onClick={() => openCatalogCategory("all")}
                   className="h-full w-full bg-white/15 hover:bg-white/25 backdrop-blur-md rounded-xl flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-all border border-white/20 group"
                 >
-                  <div className="w-10 h-10 rounded-full bg-white text-[#5d44f8] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform" style={storeBrand?.accentColor ? { color: storeBrand.accentColor } : undefined}>
+                  <div className="w-10 h-10 rounded-full bg-white text-[color:var(--shop-forest,#5d44f8)] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform" style={storeBrand?.accentColor ? { color: storeBrand.accentColor } : undefined}>
                     <ArrowLeft className="w-5 h-5"  strokeWidth={1.5}/>
                   </div>
                   <span className="text-xs font-bold text-white">مشاهده همه کالاها</span>
@@ -108,7 +108,7 @@ export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products
                 onClick={() => openCatalogCategory("all")}
                 className="h-full w-full bg-white/15 hover:bg-white/25 backdrop-blur-md rounded-xl flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-all border border-white/20 group"
               >
-                <div className="w-10 h-10 rounded-full bg-white text-[#5d44f8] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform" style={storeBrand?.accentColor ? { color: storeBrand.accentColor } : undefined}>
+                <div className="w-10 h-10 rounded-full bg-white text-[color:var(--shop-forest,#5d44f8)] flex items-center justify-center mb-2 shadow-xs group-hover:scale-110 transition-transform" style={storeBrand?.accentColor ? { color: storeBrand.accentColor } : undefined}>
                   <ArrowLeft className="w-5 h-5"  strokeWidth={1.5}/>
                 </div>
                 <span className="text-xs font-bold text-white">مشاهده همه کالاها</span>

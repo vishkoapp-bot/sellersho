@@ -148,6 +148,9 @@
 .central-hero-media img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; }
 .central-hero-fallback { object-position: center 54%; }
 .central-hero-banner { background: var(--shop-forest); }
+.central-hero-caption { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: start; padding-inline: clamp(16px, 5vw, 68px) 47%; gap: 6px; color: var(--shop-ink); background: linear-gradient(to left, #f8f6ef 12%, #f8f6efeb 32%, #f8f6ef00 64%); }
+.central-hero-caption h2 { font-size: clamp(19px, 4.1vw, 58px); font-weight: 900; line-height: 1.16; text-wrap: balance; }
+.central-hero-caption p { max-width: 32ch; font-size: clamp(12px, 1.55vw, 21px); font-weight: 650; line-height: 1.5; color: var(--shop-muted); }
 .central-hero-bar, .central-hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .central-hero-bar { justify-content: space-between; gap: 10px 16px; padding-top: 12px; }
 .central-hero-bar .central-campaign-controls { margin-inline-start: auto; }
@@ -224,6 +227,8 @@
   .central-bottom-nav .central-count { inset-inline-end: -10px; inset-block-start: -6px; }
 }
 @media (max-width: 700px) {
+  .central-hero-media:has(.central-hero-banner--editorial) { aspect-ratio: 1.95; }
+  .central-hero-caption { padding-inline-end: 40%; background: linear-gradient(to left, #f8f6ef 12%, #f8f6eff2 39%, #f8f6ef00 78%); }
   .central-hero-actions { flex: 1 1 100%; }
   .central-hero-actions .central-button { flex: 1 0 auto; padding-inline: 10px; font-size: 13px; }
   .central-hero-bar .central-campaign-controls { margin-inline: auto; }
@@ -256,9 +261,13 @@
 .central-promo-tile { display: flex; flex-direction: column; border: 1px solid #e0e5da; border-radius: 16px; overflow: hidden; background: white; color: #172d26; }
 .central-promo-tile:hover, .central-store-rail a:hover { background: #edf2eb; }
 .central-promo-tile img { width: 100%; height: auto; aspect-ratio: 2.3; object-fit: cover; }
+.central-promo-grid--tile .central-promo-tile img { aspect-ratio: 1.55; }
 .central-promo-tile img[hidden] { display: none; }
 .central-promo-tile:has(img[hidden]):not(:has(span)) { display: none; }
-.central-promo-tile span { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 9px 13px; min-height: 46px; font-size: 14px; font-weight: 800; }
+.central-promo-caption { flex: 1; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 9px 13px; min-height: 46px; font-size: 14px; }
+.central-promo-caption strong, .central-promo-caption small { display: block; }
+.central-promo-caption small { color: var(--shop-muted); line-height: 1.5; }
+.central-promo-caption svg { flex: none; color: var(--shop-forest); }
 .central-store-rail a { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px; align-items: center; padding: 13px; border-radius: 15px; border: 1px solid #e0e5da; background: white; }
 .central-store-rail a :is(img, svg) { grid-row: 1 / 3; border-radius: 9px; color: #164638; object-fit: cover; }
 .central-store-rail a span { grid-column: 2; color: #4f6359; font-size: 12px; }

@@ -4,6 +4,22 @@ import { batch8Browser } from '../../scripts/fixtures/catalog/batch8-browser';
 
 const visit = batch8Browser();
 
+test('a branded banner keeps readable copy inside the frame and links to its category on mobile', async () => {
+  await visit('/?editorial', 320, async page => {
+    await page.waitForSelector('.central-hero-caption', { visible: true });
+    await page.waitForFunction(() => (document.querySelector<HTMLImageElement>('.central-hero-banner')?.naturalWidth ?? 0) > 0);
+    assert.equal(await page.$eval('.central-hero-caption h2', title => title.textContent), 'دیجیتال برای هر روز');
+    assert.equal(await page.$eval('.central-hero-actions a', link => link.getAttribute('href')), '/?category=digital');
+    assert.ok(await page.$eval('.central-hero-caption', caption => {
+      const frame = caption.getBoundingClientRect();
+      return [...caption.children].every(child => {
+        const bounds = child.getBoundingClientRect();
+        return bounds.top >= frame.top && bounds.bottom <= frame.bottom && bounds.left >= frame.left && bounds.right <= frame.right;
+      });
+    }));
+  });
+});
+
 test('the desktop banner fills the width of the homepage and its own frame', async () => {
   await visit('/', 1920, async page => {
     await page.waitForSelector('.central-hero-banner', { visible: true });

@@ -170,7 +170,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
         ? currentStore
         : stores.find((s) => s.slug === scopedStoreSlug);
   const pdpTheme = resolvePdpTheme(pdpStore);
-  const fashion = pdpTheme.fashion;
+  const themed = pdpTheme.templateId !== null;
   const [scopedRelated, setScopedRelated] = useState<Product[] | null>(null);
   useEffect(() => {
     if (!scopedStoreSlug) {
@@ -364,15 +364,15 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
     return <NotFoundView variant="store" onBack={onBack} />;
   }
 
-  const buyBarClasses = `border-t p-2.5 flex items-center justify-between gap-2 lg:border-0 lg:px-0 lg:py-4 lg:flex-col lg:items-stretch lg:gap-3 ${fashion ? 'bg-[#faf8f5] border-[#e5e0d8]' : 'bg-white border-slate-200'}`;
+  const buyBarClasses = `border-t p-2.5 flex items-center justify-between gap-2 lg:border-0 lg:px-0 lg:py-4 lg:flex-col lg:items-stretch lg:gap-3 ${themed ? 'storefront-buy-panel' : 'bg-white border-slate-200'}`;
   const buyBarControls = (
     <>
-      <div className={fashion ? 'flex items-center bg-white rounded-none border border-[#e5e0d8] shrink-0 lg:justify-between' : 'flex items-center bg-slate-100 rounded-xl border border-slate-200 shrink-0 lg:justify-between'}>
+      <div className={themed ? 'flex items-center bg-white rounded-lg border border-[var(--fashion-line)] shrink-0 lg:justify-between' : 'flex items-center bg-slate-100 rounded-xl border border-slate-200 shrink-0 lg:justify-between'}>
         <button
           onClick={() => setQty(Math.max(minQty, qty - 1))}
           disabled={outOfStock}
           aria-label="کاهش تعداد"
-          className={fashion ? 'min-w-[44px] min-h-[44px] flex items-center justify-center text-[#1c1c1a] font-bold disabled:opacity-40 hover:bg-[#f2f2f2] rounded-none transition-colors' : 'min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-700 font-bold disabled:opacity-40 hover:bg-slate-200 rounded-r-xl transition-colors'}
+          className={themed ? 'min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--fashion-ink)] font-bold disabled:opacity-40 hover:bg-[var(--fashion-surface)] rounded-none transition-colors' : 'min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-700 font-bold disabled:opacity-40 hover:bg-slate-200 rounded-r-xl transition-colors'}
         >
           -
         </button>
@@ -381,17 +381,17 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
           onClick={() => setQty(maxQty > 0 ? Math.min(maxQty, qty + 1) : qty + 1)}
           disabled={outOfStock || (maxQty > 0 && qty >= maxQty)}
           aria-label="افزایش تعداد"
-          className={fashion ? 'min-w-[44px] min-h-[44px] flex items-center justify-center text-[#1c1c1a] font-bold disabled:opacity-40 hover:bg-[#f2f2f2] rounded-none transition-colors' : 'min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-700 font-bold disabled:opacity-40 hover:bg-slate-200 rounded-l-xl transition-colors'}
+          className={themed ? 'min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--fashion-ink)] font-bold disabled:opacity-40 hover:bg-[var(--fashion-surface)] rounded-none transition-colors' : 'min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-700 font-bold disabled:opacity-40 hover:bg-slate-200 rounded-l-xl transition-colors'}
         >
           +
         </button>
       </div>
       {outOfStock ? (
-        <div className={fashion ? 'flex-1 py-3.5 bg-[#f2f2f2] text-[#737373] font-bold text-xs rounded-none text-center' : 'flex-1 py-3.5 bg-slate-200 text-slate-500 font-bold text-xs rounded-xl text-center'}>
+        <div className={themed ? 'flex-1 py-3.5 bg-[#f2f2f2] text-[var(--fashion-muted)] font-bold text-xs rounded-none text-center' : 'flex-1 py-3.5 bg-slate-200 text-slate-500 font-bold text-xs rounded-xl text-center'}>
           {selectionNeeded ? 'برای خرید، مدل کالا را انتخاب کنید.' : scopedStoreSlug ? 'ناموجود' : 'ناموجود در انبار مرکزی'}
         </div>
       ) : !publishedInCurrentStore ? (
-        <div className={fashion ? 'flex-1 py-3.5 bg-[#f2f2f2] text-[#737373] font-bold text-xs rounded-none text-center' : 'flex-1 py-3.5 bg-slate-100 text-slate-500 font-bold text-xs rounded-xl text-center'}>
+        <div className={themed ? 'flex-1 py-3.5 bg-[#f2f2f2] text-[var(--fashion-muted)] font-bold text-xs rounded-none text-center' : 'flex-1 py-3.5 bg-slate-100 text-slate-500 font-bold text-xs rounded-xl text-center'}>
           این کالا در فروشگاه «{currentStore?.name}» عرضه نمی‌شود
         </div>
       ) : (
@@ -399,7 +399,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
           <button
             onClick={handleAddToCart}
             title="افزودن کالا به سبد خرید"
-            className={fashion ? 'fashion-pdp-action fashion-pdp-action--secondary' : 'flex-1 py-3.5 lg:py-4 bg-brand-soft hover:bg-brand-border text-brand border border-brand-border font-bold text-xs lg:text-sm xl:text-base rounded-xl shadow-2xs flex items-center justify-center gap-1 transition-colors'}
+            className={themed ? 'fashion-pdp-action fashion-pdp-action--secondary' : 'flex-1 py-3.5 lg:py-4 bg-brand-soft hover:bg-brand-border text-brand border border-brand-border font-bold text-xs lg:text-sm xl:text-base rounded-xl shadow-2xs flex items-center justify-center gap-1 transition-colors'}
           >
             <ShoppingCart className="w-4 h-4"  strokeWidth={1.5}/>
             <span>افزودن به سبد</span>
@@ -407,7 +407,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
           <button
             onClick={handleBuyNow}
             title="خرید فوری بدون سبد خرید"
-            className={fashion ? 'fashion-pdp-action' : 'flex-1 py-3.5 lg:py-4 bg-brand hover:bg-brand-deep text-white font-extrabold text-xs lg:text-sm xl:text-base rounded-xl shadow-xs flex items-center justify-center gap-1 transition-colors'}
+            className={themed ? 'fashion-pdp-action' : 'flex-1 py-3.5 lg:py-4 bg-brand hover:bg-brand-deep text-white font-extrabold text-xs lg:text-sm xl:text-base rounded-xl shadow-xs flex items-center justify-center gap-1 transition-colors'}
           >
             <span>خرید فوری</span>
             <span className="text-[10px] lg:text-xs opacity-90">
@@ -427,7 +427,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
       title={displayProduct.title}
       discountPercent={displayProduct.discountPercent}
       campaignName={displayProduct.campaignName}
-      fashion={fashion}
+      fashion={themed}
       central={central}
       fallbackImage={displayBase.image}
       saleEndsAt={displayProduct.saleTo}
@@ -437,7 +437,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
   const selectionControls = (
     <>
       {showVariantSelector && (
-        <div className={central ? 'central-pdp-options' : fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-3' : 'bg-white border border-slate-200 rounded-2xl p-3'}>
+        <div className={central ? 'central-pdp-options' : themed ? 'bg-white border border-[var(--fashion-line)] rounded-lg p-3' : 'bg-white border border-slate-200 rounded-2xl p-3'}>
           {central && <h3>انتخاب مدل کالا</h3>}
           <ProductVariantSelector
             product={displayBase}
@@ -446,7 +446,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
             selectedId={selectedVariant?.id ?? null}
             onSelect={handleSelectVariant}
             storeCount={scopedStoreSlug ? 0 : displayProduct.storeCount}
-            theme={fashion ? 'fashion' : 'default'}
+            theme={themed ? 'fashion' : 'default'}
           />
         </div>
       )}
@@ -454,23 +454,23 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
         <p className="text-sm text-[#53665e]">مدل کالا <strong className="text-[#172d26]">{selectedVariant.variantName || selectedVariant.name}</strong></p>
       )}
       {detailAddons.length > 0 && (
-        <div className={central ? 'central-pdp-extras space-y-2' : fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-3 space-y-2' : 'bg-white border border-slate-200 rounded-2xl p-3 space-y-2'}>
-          <h3 className={fashion ? 'text-xs font-bold text-[#1c1c1a]' : 'text-xs font-bold text-slate-800'}>{displayBase.addonSectionTitle || 'محصولات مکمل'}{central && <span className="font-normal text-[#53665e]"> · اختیاری</span>}</h3>
+        <div className={central ? 'central-pdp-extras space-y-2' : themed ? 'bg-white border border-[var(--fashion-line)] rounded-lg p-3 space-y-2' : 'bg-white border border-slate-200 rounded-2xl p-3 space-y-2'}>
+          <h3 className={themed ? 'text-xs font-bold text-[var(--fashion-ink)]' : 'text-xs font-bold text-slate-800'}>{displayBase.addonSectionTitle || 'محصولات مکمل'}{central && <span className="font-normal text-[#53665e]"> · اختیاری</span>}</h3>
           {detailAddons.map((addon) => {
             const checked = selectedAddonIds.includes(addon.id);
             return (
-              <label key={addon.id} className={central ? 'central-pdp-addon' : fashion ? 'flex items-start gap-2 rounded-none border border-[#e5e0d8] px-3 py-2 cursor-pointer hover:bg-[#faf8f5]' : 'flex items-start gap-2 rounded-xl border border-slate-200 px-3 py-2 cursor-pointer hover:bg-slate-50'}>
+              <label key={addon.id} className={central ? 'central-pdp-addon' : themed ? 'flex items-start gap-2 rounded-lg border border-[var(--fashion-line)] px-3 py-2 cursor-pointer hover:bg-[var(--fashion-surface)]' : 'flex items-start gap-2 rounded-xl border border-slate-200 px-3 py-2 cursor-pointer hover:bg-slate-50'}>
                 <input
                   type="checkbox"
                   checked={checked}
                   onChange={() => setSelectedAddonIds((prev) => checked ? prev.filter((id) => id !== addon.id) : [...prev, addon.id])}
-                  className={central ? 'size-4 shrink-0 accent-[#164638]' : fashion ? 'w-4 h-4 mt-0.5 shrink-0 accent-[#1c1c1a]' : 'w-4 h-4 mt-0.5 shrink-0 accent-brand'}
+                  className={central ? 'size-4 shrink-0 accent-[#164638]' : themed ? 'w-4 h-4 mt-0.5 shrink-0 accent-[var(--fashion-accent)]' : 'w-4 h-4 mt-0.5 shrink-0 accent-brand'}
                 />
                 <span className="flex-1 min-w-0">
-                  <span className={fashion ? 'block text-xs font-bold text-[#1c1c1a]' : 'block text-xs font-bold text-slate-800'}>{addon.title}</span>
-                  {addon.description ? <span className={fashion ? 'block text-[11px] text-[#737373]' : 'block text-[11px] text-slate-500'}>{addon.description}</span> : null}
+                  <span className={themed ? 'block text-xs font-bold text-[var(--fashion-ink)]' : 'block text-xs font-bold text-slate-800'}>{addon.title}</span>
+                  {addon.description ? <span className={themed ? 'block text-[11px] text-[var(--fashion-muted)]' : 'block text-[11px] text-slate-500'}>{addon.description}</span> : null}
                 </span>
-                <span className={fashion ? 'text-xs font-bold text-[#1c1c1a] shrink-0' : 'text-xs font-bold text-brand-deep shrink-0'}>+{formatPrice(addon.feePerUnit)} {central ? 'تومان' : 'ت'}</span>
+                <span className={themed ? 'text-xs font-bold text-[var(--fashion-ink)] shrink-0' : 'text-xs font-bold text-brand-deep shrink-0'}>+{formatPrice(addon.feePerUnit)} {central ? 'تومان' : 'ت'}</span>
               </label>
             );
           })}
@@ -478,7 +478,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
       )}
       <BuyNowAddressModal
         central={central}
-        fashion={fashion}
+        fashion={themed}
         open={buyNowModalOpen}
         item={{ title: product.title, qty, totalPrice: buyNowUnit * qty, ...(selectedVariant ? { variantLabel: selectedVariant.name } : {}) }}
         onClose={() => { setBuyNowModalOpen(false); clearDirectBuy(); }}
@@ -609,20 +609,21 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
 
   return (
     <div
-      className={fashion ? 'fashion-storefront fashion-pdp flex-1 flex flex-col pb-36 lg:pb-8' : 'flex-1 flex flex-col bg-white select-none pb-36 lg:pb-8'}
-      style={fashion ? ({ ['--tpl-accent' as string]: pdpTheme.accent } as React.CSSProperties) : undefined}
+      className={themed ? 'fashion-storefront fashion-pdp flex-1 flex flex-col pb-36 lg:pb-8' : 'flex-1 flex flex-col bg-white select-none pb-36 lg:pb-8'}
+      data-storefront-theme={pdpTheme.templateId || undefined}
+      style={themed ? ({ ['--tpl-accent' as string]: pdpTheme.accent } as React.CSSProperties) : undefined}
     >
       {/* Header Bar */}
-      <header className={fashion ? 'fashion-pdp-toolbar' : 'sticky top-0 z-30 lg:static bg-white border-b border-slate-200 px-3 py-2 lg:py-3 flex items-center justify-between lg:px-8 xl:px-10 2xl:px-12'}>
+      <header className={themed ? 'fashion-pdp-toolbar' : 'sticky top-0 z-30 lg:static bg-white border-b border-slate-200 px-3 py-2 lg:py-3 flex items-center justify-between lg:px-8 xl:px-10 2xl:px-12'}>
         <div className="flex min-w-0 items-center gap-2">
           <button
             onClick={onBack}
             aria-label="بازگشت"
-            className={fashion ? 'w-11 h-11 rounded-none hover:bg-[#f2f2f2] text-[#1c1c1a] transition-colors flex items-center justify-center' : 'w-11 h-11 rounded-lg hover:bg-slate-100 text-slate-700 transition-colors flex items-center justify-center'}
+            className={themed ? 'w-11 h-11 rounded-none hover:bg-[var(--fashion-surface)] text-[var(--fashion-ink)] transition-colors flex items-center justify-center' : 'w-11 h-11 rounded-lg hover:bg-slate-100 text-slate-700 transition-colors flex items-center justify-center'}
           >
             <ArrowRight className="w-5 h-5"  strokeWidth={1.5}/>
           </button>
-          <span className={fashion ? 'text-xs font-bold text-[#1c1c1a] truncate max-w-[220px] sm:max-w-[320px] md:max-w-[440px] lg:max-w-none' : 'text-xs font-bold text-slate-800 truncate max-w-[220px] sm:max-w-[320px] md:max-w-[440px] lg:max-w-none'}>
+          <span className={themed ? 'text-xs font-bold text-[var(--fashion-ink)] truncate max-w-[220px] sm:max-w-[320px] md:max-w-[440px] lg:max-w-none' : 'text-xs font-bold text-slate-800 truncate max-w-[220px] sm:max-w-[320px] md:max-w-[440px] lg:max-w-none'}>
             {product.title}
           </span>
         </div>
@@ -631,7 +632,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
           <button
             onClick={handleShare}
             aria-label="اشتراک‌گذاری"
-            className={fashion ? 'w-11 h-11 text-[#737373] hover:bg-[#f2f2f2] rounded-none flex items-center justify-center' : 'w-11 h-11 text-slate-600 hover:bg-slate-100 rounded-lg flex items-center justify-center'}
+            className={themed ? 'w-11 h-11 text-[var(--fashion-muted)] hover:bg-[var(--fashion-surface)] rounded-none flex items-center justify-center' : 'w-11 h-11 text-slate-600 hover:bg-slate-100 rounded-lg flex items-center justify-center'}
           >
             <Share2 className="w-4 h-4"  strokeWidth={1.5}/>
           </button>
@@ -643,11 +644,11 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
             }}
             aria-label="علاقه‌مندی"
             aria-pressed={wishlisted}
-            className={`w-11 h-11 ${fashion ? 'rounded-none' : 'rounded-lg'} flex items-center justify-center ${
+            className={`w-11 h-11 ${themed ? 'rounded-none' : 'rounded-lg'} flex items-center justify-center ${
               wishlisted
                 ? 'text-rose-500 bg-rose-50'
-                : fashion
-                  ? 'text-[#737373] hover:bg-[#f2f2f2]'
+                : themed
+                  ? 'text-[var(--fashion-muted)] hover:bg-[var(--fashion-surface)]'
                   : 'text-slate-600 hover:bg-slate-100'
             }`}
           >
@@ -665,21 +666,21 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
       {/* Info column — live order: info (with tabs at its end) ->
           variant box -> buy bar. No sticky bottom bar on desktop. */}
       <div className="p-3.5 space-y-4 lg:p-0">
-        <ProductDetailInfo product={displayProduct} fashion={fashion} selectedVariantId={selectedVariant?.id ?? null} />
-        {!fashion && <ProductDetailTabs product={displayProduct} />}
+        <ProductDetailInfo product={displayProduct} fashion={themed} selectedVariantId={selectedVariant?.id ?? null} />
+        {!themed && <ProductDetailTabs product={displayProduct} />}
         {selectionControls}
         <div ref={buyBarRef} className={buyBarClasses}>
           {buyBarControls}
         </div>
         {showFloatingBuyBar && (
-          <div className={`fixed ${scopedStoreSlug ? 'bottom-0' : 'bottom-16'} inset-x-0 max-w-[504px] mx-auto z-50 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] lg:hidden ${buyBarClasses}`}>
+          <div className={`fixed ${scopedStoreSlug ? 'bottom-0' : 'bottom-16'} inset-x-0 max-w-[504px] mx-auto z-50 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] lg:hidden ${themed ? 'storefront-buy-panel--floating' : ''} ${buyBarClasses}`}>
             {buyBarControls}
           </div>
         )}
-        {fashion && <ProductDetailTabs product={displayProduct} fashion />}
+        {themed && <ProductDetailTabs product={displayProduct} fashion />}
 
       </div>
-      <ProductDetailRelated products={related} fashion={fashion} onOpen={openProductDetail} />
+      <ProductDetailRelated products={related} fashion={themed} onOpen={openProductDetail} />
       </div>
 
     </div>

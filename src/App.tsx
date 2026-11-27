@@ -322,13 +322,13 @@ export const AppContent: React.FC = () => {
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
-                variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+                variant="themed"
               />
               <ProductDetailView
                 product={currentProductDetail}
                 onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
               />
-              <SellerStorefrontFooter variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} />
+              <SellerStorefrontFooter variant="themed" />
             </>
           ) : (
             <>
@@ -360,10 +360,10 @@ export const AppContent: React.FC = () => {
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
-                variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+                variant="themed"
               />
               <CustomerProfileView key={currentUser?.id} onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})} />
-              <SellerStorefrontFooter variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} />
+              <SellerStorefrontFooter variant="themed" />
             </>
           ) : (
             <>
@@ -379,10 +379,10 @@ export const AppContent: React.FC = () => {
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
-                variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+                variant="themed"
               />
               <CustomerOrdersView onBack={() => setActiveView('customer_profile', { storeSlug: routeStoreSlug })} />
-              <SellerStorefrontFooter variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} />
+              <SellerStorefrontFooter variant="themed" />
             </>
           ) : (
             <>
@@ -398,10 +398,10 @@ export const AppContent: React.FC = () => {
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
-                variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+                variant="themed"
               />
               <CustomerWishlistView onBack={() => setActiveView('customer_profile', { storeSlug: routeStoreSlug })} />
-              <SellerStorefrontFooter variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} />
+              <SellerStorefrontFooter variant="themed" />
             </>
           ) : (
             <>
@@ -417,10 +417,10 @@ export const AppContent: React.FC = () => {
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
-                variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+                variant="themed"
               />
               <StaticPageView onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})} />
-              <SellerStorefrontFooter variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} />
+              <SellerStorefrontFooter variant="themed" />
             </>
           ) : (
             <>

@@ -3,8 +3,8 @@ import { useStore } from '../../context/StoreContext';
 import { mapBackendProduct } from '../../context/ProductContext';
 import { catalogApi } from '../../services/catalogApi';
 import type { Product } from '../../types';
-import { Store, Phone, Instagram, Home, LayoutGrid, User, MessageCircle, X, Heart } from 'lucide-react';
-import { storefrontProducts } from './templates/templateTypes';
+import { Store, Phone, Instagram, Home, LayoutGrid, User, X, Heart, ShoppingBag } from 'lucide-react';
+import { orderedEnabledSections, resolveTemplateConfig, storefrontProducts, templateCustom } from './templates/templateTypes';
 import { ProductCard } from '../ProductCard';
 import { pathForView } from '../../utils/routing';
 import { followStoreLink } from '../../utils/followStoreLink';
@@ -19,7 +19,7 @@ import { followStoreLink } from '../../utils/followStoreLink';
 const ACCENT = '#0D7377';
 
 interface SellerStorefrontFooterProps {
-  variant?: 'modern' | 'fashion';
+  variant?: 'modern' | 'themed';
   // B2: the store-scoped list the grid already renders (the view's
   // templateProducts). The modal must never again read the central
   // paged catalogue: its page 1 does not contain a dropshipper's
@@ -28,7 +28,7 @@ interface SellerStorefrontFooterProps {
 }
 
 export const SellerStorefrontFooter: React.FC<SellerStorefrontFooterProps> = ({ variant = 'modern', storeProducts }) => {
-  const { currentStore, openStaticPage, toPersianDigits, products } = useStore();
+  const { currentStore, openStaticPage, toPersianDigits, products, activeView, setActiveView } = useStore();
   // FIX 22: live storefront footer «محصولات» opens an in-page
   // «همه محصولات» modal (no navigation); empty stores show 0 items
   // + «هنوز محصولی در این فروشگاه ثبت نشده است.».
@@ -69,6 +69,18 @@ export const SellerStorefrontFooter: React.FC<SellerStorefrontFooterProps> = ({ 
   const phone = (cfg.contactPhone as string | undefined) || (custom.contactPhone as string | undefined) || '';
   const instagram = (cfg.contactInstagram as string | undefined) || (custom.contactInstagram as string | undefined) || '';
   const instagramHandle = instagram.replace(/^https?:\/\/(www\.)?instagram\.com\//i, '').replace(/^@/, '').replace(/\/$/, '');
+  const templateId = currentStore.templateId || 'tpl-modern-1';
+  const config = resolveTemplateConfig(templateId, currentStore.templateConfig);
+  const sections = orderedEnabledSections(config);
+  const homePath = pathForView('seller_storefront', { storeSlug: currentStore.slug });
+  const aboutText = templateCustom(config).aboutText || currentStore.description || currentStore.shortDescription || (templateId !== 'tpl-fashion-1' ? currentStore.tagline : '');
+  const hasAbout = sections.includes('about') && Boolean(aboutText?.trim());
+  const hasCatalogue = sections.includes('products') || sections.includes('allProducts');
+  const followSection = (event: React.MouseEvent<HTMLAnchorElement>, section: string) => followStoreLink(event, () => {
+    if (activeView !== 'seller_storefront') setActiveView('seller_storefront', { storeSlug: currentStore.slug });
+    window.history.replaceState(window.history.state, '', homePath + '#' + section);
+    document.getElementById(section)?.scrollIntoView({ block: 'start' });
+  });
   const year = (() => {
     try {
       return new Intl.DateTimeFormat('fa-IR', { year: 'numeric' }).format(new Date());
@@ -96,15 +108,15 @@ export const SellerStorefrontFooter: React.FC<SellerStorefrontFooterProps> = ({ 
 
   return (
     <>
-    {variant === 'fashion' ? <footer id="fashion-contact" className="fashion-footer">
+    {variant === 'themed' ? <footer id="fashion-contact" className="fashion-footer" data-storefront-theme={templateId}>
       <div className="fashion-footer-inner">
         <div className="fashion-footer-brand"><h2>{currentStore.name}</h2>
           {currentStore.footerText && <p>{currentStore.footerText}</p>}
           <p>© {toPersianDigits(year)} {currentStore.name}</p>
         </div>
         <nav className="fashion-footer-links" aria-label="راهنمای فروشگاه">
-          <button onClick={goToStoreAbout}>درباره ما</button>
-          <a href={pathForView('seller_storefront', { storeSlug: currentStore.slug }) + '#products'}>همه کالاها</a>
+          {hasAbout && <a href={homePath + '#about'} onClick={event => followSection(event, 'about')}>درباره ما</a>}
+          {hasCatalogue && <a href={homePath + '#products'} onClick={event => followSection(event, 'products')}>همه کالاها</a>}
           <button onClick={() => openStaticPage('terms')}>قوانین و مقررات</button>
           <button onClick={() => openStaticPage('privacy')}>حریم خصوصی</button>
           <button onClick={() => openStaticPage('faq')}>سوالات متداول</button>
@@ -230,86 +242,52 @@ export const SellerStorefrontFooter: React.FC<SellerStorefrontFooterProps> = ({ 
 // there, so it is hidden at lg and up.
 export const StorefrontBottomNav: React.FC = () => {
   const { setActiveView, currentStore, activeView } = useStore();
-  const fashion = currentStore.templateId === 'tpl-fashion-1';
-  const [active, setActive] = React.useState<'home' | 'categories' | 'account' | 'contact' | 'wishlist'>('home');
+  const templateId = currentStore.templateId || 'tpl-modern-1';
+  const homePath = pathForView('seller_storefront', { storeSlug: currentStore.slug });
+  const config = resolveTemplateConfig(templateId, currentStore.templateConfig);
+  const sections = orderedEnabledSections(config);
+  const hasCatalogue = sections.includes('products') || sections.includes('allProducts');
+  const { cartItemsCount, setIsCartOpen } = useStore();
+  const [atProducts, setAtProducts] = useState(false);
+  useEffect(() => {
+    setAtProducts(window.location.hash === '#products');
+  }, [activeView, currentStore.slug]);
 
-  const behavior = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
-  const scrollToTop = () => window.scrollTo({ top: 0, behavior: behavior() });
-  const go = (tab: typeof active) => {
-    setActive(tab);
-    if (tab === 'home') {
-      if (activeView !== 'seller_storefront') setActiveView('seller_storefront', { storeSlug: currentStore.slug });
-      scrollToTop();
-    }
-    else if (tab === 'account') setActiveView('customer_profile');
-    else if (tab === 'wishlist') setActiveView('customer_wishlist');
-    else if (tab === 'contact') window.scrollTo({ top: document.body.scrollHeight, behavior: behavior() });
-    else {
-      const el = document.querySelector('[aria-label="دسته‌بندی‌ها"]') ?? (fashion ? document.getElementById('products') : null);
-      if (el) el.scrollIntoView({ behavior: behavior(), block: 'start' });
-      else scrollToTop();
-    }
-  };
-
+  const storeSlug = currentStore.slug;
   const tabs = [
-    { id: 'home' as const, label: 'خانه', Icon: Home },
-    { id: 'categories' as const, label: 'دسته‌بندی‌ها', Icon: LayoutGrid },
-    { id: 'account' as const, label: 'حساب من', Icon: User },
-    fashion ? { id: 'wishlist' as const, label: 'علاقه‌مندی‌ها', Icon: Heart } : { id: 'contact' as const, label: 'تماس', Icon: MessageCircle },
+    { label: 'خانه', Icon: Home, href: homePath, active: activeView === 'seller_storefront' && !atProducts, view: 'seller_storefront' as const },
+    ...(hasCatalogue ? [{ label: 'کالاها', Icon: LayoutGrid, href: homePath + '#products', active: activeView === 'seller_storefront' && atProducts, view: 'seller_storefront' as const }] : []),
+    { label: 'علاقه‌مندی‌ها', Icon: Heart, href: pathForView('customer_wishlist', { storeSlug }), active: activeView === 'customer_wishlist', view: 'customer_wishlist' as const },
+    { label: 'حساب من', Icon: User, href: pathForView('customer_profile', { storeSlug }), active: activeView === 'customer_profile', view: 'customer_profile' as const },
   ];
-
+  const tabClass = 'relative flex min-h-11 min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-0.5 text-[11px] font-bold';
   return (
-    <nav
-      aria-label="منوی پایین ویترین"
-      className={`fixed bottom-0 z-30 h-16 border-t border-x lg:hidden ${fashion ? 'fashion-bottom-nav' : ''}`}
-      style={{
-        left: 0,
-        right: 0,
-        marginLeft: 'auto',
-        marginRight: 'auto',
-        width: '100%',
-        maxWidth: fashion ? undefined : 504,
-        backgroundColor: fashion ? undefined : '#ffffff',
-        borderColor: fashion ? undefined : '#ECE4D6',
-        boxShadow: fashion ? 'none' : '0 -6px 24px rgba(28, 25, 23, 0.08)',
-        paddingBottom: 'env(safe-area-inset-bottom)',
-      }}
-    >
-      <div className="flex items-stretch justify-center px-2 py-1.5">
-        {tabs.map(({ id, label, Icon }) => {
-          const isActive = activeView === 'customer_profile' ? id === 'account' : activeView === 'customer_wishlist' ? id === 'wishlist' : active === id;
-          const fashionHref = id === 'home' ? pathForView('seller_storefront', { storeSlug: currentStore.slug })
-            : id === 'categories' ? pathForView('seller_storefront', { storeSlug: currentStore.slug }) + '#products'
-              : pathForView(id === 'wishlist' ? 'customer_wishlist' : 'customer_profile', { storeSlug: currentStore.slug });
-          if (fashion) return (
-            <a key={id} href={fashionHref} aria-current={isActive ? 'true' : undefined}
+    <nav aria-label="منوی پایین ویترین" data-storefront-theme={templateId} className="fashion-bottom-nav fixed inset-x-0 bottom-0 z-30 border-t lg:hidden">
+      <div className="mx-auto flex max-w-lg items-stretch px-1 py-1.5">
+        {tabs.slice(0, -1).map(({ label, Icon, href, active, view }) => {
+          const isProducts = href.endsWith('#products');
+          return (
+            <a key={href} href={href} className={tabClass} aria-current={active ? 'true' : undefined}
               onClick={event => followStoreLink(event, () => {
-                if (id === 'categories' && activeView !== 'seller_storefront') {
-                  setActiveView('seller_storefront', { storeSlug: currentStore.slug });
-                  window.history.replaceState(window.history.state, '', fashionHref);
-                  setActive(id);
-                } else go(id);
-              })}
-              className="flex min-h-11 min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 text-[11px] font-bold">
-              <Icon size={20} strokeWidth={1.6} aria-hidden="true" />
-              <span>{label}</span>
+                if (activeView !== view) setActiveView(view, { storeSlug });
+                if (view !== 'seller_storefront') return;
+                window.history.replaceState(window.history.state, '', href);
+                setAtProducts(isProducts);
+                if (isProducts) document.getElementById('products')?.scrollIntoView({ block: 'start' });
+                else window.scrollTo({ top: 0 });
+              })}>
+              <Icon size={20} strokeWidth={1.6} aria-hidden="true" />{label}
             </a>
           );
-          return (
-            <button
-              key={id}
-              onClick={() => go(id)}
-              className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1 px-1 py-2 rounded-2xl transition-all duration-200 ease-out active:scale-95"
-              style={{
-                backgroundColor: isActive ? `${ACCENT}16` : 'transparent',
-                color: isActive ? ACCENT : '#8a857d',
-              }}
-            >
-              <Icon className="w-[22px] h-[22px]" strokeWidth={isActive ? 2 : 1.5} />
-              <span className="text-[10px] font-bold leading-none truncate max-w-full">{label}</span>
-            </button>
-          );
         })}
+        <button type="button" className={tabClass} onClick={() => setIsCartOpen(true)}
+          aria-label={cartItemsCount > 0 ? 'سبد خرید، ' + new Intl.NumberFormat('fa-IR').format(cartItemsCount) + ' کالا' : 'سبد خرید'}>
+          <ShoppingBag size={20} strokeWidth={1.6} aria-hidden="true" />سبد خرید
+        </button>
+        <a href={tabs[tabs.length - 1].href} className={tabClass} aria-current={activeView === 'customer_profile' ? 'true' : undefined}
+          onClick={event => followStoreLink(event, () => setActiveView('customer_profile', { storeSlug }))}>
+          <User size={20} strokeWidth={1.6} aria-hidden="true" />حساب من
+        </a>
       </div>
     </nav>
   );

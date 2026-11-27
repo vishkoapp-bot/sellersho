@@ -44,8 +44,9 @@ export const ProductVariantSelector: React.FC<ProductVariantSelectorProps> = ({
   const visibleVariants = variants.filter((variant) => variant.isActive !== false && !isHiddenSyntheticVariant(product, variant));
   const axes = product?.schemaVersion === 2 && product.productType === 'variable'
     ? product.productSchema?.attributes.filter((attribute) => attribute.role === 'axis') ?? [] : [];
-  const chipClass = (selected: boolean, unavailable: boolean) => `min-h-[36px] px-3 ${fashion ? 'rounded-none' : 'rounded-xl'} border text-[11px] font-bold transition-all ${selected ? 'text-white' : unavailable ? 'bg-slate-50 text-slate-400 border-slate-100 opacity-40 cursor-not-allowed' : fashion ? 'bg-white text-[#1c1c1a] border-[#e5e0d8] hover:border-[#1c1c1a]' : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'}`;
-  const selectedStyle = { backgroundColor: fashion ? '#1c1c1a' : '#5d44f8', borderColor: fashion ? '#1c1c1a' : '#5d44f8' };
+  const chipClass = (selected: boolean, unavailable: boolean) => `${fashion ? 'min-h-11 rounded-lg' : 'min-h-9 rounded-xl'} px-3 border text-xs font-bold transition-colors ${selected ? 'text-white' : unavailable ? 'bg-slate-50 text-slate-500 border-slate-200 cursor-not-allowed' : fashion ? 'bg-white text-[var(--fashion-ink)] border-[var(--fashion-line)] hover:border-[var(--fashion-accent)]' : 'bg-white text-slate-700 border-slate-200 hover:border-slate-300'}`;
+  const selectionColor = fashion ? 'var(--fashion-accent, #703738)' : '#5d44f8';
+  const selectedStyle = { backgroundColor: selectionColor, borderColor: selectionColor };
   if (product && axes.length > 0) {
     const selectedVariantV2 = visibleVariants.find((variant) => variant.id === selectedId);
     const selection = selectedVariantV2?.selection ?? {};

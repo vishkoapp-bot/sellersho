@@ -5,15 +5,15 @@ import { ProductCard } from '../../ProductCard';
 import {
   sectionEnabled,
   templateCustom,
-  heroSlidesOf,
   bannersOf,
   customText,
   customCount,
 } from './templateTypes';
-import type { TemplateConfig, TemplateCustom, TemplateHeroSlide } from './templateTypes';
+import type { TemplateConfig, TemplateCustom } from './templateTypes';
 import { toPersianDigits } from '../../../utils/formatters';
 import { apiRequest } from '../../../services/apiClient';
 import { useStore } from '../../../context/StoreContext';
+import { followStoreLink } from '../../../utils/followStoreLink';
 
 // FIX3 — shared storefront section components, rebuilt from live
 // behaviour (live tpl-* chunk evidence), not copied live code.
@@ -31,7 +31,7 @@ export const SectionTitle: React.FC<{ children: React.ReactNode; accentColor?: s
 }) => (
   <div className="flex items-center gap-2.5">
     <span className="h-5 w-1.5 rounded-full shadow-sm" style={{ backgroundColor: accentColor || '#5d44f8' }} />
-    <h3 className="text-base font-black tracking-tight text-slate-900">{children}</h3>
+    <h2 className="showcase-section-heading text-base font-black text-slate-900">{children}</h2>
     <span className="h-px flex-1 bg-slate-200/80" />
   </div>
 );
@@ -43,155 +43,6 @@ export const SectionTitle: React.FC<{ children: React.ReactNode; accentColor?: s
 // from this module, so importing its helper back would cycle).
 const externalLinkProps = (link: string): { target?: string; rel?: string } =>
   /^https?:\/\//i.test((link || '').trim()) ? { target: '_blank', rel: 'noreferrer' } : {};
-
-// --- Announcement bar (editable announcement / store tagline) -----
-export const AnnouncementSection: React.FC<{
-  store: Store;
-  config: TemplateConfig;
-  accentColor: string;
-}> = ({ store, config, accentColor }) => {
-  if (!sectionEnabled(config, 'announcement')) return null;
-  const custom = templateCustom(config);
-  const text = (custom.announcementText || '').trim() || (store.tagline || '').trim();
-  if (!text) return null;
-  const link = (custom.announcementLink || '').trim();
-  const bar = (
-    <div className="rounded-full px-4 py-2.5 text-center shadow-sm" style={{ backgroundColor: accentColor }}>
-      <p className="text-[13px] font-extrabold leading-5 text-white">{text}</p>
-    </div>
-  );
-  return (
-    <section data-testid="store-announcement">
-      {link ? (
-        <a href={link} {...externalLinkProps(link)} className="block">
-          {bar}
-        </a>
-      ) : (
-        bar
-      )}
-    </section>
-  );
-};
-
-// --- Hero slider (live heroSlides) ---------------------------------
-export const HeroSlider: React.FC<{
-  slides: TemplateHeroSlide[];
-  accentColor: string;
-  autoplay?: boolean;
-}> = ({ slides, accentColor, autoplay }) => {
-  const [index, setIndex] = useState(0);
-  const count = slides.length;
-  useEffect(() => {
-    setIndex(0);
-  }, [count]);
-  useEffect(() => {
-    if (!autoplay || count <= 1) return undefined;
-    const timer = setInterval(() => setIndex((i) => (i + 1) % count), 5000);
-    return () => clearInterval(timer);
-  }, [autoplay, count]);
-  if (count === 0) return null;
-  const slide = slides[index % count];
-  const body = (
-    <div className="relative overflow-hidden rounded-[1.75rem] bg-slate-100 shadow-lg shadow-slate-900/10 ring-1 ring-black/5">
-      {slide.image ? (
-        <img
-          src={slide.image}
-          alt={slide.title || ''}
-          className="h-52 w-full object-cover lg:h-80"
-          loading="lazy"
-        />
-      ) : (
-        <div className="flex h-52 w-full items-center justify-center lg:h-80" style={{ backgroundColor: accentColor }}>
-          <span className="px-4 text-center text-xl font-black text-white lg:text-2xl">{slide.title || ''}</span>
-        </div>
-      )}
-      {(slide.title || slide.subtitle) && slide.image ? (
-        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent p-5 pt-16">
-          {slide.title ? <p className="text-lg font-black leading-8 text-white drop-shadow-md lg:text-2xl lg:leading-10">{slide.title}</p> : null}
-          {slide.subtitle ? <p className="mt-1 text-sm leading-6 text-white/90">{slide.subtitle}</p> : null}
-        </div>
-      ) : null}
-    </div>
-  );
-  return (
-    <div data-testid="store-hero-slider" className="group relative">
-      {slide.link ? (
-        <a href={slide.link} {...externalLinkProps(slide.link)} className="block">
-          {body}
-        </a>
-      ) : (
-        body
-      )}
-      {count > 1 ? (
-        <>
-          <button
-            type="button"
-            aria-label="اسلاید قبلی"
-            onClick={() => setIndex((i) => (i - 1 + count) % count)}
-            className="absolute right-3 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-lg text-white shadow-lg ring-1 ring-white/30 backdrop-blur-md transition hover:bg-white/30 lg:opacity-0 lg:group-hover:opacity-100"
-          >
-            ›
-          </button>
-          <button
-            type="button"
-            aria-label="اسلاید بعدی"
-            onClick={() => setIndex((i) => (i + 1) % count)}
-            className="absolute left-3 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-white/15 text-lg text-white shadow-lg ring-1 ring-white/30 backdrop-blur-md transition hover:bg-white/30 lg:opacity-0 lg:group-hover:opacity-100"
-          >
-            ‹
-          </button>
-          <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-black/25 px-2 py-1.5 backdrop-blur-sm">
-            {slides.map((s, i) => (
-              <button
-                key={`${s.image || s.title || ''}-${i}`}
-                type="button"
-                aria-label={`اسلاید ${toPersianDigits(i + 1)}`}
-                onClick={() => setIndex(i)}
-                className={`h-2 rounded-full shadow-sm transition-all duration-300 ${i === index ? 'w-7' : 'w-2 bg-white/60 hover:bg-white/85'}`}
-                style={i === index ? { backgroundColor: accentColor } : undefined}
-              />
-            ))}
-          </div>
-        </>
-      ) : null}
-    </div>
-  );
-};
-
-// --- Digikala hero fallback banners (live heroFallbackBanner*) ----
-// Live defines these only for tpl-digikala-1: three banner texts plus
-// a subtitle, shown when the store has no hero slides. Defaults are
-// the placeholders from the live chunk evidence.
-export const HeroFallbackBanners: React.FC<{ config: TemplateConfig; accentColor: string }> = ({
-  config,
-  accentColor,
-}) => {
-  const custom = templateCustom(config);
-  const banners = [
-    custom.heroFallbackBanner1 || 'پیشنهادهای شگفت‌انگیز',
-    custom.heroFallbackBanner2 || 'جدیدترین محصولات',
-    custom.heroFallbackBanner3 || 'تخفیف‌های ویژه',
-  ];
-  const subtitle = custom.heroFallbackSubtitle || 'هر روز، پیشنهادهای تازه';
-  return (
-    <div data-testid="store-hero-fallback" className="grid grid-cols-3 gap-3">
-      {banners.map((text, i) => (
-        <div
-          key={text}
-          className="relative overflow-hidden rounded-3xl p-4 text-white shadow-md"
-          style={{ backgroundColor: accentColor, opacity: 1 - i * 0.15 }}
-        >
-          <span className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/25 via-white/5 to-black/10" />
-          <span className="relative mb-2.5 flex h-8 w-8 items-center justify-center rounded-xl bg-white/20 shadow-sm ring-1 ring-white/30">
-            <span className="h-2 w-2 rounded-full bg-white" />
-          </span>
-          <p className="relative text-sm font-black leading-6">{text}</p>
-          {i === 0 ? <p className="relative mt-1 text-[11px] leading-5 opacity-90">{subtitle}</p> : null}
-        </div>
-      ))}
-    </div>
-  );
-};
 
 // --- Category helpers ----------------------------------------------
 export interface CategoryGroup {
@@ -236,7 +87,7 @@ export function groupProductsByCategory(
 const CategoryThumb: React.FC<{ group: CategoryGroup }> = ({ group }) => (
   <div className={`flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br ${group.gradient} shadow-md ring-1 ring-slate-900/5 transition duration-300 group-hover:scale-105 group-hover:shadow-lg`}>
     {group.image ? (
-      <img src={group.image} alt={group.title} className="h-full w-full object-cover" loading="lazy" />
+      <img src={group.image} alt="" width={64} height={64} className="h-full w-full object-cover" loading="lazy" />
     ) : (
       <span className="text-lg font-black text-slate-500">{group.title.slice(0, 1)}</span>
     )}
@@ -251,15 +102,27 @@ const CategoryThumb: React.FC<{ group: CategoryGroup }> = ({ group }) => (
 // tile-click to navigate to a dedicated category page instead, that is
 // a different behaviour — in-place filtering is what the grid and the
 // legacy tiles implement.
-export const useStoreCategorySelect = () => {
-  const { selectedCategory, setSelectedCategory } = useStore();
+const useStoreCategorySelect = () => {
+  const { selectedCategory, setSelectedCategory, clearCatalogBrand, setSearchQuery } = useStore();
   const selectCategory = (slug: string) => {
+    clearCatalogBrand();
+    setSearchQuery('');
     setSelectedCategory(selectedCategory === slug ? 'all' : slug);
-    const floor = document.querySelector('[data-testid="store-products"]');
-    floor?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    document.getElementById('products')?.scrollIntoView({ block: 'start' });
   };
   return { selectedCategory, selectCategory };
 };
+
+export function StorefrontCategoryLink({ slug, children, ...props }: Omit<React.ComponentProps<'a'>, 'href' | 'onClick'> & { slug: string }) {
+  const { selectedCategory, selectCategory } = useStoreCategorySelect();
+  return <a {...props} href="#products" aria-current={selectedCategory === slug ? 'true' : undefined}
+    onClick={event => followStoreLink(event, () => selectCategory(slug))}>{children}</a>;
+}
+
+export function StorefrontBrandLink({ brand, children, ...props }: Omit<React.ComponentProps<'a'>, 'href' | 'onClick'> & { brand: string }) {
+  const { openCatalogBrand } = useStore();
+  return <a {...props} href="#products" onClick={event => followStoreLink(event, () => openCatalogBrand(brand))}>{children}</a>;
+}
 
 // --- Category rail (live categoryRails: most-product categories) ---
 export const CategoryRail: React.FC<{
@@ -268,7 +131,6 @@ export const CategoryRail: React.FC<{
   config: TemplateConfig;
   accentColor: string;
 }> = ({ products, categories, config, accentColor }) => {
-  const { selectedCategory, selectCategory } = useStoreCategorySelect();
   const custom = templateCustom(config);
   const groups = useMemo(
     () => groupProductsByCategory(products, categories, custom.categoryOverrides),
@@ -280,16 +142,11 @@ export const CategoryRail: React.FC<{
   const rails = groups.slice(0, maxRails);
   const title = customText(config, 'categoriesTitle', 'دسته‌بندی‌ها'); // live Digikala + Electronic render default
   return (
-    <section data-testid="store-category-rail" className="space-y-5">
+    <section data-testid="store-category-rail" aria-label="دسته‌بندی‌ها" className="space-y-5">
       <SectionTitle accentColor={accentColor}>{title}</SectionTitle>
       {rails.map((group) => (
         <div key={group.slug} className="group space-y-3">
-          <div
-            role="button"
-            tabIndex={0}
-            aria-pressed={selectedCategory === group.slug}
-            onClick={() => selectCategory(group.slug)}
-            onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); selectCategory(group.slug); } }}
+          <StorefrontCategoryLink slug={group.slug}
             className="flex cursor-pointer items-center gap-3 px-1"
           >
             <CategoryThumb group={group} />
@@ -297,7 +154,7 @@ export const CategoryRail: React.FC<{
               <p className="text-sm font-black text-slate-900">{group.title}</p>
               <p className="mt-0.5 text-xs text-slate-500">{toPersianDigits(group.count)} کالا</p>
             </div>
-          </div>
+          </StorefrontCategoryLink>
           <div className="flex gap-3 overflow-x-auto pb-1.5 no-scrollbar">
             {group.products.slice(0, perRail).map((p) => (
               <div key={p.id} className="w-[160px] shrink-0 lg:w-[180px]">
@@ -318,7 +175,6 @@ export const CategoryCards: React.FC<{
   config: TemplateConfig;
   accentColor: string;
 }> = ({ products, categories, config, accentColor }) => {
-  const { selectedCategory, selectCategory } = useStoreCategorySelect();
   const custom = templateCustom(config);
   const groups = useMemo(
     () => groupProductsByCategory(products, categories, custom.categoryOverrides),
@@ -328,23 +184,18 @@ export const CategoryCards: React.FC<{
   const limit = customCount(config, 'categoriesCount', 8);
   const title = customText(config, 'categoriesTitle', 'دسته‌بندی‌ها');
   return (
-    <section data-testid="store-category-cards" className="space-y-4">
+    <section data-testid="store-category-cards" aria-label="دسته‌بندی‌ها" className="space-y-4">
       <SectionTitle accentColor={accentColor}>{title}</SectionTitle>
-      <div className="grid grid-cols-4 gap-3 lg:grid-cols-8">
+      <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-8">
         {groups.slice(0, limit).map((group) => (
-          <div
+          <StorefrontCategoryLink slug={group.slug}
             key={group.slug}
-            role="button"
-            tabIndex={0}
-            aria-pressed={selectedCategory === group.slug}
-            onClick={() => selectCategory(group.slug)}
-            onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); selectCategory(group.slug); } }}
             className="group flex cursor-pointer flex-col items-center gap-2 text-center"
           >
             <CategoryThumb group={group} />
             <span className="w-full truncate text-xs font-extrabold text-slate-800">{group.title}</span>
-            <span className="text-[11px] text-slate-400">{toPersianDigits(group.count)} کالا</span>
-          </div>
+            <span className="text-[11px] text-slate-500">{toPersianDigits(group.count)} کالا</span>
+          </StorefrontCategoryLink>
         ))}
       </div>
     </section>
@@ -479,7 +330,7 @@ export const BrandsRail: React.FC<{
       <SectionTitle accentColor={accentColor}>{customText(config, 'brandsTitle', 'برندها')}</SectionTitle>
       <div className="flex gap-3 overflow-x-auto pb-1.5 no-scrollbar">
         {brands.map((brand) => (
-          <div
+          <StorefrontBrandLink brand={brand}
             key={brand}
             className="flex shrink-0 items-center gap-2.5 rounded-2xl border border-slate-200/60 bg-white px-3.5 py-2.5 shadow-sm transition duration-300 hover:-translate-y-0.5 hover:shadow-md"
           >
@@ -487,7 +338,7 @@ export const BrandsRail: React.FC<{
               {brand.slice(0, 2)}
             </span>
             <span className="text-xs font-bold text-slate-800">{brand}</span>
-          </div>
+          </StorefrontBrandLink>
         ))}
       </div>
     </section>
@@ -537,7 +388,6 @@ export const BestsellersSection: React.FC<{
   );
 };
 
-export { heroSlidesOf };
 
 // --- FIX 14: missing Modern sections (live Modern order) ---------------
 export const TrustStripSection: React.FC<{
@@ -601,7 +451,7 @@ export const AboutSection: React.FC<{
   // content contract and may land in TemplateCustom separately.
   const aboutImage = ((custom as TemplateCustom & { aboutImage?: string }).aboutImage || '').trim();
   return (
-    <section data-testid="store-about" className="space-y-3">
+    <section id="about" data-testid="store-about" className="space-y-3">
       <SectionTitle accentColor={accentColor}>{customText(config, 'aboutTitle', 'درباره فروشگاه')}</SectionTitle>
       {aboutImage ? <img src={aboutImage} alt="" className="h-48 w-full rounded-3xl object-cover shadow-sm lg:h-56" loading="lazy" /> : null}
       <p className="text-[13px] leading-7 text-slate-500">{text}</p>
@@ -819,120 +669,6 @@ export const LookbookSection: React.FC<{
         </a>
       ) : (
         body
-      )}
-    </section>
-  );
-};
-
-// --- Full products grid (custom-titled catalogue) -------------------
-export const ProductsGridSection: React.FC<{
-  products: Product[];
-  config: TemplateConfig;
-  accentColor: string;
-  columnsClass?: string;
-}> = ({ products, config, accentColor, columnsClass }) => {
-  // Category navigation inside a store writes the shared
-  // selectedCategory state (see StoreContext.openCatalogCategory);
-  // the fashion floor and the legacy storefront grid already honour
-  // it, so this shared floor — used by the Modern, Electronic,
-  // Digikala and Tech templates — does too: a selected category
-  // filters the grid, renames the heading to the category and
-  // offers the same «نمایش همه کالاها» reset, with the legacy
-  // grid's empty state when nothing in the store matches. 'all'
-  // (the default) renders exactly as before.
-  const { selectedCategory, setSelectedCategory, categories, searchQuery, setSearchQuery, catalogBrandRequest, clearCatalogBrand } = useStore();
-  // A7: sort control for the template-path floor. Local state, applied
-  // to the visible (loaded) list before render.
-  const [sortBy, setSortBy] = useState<'featured' | 'cheapest' | 'expensive' | 'discount'>('featured');
-  if (!sectionEnabled(config, 'products') && !sectionEnabled(config, 'allProducts')) return null;
-  if (products.length === 0) return null;
-  const filtered = selectedCategory !== 'all';
-  // A brand request raised by a brand click on this store's PDP
-  // applies only when the store actually sells that brand — the
-  // fashion floor's guard; a foreign brand is ignored rather than
-  // emptying the floor.
-  const brandOf = (prod: Product): string => (prod.brand || '').trim();
-  const brandFilter =
-    catalogBrandRequest && products.some((prod) => brandOf(prod) === catalogBrandRequest.brand)
-      ? catalogBrandRequest.brand
-      : null;
-  // The store's own search box writes the shared searchQuery;
-  // honour it over this floor's (already store-scoped) items with
-  // the legacy grid's title/description predicate, composed with
-  // the brand/category filters (brand first, as on the fashion
-  // floor).
-  const searching = !!searchQuery;
-  const matchesSearch = (prod: Product): boolean =>
-    !searching || prod.title.includes(searchQuery) || prod.description.includes(searchQuery);
-  const visible = (brandFilter
-    ? products.filter((prod) => brandOf(prod) === brandFilter)
-    : filtered
-      ? products.filter((prod) => prod.category === selectedCategory)
-      : products
-  ).filter(matchesSearch);
-  // A7: client-side sort over the loaded assortment (same labels and
-  // same limitation as the legacy grid: stores with >24 products sort
-  // the loaded set only, not the full catalog).
-  const sortedVisible = [...visible].sort((a, b) => {
-    if (sortBy === 'cheapest') return a.price - b.price;
-    if (sortBy === 'expensive') return b.price - a.price;
-    if (sortBy === 'discount') return b.discountPercent - a.discountPercent;
-    return (b.salesCount || 0) - (a.salesCount || 0);
-  });
-  const anyFilter = filtered || !!brandFilter || searching;
-  const title = searching
-    ? `جستجو: «${searchQuery}»`
-    : brandFilter
-      ? brandFilter
-      : filtered
-        ? categories.find((c) => c.slug === selectedCategory)?.title || customText(config, 'productsTitle', 'همه کالاهای فروشگاه')
-        : customText(config, 'productsTitle', 'همه کالاهای فروشگاه');
-  const resetFilters = () => {
-    if (filtered) setSelectedCategory('all');
-    if (brandFilter) clearCatalogBrand();
-    if (searching) setSearchQuery('');
-  };
-  return (
-    <section data-testid="store-products" className="space-y-4">
-      <SectionTitle accentColor={accentColor}>{title}</SectionTitle>
-      {/* A7: sort pills for the template-path floor. */}
-      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
-        {[
-          { id: 'featured', label: 'محبوب‌ترین' },
-          { id: 'cheapest', label: 'ارزان‌ترین' },
-          { id: 'expensive', label: 'گران‌ترین' },
-          { id: 'discount', label: 'بیشترین تخفیف' },
-        ].map((sort) => (
-          <button
-            key={sort.id}
-            type="button"
-            aria-pressed={sortBy === sort.id}
-            onClick={() => setSortBy(sort.id as typeof sortBy)}
-            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold whitespace-nowrap transition-colors ${
-              sortBy === sort.id
-                ? 'bg-slate-900 text-white shadow-xs'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            {sort.label}
-          </button>
-        ))}
-      </div>
-      {anyFilter && (
-        <div className="flex items-center justify-end">
-          <button
-            type="button"
-            onClick={resetFilters}
-            className="text-[11px] font-bold text-slate-500 hover:text-slate-800 transition-colors"
-          >
-            نمایش همه کالاها
-          </button>
-        </div>
-      )}
-      {visible.length === 0 ? (
-        <p className="text-xs font-bold text-slate-600 py-6 text-center">کالایی با این مشخصات یافت نشد.</p>
-      ) : (
-        <TemplateProductGrid products={sortedVisible} columnsClass={columnsClass || 'grid-cols-2 lg:grid-cols-4'} />
       )}
     </section>
   );

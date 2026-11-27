@@ -1,18 +1,17 @@
+import { StorefrontCatalogue } from './StorefrontCatalogue';
+import { StorefrontHero } from './StorefrontHero';
 import React from 'react';
 import type { Product } from '../../../types';
 import type { StorefrontTemplateProps, TemplateConfig } from './templateTypes';
 import {
   resolveTemplateConfig,
   orderedEnabledSections,
-  heroSlidesOf,
   templateCustom,
   customText,
   customCount,
   storefrontProducts,
 } from './templateTypes';
 import {
-  AnnouncementSection,
-  HeroSlider,
   CategoryCards,
   BannerRow,
   DealsSection,
@@ -28,9 +27,8 @@ import {
   FaqSection,
   TestimonialsSection,
   LookbookSection,
-  ProductsGridSection,
   groupProductsByCategory,
-  useStoreCategorySelect,
+  StorefrontCategoryLink,
 } from './StoreSections';
 import type { CategoryGroup } from './StoreSections';
 import { TemplateProductGrid } from './TemplateProductGrid';
@@ -84,7 +82,6 @@ const CategoryMosaic: React.FC<{
   config: TemplateConfig;
   accentColor: string;
 }> = ({ products, categories, config, accentColor }) => {
-  const { selectedCategory, selectCategory } = useStoreCategorySelect();
   const custom = templateCustom(config);
   const groups = groupProductsByCategory(products, categories, custom.categoryOverrides);
   if (groups.length === 0) return null;
@@ -100,7 +97,7 @@ const CategoryMosaic: React.FC<{
   const shown = groups.slice(0, customCount(config, 'categoriesCount', 8));
   const title = customText(config, 'categoriesTitle', 'دسته‌بندی‌ها');
   return (
-    <section data-testid="store-category-mosaic" className="space-y-4 lg:space-y-5">
+    <section data-testid="store-category-mosaic" aria-label="دسته‌بندی‌ها" className="space-y-4 lg:space-y-5">
       <ModernSectionHeader
         eyebrow={`${toPersianDigits(shown.length)} دسته‌بندی`}
         title={title}
@@ -111,13 +108,7 @@ const CategoryMosaic: React.FC<{
           const cover = coverOf(g);
           const lead = i === 0;
           return (
-            <div
-              key={g.slug}
-              role="button"
-              tabIndex={0}
-              aria-pressed={selectedCategory === g.slug}
-              onClick={() => selectCategory(g.slug)}
-              onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); selectCategory(g.slug); } }}
+            <StorefrontCategoryLink key={g.slug} slug={g.slug}
               className={`group relative cursor-pointer overflow-hidden rounded-[1.75rem] bg-slate-100 ring-1 ring-slate-900/5 transition duration-300 hover:-translate-y-0.5 hover:shadow-lg ${
                 lead ? 'col-span-2 h-48 lg:h-auto lg:row-span-2' : 'h-36 lg:h-auto'
               }`}
@@ -125,7 +116,7 @@ const CategoryMosaic: React.FC<{
               {cover ? (
                 <img
                   src={cover}
-                  alt={g.title}
+                  alt="" width={600} height={440}
                   loading="lazy"
                   className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
                 />
@@ -138,7 +129,7 @@ const CategoryMosaic: React.FC<{
                 <p className={`font-black leading-6 text-white ${lead ? 'text-base lg:text-xl' : 'text-sm'}`}>{g.title}</p>
                 <p className="mt-0.5 text-[11px] font-bold text-white/85">{toPersianDigits(g.count)} کالا</p>
               </div>
-            </div>
+            </StorefrontCategoryLink>
           );
         })}
       </div>
@@ -235,11 +226,10 @@ const FeaturedSpotlight: React.FC<{
   );
 };
 
-export const ModernTemplate: React.FC<StorefrontTemplateProps> = ({ store, products, accentColor, config, categories }) => {
+export const ModernTemplate: React.FC<StorefrontTemplateProps> = ({ store, products, accentColor, config, categories, productFeed }) => {
   const cfg = resolveTemplateConfig('tpl-modern-1', config);
   const items = storefrontProducts(store, products);
   const order = orderedEnabledSections(cfg);
-  const slides = heroSlidesOf(cfg);
   const custom = templateCustom(cfg);
   const seen = new Set<string>();
   const once = (group: string): boolean => {
@@ -248,102 +238,14 @@ export const ModernTemplate: React.FC<StorefrontTemplateProps> = ({ store, produ
     return true;
   };
 
-  const heroTitle = customText(cfg, 'heroTitle', store.name);
-  const heroSubtitle = customText(cfg, 'heroSubtitle', store.description || store.shortDescription || store.tagline || '');
-  const heroCtaText = customText(cfg, 'heroCtaText', 'مشاهده کالاها');
-  const heroCtaLink = custom.heroCtaLink || '#products';
-  const heroImage = custom.heroImage || store.logo;
-  const aboutInOrder = order.includes('about');
+  const categoryGroups = groupProductsByCategory(items, categories, custom.categoryOverrides);
 
-  const renderHero = (): React.ReactNode => {
-    if (slides.length > 0) {
-      return (
-        <div className="[&>div>div]:rounded-[2rem] [&_img]:lg:h-80">
-          <HeroSlider slides={slides} accentColor={accentColor} autoplay={custom.heroAutoplay} />
-        </div>
-      );
-    }
-    const collage = items
-      .filter((p) => productImage(p) !== '')
-      .slice(0, 4)
-      .map((p) => ({ src: productImage(p), title: p.title }));
-    const hasMedia = Boolean(heroImage) || collage.length > 0;
-    return (
-      <section className={`grid items-center gap-8 lg:gap-12 ${hasMedia ? 'lg:grid-cols-2' : ''}`}>
-        <div className={hasMedia ? '' : 'max-w-2xl'}>
-          {store.tagline ? (
-            <p
-              className="inline-flex items-center gap-2 rounded-full bg-white px-3.5 py-1.5 text-[11px] font-black ring-1 ring-slate-900/5"
-              style={{ color: accentColor }}
-            >
-              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: accentColor }} />
-              {store.tagline}
-            </p>
-          ) : null}
-          <h1 className="mt-4 text-3xl font-black leading-[1.3] text-slate-900 lg:mt-5 lg:text-5xl lg:leading-[1.25]">
-            {heroTitle}
-          </h1>
-          {heroSubtitle ? (
-            <p className="mt-4 max-w-xl text-sm leading-8 text-slate-500 lg:text-base lg:leading-9">{heroSubtitle}</p>
-          ) : null}
-          <div className="mt-6 flex flex-wrap items-center gap-3 lg:mt-8">
-            <a
-              href={heroCtaLink}
-              className="inline-flex min-h-[44px] items-center rounded-full px-6 py-3 text-sm font-black text-white shadow-md transition duration-300 hover:-translate-y-0.5 hover:shadow-lg"
-              style={{ backgroundColor: accentColor }}
-            >
-              {heroCtaText}
-            </a>
-            {aboutInOrder ? (
-              <a
-                href="#about"
-                className="inline-flex min-h-[44px] items-center rounded-full bg-white px-6 py-3 text-sm font-black text-slate-800 ring-1 ring-slate-200 transition duration-300 hover:-translate-y-0.5 hover:shadow-md"
-              >
-                درباره فروشگاه
-              </a>
-            ) : null}
-          </div>
-        </div>
-        {heroImage ? (
-          <div className="relative">
-            <div
-              aria-hidden="true"
-              className="absolute inset-0 -rotate-2 rounded-[2rem]"
-              style={{ backgroundColor: `${accentColor}1f` }}
-            />
-            <img
-              src={heroImage}
-              alt={store.name}
-              className="relative h-64 w-full rounded-[2rem] object-cover shadow-xl ring-1 ring-slate-900/10 sm:h-80 lg:h-[26rem]"
-            />
-          </div>
-        ) : collage.length > 0 ? (
-          <div className="grid grid-cols-2 gap-3">
-            {collage.map((tile, i) => (
-              <div
-                key={`${tile.src}-${i}`}
-                className={`group overflow-hidden rounded-[1.75rem] ring-1 ring-slate-900/5 ${
-                  collage.length === 1 ? 'col-span-2 aspect-[2/1]' : 'aspect-square'
-                } ${i % 2 === 1 ? 'lg:translate-y-6' : ''}`}
-              >
-                <img
-                  src={tile.src}
-                  alt={tile.title}
-                  loading="lazy"
-                  className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
-                />
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </section>
-    );
-  };
+  const renderHero = () => <StorefrontHero store={store} config={cfg} products={items} />;
 
   const renderSection = (key: string): React.ReactNode => {
     switch (key) {
       case 'announcement':
-        return <AnnouncementSection store={store} config={cfg} accentColor={accentColor} />;
+        return null;
       case 'hero':
       case 'heroSlides':
         return once('hero') ? renderHero() : null;
@@ -370,9 +272,7 @@ export const ModernTemplate: React.FC<StorefrontTemplateProps> = ({ store, produ
         return <TopRatedSection products={items} config={cfg} accentColor={accentColor} />;
       case 'about':
         return (
-          <div id="about" className="scroll-mt-24">
-            <AboutSection store={store} config={cfg} accentColor={accentColor} />
-          </div>
+          <AboutSection store={store} config={cfg} accentColor={accentColor} />
         );
       case 'campaign':
         return <CampaignSection store={store} products={items} config={cfg} accentColor={accentColor} />;
@@ -387,9 +287,8 @@ export const ModernTemplate: React.FC<StorefrontTemplateProps> = ({ store, produ
       case 'products':
       case 'allProducts':
         return once('products') ? (
-          <div id="products" className="scroll-mt-24">
-            <ProductsGridSection products={items} config={cfg} accentColor={accentColor} columnsClass="grid-cols-2 lg:grid-cols-4" />
-          </div>
+          <StorefrontCatalogue items={items} categoryGroups={categoryGroups}
+            productsTitle={customText(cfg, 'productsTitle', 'همه کالاها')} productFeed={productFeed} />
         ) : null;
       default:
         return null;
@@ -397,15 +296,12 @@ export const ModernTemplate: React.FC<StorefrontTemplateProps> = ({ store, produ
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-[#fdfcf9]" data-template-desktop="lg:grid" style={{ ['--tpl-accent' as string]: accentColor } as React.CSSProperties}>
-      <nav aria-label="مسیر صفحه" className="px-4 pt-4 text-[11px] text-slate-400 lg:px-6">
-        <span>خانه</span><span className="mx-1">/</span><span className="text-slate-700 font-bold">{store.name}</span>
-      </nav>
-      <div className="mx-auto w-full max-w-6xl space-y-10 p-4 lg:space-y-14 lg:p-6">
-        {order.map((key) => (
-          <React.Fragment key={key}>{renderSection(key)}</React.Fragment>
-        ))}
+    <main className="fashion-storefront storefront-showcase" data-storefront-theme="tpl-modern-1"
+      style={{ '--tpl-accent': accentColor } as React.CSSProperties}>
+      {!order.some(key => key === 'hero' || key === 'heroSlides') && <h1 className="sr-only">{store.name}</h1>}
+      <div className="showcase-sections">
+        {order.map(key => <React.Fragment key={key}>{renderSection(key)}</React.Fragment>)}
       </div>
-    </div>
+    </main>
   );
 };

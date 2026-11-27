@@ -4,7 +4,8 @@ import { batch8Browser, clickText, fillInput, waitText } from '../../../scripts/
 
 const visit = batch8Browser();
 const storefront = '/store/batch-eight-store';
-const account = 'header button[title="ورود به حساب کاربری"]';
+const desktopAccount = 'header a[aria-label="حساب کاربری"]';
+const mobileAccount = 'nav[aria-label="منوی پایین ویترین"] a[href$="/account"]';
 const profile = 'پروفایل کاربری من';
 const pendingSession = 'holdInitialProfile&access-fixture-role=customer&access-fixture-caps=customer,seller';
 
@@ -91,14 +92,14 @@ test('opening the storefront account after a dashboard logout asks for OTP', () 
   visit('/seller?seller', 1440, async page => {
     await page.waitForSelector('#seller-main');
     await page.click('[data-panel-workspace="seller"] header button[aria-label="خروج از حساب"]');
-    await page.waitForSelector(account, { visible: true });
+    await page.waitForSelector(desktopAccount, { visible: true });
     assert.equal(new URL(page.url()).pathname, storefront);
-    await page.click(account);
+    await page.click(desktopAccount);
     await page.waitForSelector('input[type="tel"]', { visible: true });
     assert.doesNotMatch(await page.evaluate(() => document.body.innerText), new RegExp(profile));
     assert.equal(await page.evaluate(() => localStorage.getItem('seler_sho_jwt_token')), null);
     await page.click('button[aria-label="بستن"]');
-    await page.waitForSelector(account, { visible: true });
+    await page.waitForSelector(desktopAccount, { visible: true });
     assert.equal(new URL(page.url()).pathname, storefront);
     await page.goBack();
     await page.waitForSelector('input[type="tel"]', { visible: true });
@@ -107,8 +108,8 @@ test('opening the storefront account after a dashboard logout asks for OTP', () 
 
 test('a verified customer reaches the storefront profile after account sign-in', () =>
   visit(storefront, 390, async page => {
-    await page.waitForSelector(account, { visible: true });
-    await page.click(account);
+    await page.waitForSelector(mobileAccount, { visible: true });
+    await page.click(mobileAccount);
     await fillInput(page, 'input[type="tel"]', '09120000000');
     await clickText(page, 'دریافت کد تأیید');
     await page.waitForSelector('input[maxlength="4"]', { visible: true });
@@ -141,7 +142,7 @@ test('a seller session and referral do not replace the central store, while the 
     await waitForScope('seller_dashboard', 'batch-eight-store', '/seller');
     await open('seller_storefront');
     await waitForScope('seller_storefront', 'batch-eight-store', storefront);
-    await page.waitForSelector('header button[title="حساب کاربری"]', { visible: true });
+    await page.waitForSelector(mobileAccount, { visible: true });
     await open('customer_wishlist');
     await waitForScope('customer_wishlist', 'batch-eight-store', storefront + '/account/wishlist');
     await open('static_page');

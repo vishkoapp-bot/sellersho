@@ -44,11 +44,14 @@ export function batch8Browser({
     });
     javascript = bundle.outputFiles[0].text;
     html = await readFile('scripts/fixtures/catalog/composed.html', 'utf8');
-    const compiled = await server.transformRequest('/src/index.css?direct');
-    if (!compiled) throw new Error('Missing compiled fixture stylesheet');
-    styles = compiled.code + '\n' + await readFile('src/components/storefront/templates/fashion.css', 'utf8');
+    const [compiled, storefront] = await Promise.all([
+      server.transformRequest('/src/index.css?direct'),
+      server.transformRequest('/src/components/storefront/templates/fashion.css?direct'),
+    ]);
+    if (!compiled || !storefront) throw new Error('Missing compiled fixture stylesheet');
+    styles = compiled.code + '\n' + storefront.code;
     editorialBanner = await readFile('public/storefront/campaigns/selersho-editorial-digital-v1.webp');
-    fashionImages = new Map(await Promise.all(['hero.webp', 'knitwear.webp'].map(async file =>
+    fashionImages = new Map(await Promise.all(['hero.webp', 'knitwear.webp', 'categories.webp'].map(async file =>
       [`/templates/fashion/${file}`, await readFile(`public/templates/fashion/${file}`)] as const)));
     if (inlineVazirmatn) {
       // Geometry tests need the app font; the hermetic browser aborts asset requests.

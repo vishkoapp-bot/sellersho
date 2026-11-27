@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { batch8Browser } from '../../../../scripts/fixtures/catalog/batch8-browser';
 
 const visit = batch8Browser();
-const headerSelector = 'header:has(button[title="جستجو در محصولات"])';
+const headerSelector = 'header[data-storefront-theme="tpl-electronic-1"]';
 const railSelector = 'div:has(> div.snap-x > a[href="#products"])';
 
 for (const width of [390, 1280]) {
@@ -16,7 +16,7 @@ for (const width of [390, 1280]) {
       const layout = await page.evaluate((headerQuery, railQuery) => {
         const header = document.querySelector(headerQuery)!;
         const rail = document.querySelector(railQuery)!;
-        const button = header.querySelector('button')!;
+        const button = [...header.querySelectorAll('button')].find(node => node.getClientRects().length)!;
         const headerRect = header.getBoundingClientRect();
         const railRect = rail.getBoundingClientRect();
         const buttonRect = button.getBoundingClientRect();

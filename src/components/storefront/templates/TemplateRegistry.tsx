@@ -1,10 +1,6 @@
 import React from 'react';
 import type { StorefrontTemplateProps } from './templateTypes';
 
-// Accent defaults are the live Ue map. tpl-tech-1 has NO accent in the
-// recovered Ue evidence, so it has no entry here and falls back to the
-// templateConfig accent or the platform theme colour; inventing a tech
-// accent would be a guess (TODO below).
 // Template thumbs: live dist has /templates/*-thumb.svg files, but their
 // names never appear in live JS (U44), so thumbnails are referenced only
 // from the server-provided thumbnailUrl, never constructed here.
@@ -18,13 +14,12 @@ export const STORE_TEMPLATE_IDS = [
 
 export type StoreTemplateId = (typeof STORE_TEMPLATE_IDS)[number];
 
-export const TEMPLATE_ACCENTS: Partial<Record<StoreTemplateId, string>> = {
-  'tpl-electronic-1': '#f97847',
-  'tpl-fashion-1': '#793f3c',
-  'tpl-digikala-1': '#ef4056',
-  'tpl-modern-1': '#0D7377',
-  // TODO: tpl-tech-1 accent is not in the recovered live Ue map; do not
-  // invent one. Fallback is templateConfig.accentColor, then #5d44f8.
+export const TEMPLATE_ACCENTS: Record<StoreTemplateId, string> = {
+  'tpl-electronic-1': '#9e3d15',
+  'tpl-fashion-1': '#703738',
+  'tpl-digikala-1': '#9f313d',
+  'tpl-modern-1': '#365849',
+  'tpl-tech-1': '#1b5673',
 };
 
 export function resolveTemplateAccent(templateId: string, configAccent?: string): string {
@@ -55,6 +50,16 @@ export const TemplateFallback: React.FC<{ templateId: string }> = ({ templateId 
   </div>
 );
 
+function StorefrontAnchor() {
+  React.useEffect(() => {
+    const anchor = window.location.hash;
+    if (['#products', '#fashion-search', '#fashion-contact', '#fashion-categories', '#about', '#marketplace-deals'].includes(anchor)) {
+      document.getElementById(anchor.slice(1))?.scrollIntoView({ block: 'start' });
+    }
+  }, []);
+  return null;
+}
+
 export const StorefrontTemplate: React.FC<
   StorefrontTemplateProps & { templateId: string }
 > = ({ templateId, ...props }) => {
@@ -76,6 +81,7 @@ export const StorefrontTemplate: React.FC<
   return (
     <React.Suspense fallback={<div className="p-6 text-center text-xs text-slate-500">در حال بارگذاری قالب ویترین…</div>}>
       {body}
+      <StorefrontAnchor />
     </React.Suspense>
   );
 };

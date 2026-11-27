@@ -224,13 +224,13 @@ export const CartDrawer: React.FC = () => {
   const centralCheckout = !routeStoreSlug && activeView !== 'seller_storefront' && currentStore?.ownerType !== 'dropshipper';
   const fashionCheckout = !centralCheckout && currentStore?.templateId === 'tpl-fashion-1';
   const checkoutStyle = {
-    '--checkout-accent': centralCheckout ? 'var(--shop-forest, #164638)' : fashionCheckout ? '#703738' : 'var(--color-brand-deep)',
-    '--checkout-soft': centralCheckout ? 'var(--shop-soft, #edf2e9)' : fashionCheckout ? '#eee6dc' : 'var(--color-brand-soft)',
-    '--checkout-ink': centralCheckout ? 'var(--shop-ink, #172d26)' : fashionCheckout ? '#29231f' : '#1e293b',
-    '--checkout-bg': centralCheckout ? 'var(--shop-bg, #f8f6ef)' : fashionCheckout ? '#fbf8f3' : '#f8fafc',
-    '--checkout-line': centralCheckout ? 'var(--shop-line, #dde2d7)' : fashionCheckout ? '#ded4c8' : 'var(--color-slate-200)',
-    '--checkout-muted': centralCheckout ? 'var(--shop-muted, #4f6359)' : fashionCheckout ? '#655a52' : 'var(--color-slate-600)',
-    '--checkout-radius': centralCheckout ? 'var(--shop-radius, 16px)' : '1rem',
+    '--checkout-accent': centralCheckout ? 'var(--shop-forest, #164638)' : fashionCheckout ? '#703738' : 'var(--fashion-accent, var(--color-brand-deep))',
+    '--checkout-soft': centralCheckout ? 'var(--shop-soft, #edf2e9)' : fashionCheckout ? '#eee6dc' : 'var(--fashion-surface, var(--color-brand-soft))',
+    '--checkout-ink': centralCheckout ? 'var(--shop-ink, #172d26)' : fashionCheckout ? '#29231f' : 'var(--fashion-ink, #1e293b)',
+    '--checkout-bg': centralCheckout ? 'var(--shop-bg, #f8f6ef)' : fashionCheckout ? '#fbf8f3' : 'var(--fashion-paper, #f8fafc)',
+    '--checkout-line': centralCheckout ? 'var(--shop-line, #dde2d7)' : fashionCheckout ? '#ded4c8' : 'var(--fashion-line, var(--color-slate-200))',
+    '--checkout-muted': centralCheckout ? 'var(--shop-muted, #4f6359)' : fashionCheckout ? '#655a52' : 'var(--fashion-muted, var(--color-slate-600))',
+    '--checkout-radius': centralCheckout ? 'var(--shop-radius, 16px)' : 'var(--showcase-radius, 1rem)',
   } as React.CSSProperties;
   useEffect(() => {
     if (!isCartOpen || isAuthOpen) return;
@@ -771,6 +771,7 @@ export const CartDrawer: React.FC = () => {
         onKeyDown={handleDialogKeys}
         style={checkoutStyle}
         data-checkout-scope={centralCheckout ? 'central' : 'storefront'}
+        data-storefront-theme={centralCheckout ? undefined : currentStore?.templateId || 'tpl-modern-1'}
         initial={reducedMotion ? false : { y: 24, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ duration: reducedMotion ? 0 : 0.18 }}

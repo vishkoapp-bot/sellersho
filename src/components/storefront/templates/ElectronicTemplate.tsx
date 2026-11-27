@@ -1,9 +1,10 @@
+import { StorefrontCatalogue } from './StorefrontCatalogue';
+import { StorefrontHero } from './StorefrontHero';
 import React from 'react';
 import type { StorefrontTemplateProps } from './templateTypes';
 import {
   resolveTemplateConfig,
   orderedEnabledSections,
-  heroSlidesOf,
   templateCustom,
   customText,
   bannersOf,
@@ -13,8 +14,6 @@ import {
 import type { TemplateConfig } from './templateTypes';
 import type { Product } from '../../../types';
 import {
-  AnnouncementSection,
-  HeroSlider,
   CategoryRail,
   CategoryCards,
   BannerRow,
@@ -31,10 +30,11 @@ import {
   FaqSection,
   TestimonialsSection,
   LookbookSection,
-  ProductsGridSection,
   SectionTitle,
   discountedProducts,
   groupProductsByCategory,
+  StorefrontCategoryLink,
+  StorefrontBrandLink,
 } from './StoreSections';
 import type { CategoryGroup } from './StoreSections';
 import { toPersianDigits } from '../../../utils/formatters';
@@ -55,12 +55,10 @@ const CategoryChips: React.FC<{ groups: CategoryGroup[]; accentColor: string }> 
   const top = groups.slice(0, 10);
   if (top.length < 2) return null;
   return (
-    <div className="sticky top-[69px] z-20">
+    <div className="showcase-rail" aria-label="دسته‌بندی‌ها">
       <div className="flex snap-x gap-2 overflow-x-auto rounded-2xl border border-slate-200/70 bg-white/85 p-2 shadow-sm backdrop-blur no-scrollbar">
         {top.map((g) => (
-          <a
-            key={g.slug}
-            href="#products"
+          <StorefrontCategoryLink key={g.slug} slug={g.slug}
             className="flex shrink-0 snap-start items-center gap-2 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 transition duration-300 hover:-translate-y-0.5 hover:shadow-sm"
             style={{ backgroundColor: `${accentColor}14` }}
           >
@@ -69,7 +67,7 @@ const CategoryChips: React.FC<{ groups: CategoryGroup[]; accentColor: string }> 
             <span className="text-[11px] font-black" style={{ color: accentColor }}>
               {toPersianDigits(g.count)}
             </span>
-          </a>
+          </StorefrontCategoryLink>
         ))}
       </div>
     </div>
@@ -96,8 +94,7 @@ const BrandTiles: React.FC<{ products: Product[]; config: TemplateConfig; accent
       <SectionTitle accentColor={accentColor}>{customText(config, 'brandsTitle', 'برندها')}</SectionTitle>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
         {brands.map(([brand, count]) => (
-          <div
-            key={brand}
+          <StorefrontBrandLink brand={brand} key={brand}
             className="group rounded-2xl border border-slate-100 bg-white p-3 text-center shadow-2xs transition duration-300 hover:-translate-y-0.5 hover:shadow-md"
           >
             <span
@@ -108,7 +105,7 @@ const BrandTiles: React.FC<{ products: Product[]; config: TemplateConfig; accent
             </span>
             <p className="mt-2 truncate text-xs font-bold text-slate-800">{brand}</p>
             <p className="mt-0.5 text-[11px] text-slate-400">{toPersianDigits(count)} کالا</p>
-          </div>
+          </StorefrontBrandLink>
         ))}
       </div>
     </section>
@@ -139,7 +136,7 @@ const PromoTiles: React.FC<{ config: TemplateConfig }> = ({ config }) => {
         );
         const cls = 'group relative block overflow-hidden rounded-3xl shadow-sm transition duration-300 hover:shadow-lg';
         return b.link ? (
-          <a key={`${b.image}-${i}`} href={b.link} target="_blank" rel="noreferrer" className={cls}>
+          <a key={`${b.image}-${i}`} href={b.link} {...(/^https?:\/\//i.test(b.link) ? { target: '_blank', rel: 'noreferrer' } : {})} className={cls}>
             {inner}
           </a>
         ) : (
@@ -152,11 +149,10 @@ const PromoTiles: React.FC<{ config: TemplateConfig }> = ({ config }) => {
   );
 };
 
-export const ElectronicTemplate: React.FC<StorefrontTemplateProps> = ({ store, products, accentColor, config, categories }) => {
+export const ElectronicTemplate: React.FC<StorefrontTemplateProps> = ({ store, products, accentColor, config, categories, productFeed }) => {
   const cfg = resolveTemplateConfig('tpl-electronic-1', config);
   const items = storefrontProducts(store, products);
   const order = orderedEnabledSections(cfg);
-  const slides = heroSlidesOf(cfg);
   const custom = templateCustom(cfg);
   const banners = bannersOf(cfg);
   const seen = new Set<string>();
@@ -167,101 +163,7 @@ export const ElectronicTemplate: React.FC<StorefrontTemplateProps> = ({ store, p
   };
 
   const categoryGroups = groupProductsByCategory(items, categories, custom.categoryOverrides);
-  const brandNames: string[] = [];
-  items.forEach((p) => {
-    const name = (p.brand || '').trim();
-    if (name && !brandNames.includes(name)) brandNames.push(name);
-  });
-
-  const heroTitle = customText(cfg, 'heroTitle', store.name);
-  const heroSubtitle = customText(cfg, 'heroSubtitle', store.description || store.shortDescription || store.tagline || '');
-  const heroCtaText = customText(cfg, 'heroCtaText', 'مشاهده کالاها');
-  const heroCtaLink = custom.heroCtaLink || '#products';
-  const heroImage = typeof custom.heroImage === 'string' && custom.heroImage.trim() !== '' ? custom.heroImage : '';
-
-  const renderHeroPanel = (): React.ReactNode => {
-    if (slides.length > 0) {
-      return (
-        <div className="rounded-3xl shadow-lg shadow-slate-900/5 ring-1 ring-slate-900/5">
-          <HeroSlider slides={slides} accentColor={accentColor} autoplay={custom.heroAutoplay} />
-        </div>
-      );
-    }
-    return (
-      <section
-        className="relative overflow-hidden rounded-3xl text-white shadow-xl shadow-orange-200/60"
-        style={{ background: `linear-gradient(135deg, ${accentColor} 0%, #ea580c 92%)` }}
-      >
-        <div aria-hidden="true" className="pointer-events-none absolute -top-24 -left-20 h-72 w-72 rounded-full bg-white/10" />
-        <div aria-hidden="true" className="pointer-events-none absolute -bottom-28 right-1/4 h-80 w-80 rounded-full bg-white/10" />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 opacity-20"
-          style={{
-            backgroundImage: 'radial-gradient(rgba(255,255,255,0.6) 1.2px, transparent 1.4px)',
-            backgroundSize: '22px 22px',
-          }}
-        />
-        <div className="relative flex flex-col gap-6 p-6 lg:flex-row lg:items-center lg:p-10">
-          <div className="min-w-0 flex-1">
-            {store.logo ? (
-              <img
-                src={store.logo}
-                alt={store.name}
-                className="mb-4 h-14 w-14 rounded-2xl bg-white object-contain p-1.5 shadow-md"
-                loading="lazy"
-              />
-            ) : null}
-            <h1 className="text-3xl font-black leading-tight lg:text-5xl">{heroTitle}</h1>
-            {heroSubtitle ? (
-              <p className="mt-3 max-w-xl text-sm leading-8 text-white/85 lg:text-base">{heroSubtitle}</p>
-            ) : null}
-            <div className="mt-6">
-              <a
-                href={heroCtaLink}
-                className="inline-block rounded-full bg-white px-6 py-3 text-sm font-black shadow-lg transition duration-300 hover:-translate-y-0.5 hover:shadow-xl"
-                style={{ color: accentColor }}
-              >
-                {heroCtaText}
-              </a>
-            </div>
-            {items.length > 0 ? (
-              <div className="mt-6 flex flex-wrap gap-2">
-                <span className="rounded-full bg-white/15 px-3.5 py-1.5 text-[11px] font-bold backdrop-blur-sm">
-                  {toPersianDigits(items.length)} کالا
-                </span>
-                {brandNames.length > 0 ? (
-                  <span className="rounded-full bg-white/15 px-3.5 py-1.5 text-[11px] font-bold backdrop-blur-sm">
-                    {toPersianDigits(brandNames.length)} برند
-                  </span>
-                ) : null}
-                {categoryGroups.length > 0 ? (
-                  <span className="rounded-full bg-white/15 px-3.5 py-1.5 text-[11px] font-bold backdrop-blur-sm">
-                    {toPersianDigits(categoryGroups.length)} دسته‌بندی
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
-          {heroImage ? (
-            <img
-              src={heroImage}
-              alt={heroTitle}
-              className="h-44 w-full shrink-0 rounded-2xl object-cover shadow-2xl ring-1 ring-white/40 lg:h-60 lg:w-96"
-              loading="lazy"
-            />
-          ) : null}
-        </div>
-      </section>
-    );
-  };
-
-  const renderHero = (): React.ReactNode => (
-    <>
-      {renderHeroPanel()}
-      <CategoryChips groups={categoryGroups} accentColor={accentColor} />
-    </>
-  );
+  const renderHero = () => <StorefrontHero store={store} config={cfg} products={items} />;
 
   const renderDeals = (): React.ReactNode => {
     const deals = discountedProducts(items);
@@ -303,10 +205,10 @@ export const ElectronicTemplate: React.FC<StorefrontTemplateProps> = ({ store, p
   const renderSection = (key: string): React.ReactNode => {
     switch (key) {
       case 'announcement':
-        return <AnnouncementSection store={store} config={cfg} accentColor={accentColor} />;
+        return null;
       case 'hero':
       case 'heroSlides':
-        return once('hero') ? renderHero() : null;
+        return once('hero') ? <>{renderHero()}{order.includes('categoryRail') && <CategoryChips groups={categoryGroups} accentColor={accentColor} />}</> : null;
       case 'trustStrip':
         return (
           <div className="rounded-3xl border border-slate-100 bg-white p-3 shadow-sm empty:hidden lg:p-4">
@@ -367,14 +269,8 @@ export const ElectronicTemplate: React.FC<StorefrontTemplateProps> = ({ store, p
       case 'products':
       case 'allProducts':
         return once('products') ? (
-          <div id="products" className="scroll-mt-24">
-            <ProductsGridSection
-              products={items}
-              config={cfg}
-              accentColor={accentColor}
-              columnsClass="grid-cols-2 lg:grid-cols-5"
-            />
-          </div>
+          <StorefrontCatalogue items={items} categoryGroups={categoryGroups}
+            productsTitle={customText(cfg, 'productsTitle', 'همه کالاها')} productFeed={productFeed} />
         ) : null;
       default:
         return null;
@@ -382,16 +278,13 @@ export const ElectronicTemplate: React.FC<StorefrontTemplateProps> = ({ store, p
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-slate-50" data-template-desktop="lg:grid" style={{ ['--tpl-accent' as string]: accentColor } as React.CSSProperties}>
-      <nav aria-label="مسیر صفحه" className="px-3 pt-3 text-[11px] text-slate-400 lg:px-5">
-        <span>خانه</span><span className="mx-1">/</span><span className="text-slate-700 font-bold">{store.name}</span>
-      </nav>
-      <div className="mx-auto w-full max-w-7xl space-y-6 p-3 lg:space-y-8 lg:p-5">
-        {order.map((key) => (
-          <React.Fragment key={key}>{renderSection(key)}</React.Fragment>
-        ))}
+    <main className="fashion-storefront storefront-showcase" data-storefront-theme="tpl-electronic-1"
+      style={{ '--tpl-accent': accentColor } as React.CSSProperties}>
+      {!order.some(key => key === 'hero' || key === 'heroSlides') && <h1 className="sr-only">{store.name}</h1>}
+      <div className="showcase-sections">
+        {order.map(key => <React.Fragment key={key}>{renderSection(key)}</React.Fragment>)}
       </div>
-    </div>
+    </main>
   );
 };
 export default ElectronicTemplate;

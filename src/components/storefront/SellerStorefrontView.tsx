@@ -10,7 +10,7 @@ import { SellerStorefrontContact } from './SellerStorefrontContact';
 import { SellerStorefrontFooter } from './SellerStorefrontFooter';
 import { ProductCard } from '../ProductCard';
 import { SpecialDealsSlider } from '../SpecialDealsSlider';
-import { Search, Home, Info, PhoneCall, PackageSearch, Package, X } from 'lucide-react';
+import { Search, Home, Info, PhoneCall, PackageSearch, X } from 'lucide-react';
 import { storeApi } from '../../services/storeApi';
 import { catalogApi } from '../../services/catalogApi';
 import { StorefrontTemplate, TemplateFallback, isKnownTemplateId, resolveTemplateAccent } from './templates/TemplateRegistry';
@@ -241,118 +241,26 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
   // other value means "not resolved yet" (builder loading layout).
   const resolvedTemplateId = templateStoreId === currentStore.id ? templateId : null;
   if (resolvedTemplateId) {
-    const items = storefrontProducts(currentStore, templateProducts);
-    const searchOverlay = isSearchOpen ? (
-      <div className="bg-slate-50 border-b border-slate-200 p-3 flex items-center gap-2 animate-in fade-in duration-200">
-        <div className="relative flex-1 flex items-center bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 shadow-2xs">
-          <Search className="w-4 h-4 text-slate-400 shrink-0 ml-1.5"  strokeWidth={1.5}/>
-          <input
-            type="text"
-            autoFocus
-            placeholder="جستجوی محصول در این فروشگاه..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden"
-          />
-        </div>
-        <button
-          onClick={() => {
-            setIsSearchOpen(false);
-            setSearchQuery('');
-          }}
-          className="p-1.5 rounded-xl hover:bg-slate-200 text-slate-500"
-        >
-          <X className="w-5 h-5"  strokeWidth={1.5}/>
-        </button>
-      </div>
-    ) : null;
-    // Fix81: an empty storefront must still render its resolved
-    // template. The old generic empty page (default Modern header +
-    // generic hero) made every template pick a visible no-op for
-    // stores with no catalogue products yet (live mone: 11 picks, 0
-    // active). Section components return null when empty, so the
-    // template renders its own hero/chrome; the coming-soon message
-    // below is kept so visitors still get the explanation.
-    if (items.length === 0 && resolvedTemplateId !== 'tpl-fashion-1') {
-      return (
-        <div className="flex-1 flex flex-col bg-white">
-          <SellerStorefrontHeader
-            onOpenSearch={() => setIsSearchOpen(true)}
-            variant={resolvedTemplateId === 'tpl-digikala-1' ? 'digikala' : resolvedTemplateId === 'tpl-fashion-1' ? 'fashion' : 'modern'}
-            navigationProducts={templateProducts}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-          />
-          {searchOverlay}
-          {isKnownTemplateId(resolvedTemplateId) ? (
-            <StorefrontTemplate
-              templateId={resolvedTemplateId}
-              store={currentStore}
-              products={[]}
-              categories={categories}
-              accentColor={resolveTemplateAccent(resolvedTemplateId, templateConfig.accentColor)}
-              config={templateConfig}
-            />
-          ) : (
-            <TemplateFallback templateId={resolvedTemplateId} />
-          )}
-          {/* FIX 12: live empty state — heading "به‌زودی محصولات جدید
-              می‌رسند" plus the coming-soon paragraph. The earlier
-              "صاحب فروشگاه هنوز محصولی را فعال نکرده است…" wording
-              appears nowhere in the live bundle and was a misquote;
-              the live bundle default is the paragraph below. The
-              generic welcome heading lives in the hero above. */}
-          {/* FIX 16: live's template empty block (bundle: icon circle +
-              h3 text-lg + text-sm stone body). The candidate's h2
-              text-sm block had the same texts but the wrong heading
-              level/size and no icon -- the re-check's heading-level
-              difference. Accent is live's teal default: live strips
-              templateConfig, so all observed stores render it. */}
-          <div id={resolvedTemplateId === 'tpl-fashion-1' ? 'products' : undefined} className="flex flex-col items-center justify-center px-8 py-20 text-center">
-            <div className="w-20 h-20 rounded-full flex items-center justify-center mb-4" style={{ backgroundColor: '#0D737714' }}>
-              <Package className="w-9 h-9" strokeWidth={1.5} style={{ color: '#0D7377' }} />
-            </div>
-            <h3 className="text-lg font-black text-[#1C1917]">به‌زودی محصولات جدید می‌رسند</h3>
-            <p className="text-sm text-stone-500 mt-2 leading-6 max-w-[280px]">صاحب فروشگاه به‌زودی کالاهای تازه را به این ویترین اضافه می‌کند. کمی بعد دوباره سر بزنید.</p>
-          </div>
-          <SellerStorefrontFooter variant={resolvedTemplateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} storeProducts={templateProducts} />
-        </div>
-      );
-    }
+    const known = isKnownTemplateId(resolvedTemplateId);
     return (
       <div className="flex-1 flex flex-col bg-white">
-        {/* FIX 13: per-template header — Digikala's own header (2 buttons
-            + always-visible search) only in the template path; the
-            empty path above always uses the Modern header. */}
-        <SellerStorefrontHeader
-          onOpenSearch={() => setIsSearchOpen(true)}
-          variant={resolvedTemplateId === 'tpl-digikala-1' ? 'digikala' : resolvedTemplateId === 'tpl-fashion-1' ? 'fashion' : 'modern'}
-            navigationProducts={templateProducts}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-        />
-        {searchOverlay}
-        {isKnownTemplateId(resolvedTemplateId) ? (
-          <StorefrontTemplate
-            templateId={resolvedTemplateId}
-            store={currentStore}
-            products={templateProducts}
-            categories={categories}
+        <SellerStorefrontHeader onOpenSearch={() => setIsSearchOpen(true)}
+          variant={known ? 'themed' : 'modern'} navigationProducts={templateProducts} />
+        {known ? (
+          <StorefrontTemplate key={currentStore.id} templateId={resolvedTemplateId} store={currentStore}
+            products={templateProducts} categories={categories}
             accentColor={resolveTemplateAccent(resolvedTemplateId, templateConfig.accentColor)}
             config={templateConfig}
-            productFeed={resolvedTemplateId === 'tpl-fashion-1' && currentStore.ownerType === 'dropshipper' ? {
+            productFeed={currentStore.ownerType === 'dropshipper' ? {
               loading: loadedStoreSlug !== currentStore.slug,
               error: loadedStoreSlug === currentStore.slug ? scopedError : '',
               hasMore: loadedStoreSlug === currentStore.slug && hasMoreScoped,
               loadingMore: scopedLoadingMore,
               loadMore: () => void loadMoreScoped(),
               retry: () => { if (hasMoreScoped) void loadMoreScoped(); else setScopedReload(n => n + 1); },
-            } : undefined}
-          />
-        ) : (
-          <TemplateFallback templateId={resolvedTemplateId} />
-        )}
-        <SellerStorefrontFooter variant={resolvedTemplateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} storeProducts={templateProducts} />
+            } : undefined} />
+        ) : <TemplateFallback templateId={resolvedTemplateId} />}
+        <SellerStorefrontFooter variant={known ? 'themed' : 'modern'} storeProducts={templateProducts} />
       </div>
     );
   }

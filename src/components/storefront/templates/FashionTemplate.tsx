@@ -1,6 +1,6 @@
-import { ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, LayoutGrid, Pause, Play, Search, SlidersHorizontal, X } from 'lucide-react';
 import './fashion.css';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useState } from 'react';
 import type { StorefrontTemplateProps } from './templateTypes';
 import {
   resolveTemplateConfig,
@@ -23,11 +23,22 @@ import { FashionProductCard } from '../FashionProductCard';
 import { apiRequest } from '../../../services/apiClient';
 import { groupProductsByCategory } from './StoreSections';
 import type { CategoryGroup } from './StoreSections';
+import { normalizePersianText } from '../../../utils/routing';
+import { cardPriceOf } from '../../../utils/cardPrice';
+import { RouteLoading } from '../../common/RouteLoading';
+import { FallbackImage } from '../../common/FallbackImage';
 
 const CONTAINER = 'mx-auto w-full max-w-[1440px] px-4 sm:px-6 lg:px-10';
 
 const FOCUS_RING =
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--tpl-accent)]';
+
+const SORT_OPTIONS = {
+  featured: 'محبوب‌ترین',
+  cheapest: 'کمترین قیمت',
+  expensive: 'بیشترین قیمت',
+  discount: 'بیشترین تخفیف',
+} as const;
 
 const externalLinkProps = (link: string): { target?: string; rel?: string } =>
   /^https?:\/\//i.test((link || '').trim()) ? { target: '_blank', rel: 'noreferrer' } : {};
@@ -85,6 +96,7 @@ const FashionHero: React.FC<{
 }> = ({ slides, autoplay, title, subtitle, ctaText, ctaLink, label }) => {
   const [index, setIndex] = useState(0);
   const [paused, setPaused] = useState(false);
+  const [autoplayStopped, setAutoplayStopped] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
   const count = slides.length;
   useEffect(() => { setIndex(0); }, [count]);
@@ -96,10 +108,10 @@ const FashionHero: React.FC<{
     return () => mq.removeEventListener('change', change);
   }, []);
   useEffect(() => {
-    if (!autoplay || count < 2 || paused || reducedMotion) return;
+    if (!autoplay || count < 2 || paused || autoplayStopped || reducedMotion) return;
     const timer = window.setInterval(() => setIndex(i => (i + 1) % count), 6000);
     return () => window.clearInterval(timer);
-  }, [autoplay, count, paused, reducedMotion]);
+  }, [autoplay, count, paused, autoplayStopped, reducedMotion]);
   const active = slides[index % count] || {};
   const heading = active.title || title;
   const link = active.link || ctaLink;
@@ -109,19 +121,23 @@ const FashionHero: React.FC<{
       onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}
       onFocusCapture={() => setPaused(true)}
       onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPaused(false); }}>
-      <div className="fashion-hero-media">
-        {active.image ? <img key={active.image} src={active.image} alt={heading} fetchPriority="high" className="fashion-hero-photo" /> : null}
-        {count > 1 && <div className="fashion-slide-controls">
-          <button type="button" aria-label="اسلاید قبلی" onClick={() => setIndex(i => (i - 1 + count) % count)}><ChevronRight size={18} /></button>
-          <span aria-live={paused ? 'polite' : 'off'}>{toPersianDigits(index % count + 1)} / {toPersianDigits(count)}</span>
-          <button type="button" aria-label="اسلاید بعدی" onClick={() => setIndex(i => (i + 1) % count)}><ChevronLeft size={18} /></button>
-        </div>}
-      </div>
       <div className="fashion-hero-copy">
-        <span className="fashion-eyebrow">{label}</span>
+        {label !== heading && <span className="fashion-eyebrow">{label}</span>}
         <h1>{heading}</h1>
         {(active.subtitle || subtitle) && <p>{active.subtitle || subtitle}</p>}
-        <a href={link} {...externalLinkProps(link)} className={`fashion-button ${FOCUS_RING}`}>{ctaText}<ArrowLeft size={18} strokeWidth={1.5} /></a>
+        {link && <a href={link} {...externalLinkProps(link)} className="fashion-button">{ctaText}<ArrowLeft size={18} strokeWidth={1.5} aria-hidden="true" /></a>}
+      </div>
+      <div className="fashion-hero-media">
+        {active.image ? <FallbackImage key={active.image} srcs={[active.image, '/templates/fashion/hero.webp']} alt=""
+          width={1200} height={900} loading="eager" fetchPriority={index === 0 ? 'high' : 'auto'} fallback={null} className="fashion-hero-photo" /> : null}
+        {count > 1 && <div className="fashion-slide-controls">
+          <button type="button" aria-label="اسلاید قبلی" onClick={() => setIndex(i => (i - 1 + count) % count)}><ChevronRight size={18} aria-hidden="true" /></button>
+          <span aria-live={paused || autoplayStopped ? 'polite' : 'off'}>{toPersianDigits(index % count + 1)} از {toPersianDigits(count)}</span>
+          <button type="button" aria-label="اسلاید بعدی" onClick={() => setIndex(i => (i + 1) % count)}><ChevronLeft size={18} aria-hidden="true" /></button>
+          {autoplay && !reducedMotion && <button type="button" aria-label={autoplayStopped ? 'پخش خودکار اسلایدها' : 'توقف پخش خودکار'} onClick={() => setAutoplayStopped(value => !value)}>
+            {autoplayStopped ? <Play size={16} aria-hidden="true" /> : <Pause size={16} aria-hidden="true" />}
+          </button>}
+        </div>}
       </div>
     </section>
   );
@@ -132,18 +148,21 @@ const FashionMacroCategories: React.FC<{
   ledger: MediaLedger;
   banners: TemplateBanner[];
   limit: number;
+  title: string;
   onSelect: (slug: string) => void;
-}> = ({ groups, ledger, banners, limit, onSelect }) => {
+}> = ({ groups, ledger, banners, limit, title, onSelect }) => {
   const entries = resolveFashionMacroEntries(groups, banners, limit);
   groups.slice(0, limit).forEach(g => ledger.macroTaken.add(g.slug));
   entries.forEach((entry) => { if (entry.image) claimImage(ledger, entry.image); });
   if (!entries.length) return null;
   return <section id="fashion-categories" data-testid="store-category-macro" aria-label="دسته‌بندی‌ها" className="fashion-category-section">
-    <div className="fashion-category-grid" style={{ gridTemplateColumns: `repeat(${entries.length}, minmax(0, 1fr))` }}>
+    <FashionSectionHeader title={title} />
+    <div className="fashion-category-grid" data-count={entries.length}>
       {entries.map((entry, i) => <a key={entry.slug || i} href={entry.link} {...externalLinkProps(entry.link)}
         onClick={() => { if (entry.slug) onSelect(entry.slug); }} className={`fashion-category ${FOCUS_RING}`}>
-        <div className="fashion-category-image">
-          {entry.image ? <img src={entry.image} alt={entry.title} loading="lazy" /> : null}
+        <div className="fashion-category-image" data-panel={entry.image === '/templates/fashion/categories.webp' && !entry.slug ? i : undefined}>
+          {entry.image ? <FallbackImage srcs={[entry.image]} alt="" width={480} height={360} loading="lazy" decoding="async"
+            fallback={<LayoutGrid size={26} strokeWidth={1.3} aria-hidden="true" />} /> : <LayoutGrid size={26} strokeWidth={1.3} aria-hidden="true" />}
         </div>
         <span>{entry.title}<ArrowLeft size={16} strokeWidth={1.5} /></span>
       </a>)}
@@ -246,7 +265,8 @@ const FashionCollections: React.FC<{
   groups: CategoryGroup[];
   title: string;
   ledger: MediaLedger;
-}> = ({ groups, title, ledger }) => {
+  onSelect: (slug: string) => void;
+}> = ({ groups, title, ledger, onSelect }) => {
   const cards: { group: CategoryGroup; images: { src: string; title: string }[] }[] = [];
   for (const group of groups) {
     if (cards.length >= 6) break;
@@ -267,7 +287,7 @@ const FashionCollections: React.FC<{
   }
   if (cards.length === 0) return null;
   const renderCard = (card: (typeof cards)[number], widthCls: string): React.ReactNode => (
-    <div key={card.group.slug} className={widthCls}>
+    <a key={card.group.slug} href="#products" onClick={() => onSelect(card.group.slug)} className={widthCls}>
       <div className="grid grid-cols-2 gap-1 overflow-hidden rounded-[2px] bg-white">
         {card.images.map((im, i) => (
           <div
@@ -279,7 +299,7 @@ const FashionCollections: React.FC<{
         ))}
       </div>
       <TileLabel title={card.group.title} sub={`${toPersianDigits(card.group.count)} کالا`} />
-    </div>
+    </a>
   );
   return (
     <section data-testid="store-collections" className="space-y-6 lg:space-y-8">
@@ -428,32 +448,11 @@ const FashionSpotlight: React.FC<{
   onOpen: (p: Product) => void;
 }> = ({ products, title, onOpen }) => {
   if (products.length === 0) return null;
-  const four = products.length === 4;
   return (
     <section data-testid="store-featured" className="space-y-6 lg:space-y-8">
       <FashionSectionHeader title={title} />
-      <div className={`grid gap-3 lg:gap-4 ${four ? 'grid-cols-2' : 'grid-cols-2 lg:grid-cols-4'}`}>
-        {products.map((p, i) => (
-          <button
-            key={p.id}
-            type="button"
-            onClick={() => onOpen(p)}
-            className={`group relative block w-full cursor-pointer overflow-hidden rounded-[2px] bg-[#f2f2f2] text-right ${FOCUS_RING} ${
-              four
-                ? 'aspect-square'
-                : i === 0
-                  ? 'col-span-2 aspect-[4/3] lg:row-span-2 lg:aspect-auto lg:h-full'
-                  : 'aspect-square'
-            }`}
-          >
-            <img
-              src={p.image}
-              alt={p.title}
-              loading="lazy"
-              className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
-            />
-          </button>
-        ))}
+      <div className="fashion-product-grid">
+        {products.map(product => <FashionProductCard key={product.id} product={product} onOpen={onOpen} />)}
       </div>
     </section>
   );
@@ -523,6 +522,7 @@ const FashionNewsletter: React.FC<{ config: TemplateConfig; storeSlug?: string }
   const [mobile, setMobile] = useState('');
   const [done, setDone] = useState(false);
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   useEffect(() => {
     setMobile('');
     setDone(false);
@@ -533,19 +533,24 @@ const FashionNewsletter: React.FC<{ config: TemplateConfig; storeSlug?: string }
   const subtitle = (templateCustom(config).newsletterSubtitle || '').trim();
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!/^09\d{9}$/.test(mobile.trim())) {
+    if (submitting) return;
+    const number = normalizePersianText(mobile).trim();
+    if (!/^09\d{9}$/.test(number)) {
       setError('شماره موبایل معتبر وارد کنید.');
       return;
     }
     setError('');
+    setSubmitting(true);
     try {
       await apiRequest('/newsletter/subscribe', {
         method: 'POST',
-        body: JSON.stringify(storeSlug ? { mobile: mobile.trim(), storeSlug } : { mobile: mobile.trim() }),
+        body: JSON.stringify(storeSlug ? { mobile: number, storeSlug } : { mobile: number }),
       });
       setDone(true);
     } catch {
       setError('ثبت انجام نشد؛ دوباره تلاش کنید.');
+    } finally {
+      setSubmitting(false);
     }
   };
   return (
@@ -558,26 +563,31 @@ const FashionNewsletter: React.FC<{ config: TemplateConfig; storeSlug?: string }
           </div>
           <div className="w-full max-w-md">
             {done ? (
-              <p className="text-sm font-bold text-emerald-300">شماره شما ثبت شد.</p>
+              <p role="status" className="text-sm font-bold text-emerald-300">شماره شما ثبت شد.</p>
             ) : (
               <form onSubmit={submit} className="flex items-end gap-3">
                 <input
                   type="tel"
+                  name="mobile"
+                  autoComplete="tel"
+                  aria-label="شماره موبایل برای عضویت"
+                  aria-invalid={!!error}
                   dir="ltr"
                   value={mobile}
                   onChange={(e) => setMobile(e.target.value)}
-                  placeholder="09xxxxxxxxx"
+                  placeholder="مثلاً ۰۹۱۲۳۴۵۶۷۸۹…"
                   className="h-12 min-w-0 flex-1 border-0 border-b border-white/40 bg-transparent text-left text-sm text-white outline-none transition placeholder:text-white/40 focus:border-white"
                 />
                 <button
                   type="submit"
+                  disabled={submitting}
                   className={`h-12 shrink-0 rounded-none bg-[#faf8f5] px-6 text-sm font-bold text-[#3a4441] transition hover:bg-white ${FOCUS_RING}`}
                 >
-                  عضویت
+                  {submitting ? 'در حال ثبت…' : 'عضویت'}
                 </button>
               </form>
             )}
-            {error !== '' && <p className="mt-2 text-xs font-bold text-rose-300">{error}</p>}
+            {error !== '' && <p role="alert" className="mt-2 text-xs font-bold text-rose-300">{error}</p>}
           </div>
         </div>
       </div>
@@ -585,7 +595,7 @@ const FashionNewsletter: React.FC<{ config: TemplateConfig; storeSlug?: string }
   );
 };
 
-export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, products, accentColor, config, categories }) => {
+export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, products, accentColor, config, categories, productFeed }) => {
   const cfg = resolveTemplateConfig('tpl-fashion-1', config);
   const items = storefrontProducts(store, products);
   const order = orderedEnabledSections(cfg);
@@ -606,7 +616,14 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
   // A7: sort control for the Fashion floor. Local state, applied to the
   // loaded assortment only (same labels and limitation as the legacy
   // grid — not a full-catalog sort past the loaded pages).
-  const [floorSort, setFloorSort] = useState<'featured' | 'cheapest' | 'expensive' | 'discount'>('featured');
+  const [floorSort, setFloorSort] = useState<keyof typeof SORT_OPTIONS>('featured');
+  const catalogueHeadingId = useId();
+  useEffect(() => {
+    const anchor = window.location.hash;
+    if (!['#products', '#fashion-search', '#fashion-contact', '#fashion-categories'].includes(anchor)) return;
+    const target = document.getElementById(anchor.slice(1));
+    target?.scrollIntoView({ block: 'start' });
+  }, [store.slug]);
   const seen = new Set<string>();
   const once = (group: string): boolean => {
     if (seen.has(group)) return false;
@@ -618,7 +635,7 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
   const heroTitle = customText(cfg, 'heroTitle', store.name);
   const heroSubtitle = customText(cfg, 'heroSubtitle', store.tagline || '');
   const heroCtaText = customText(cfg, 'heroCtaText', 'مشاهده کالکشن');
-  const heroCtaLink = custom.heroCtaLink || '#products';
+  const heroCtaLink = custom.heroCtaLink || (order.some(key => key === 'allProducts' || key === 'products') ? '#products' : '');
   const productsTitle = customText(cfg, 'productsTitle', 'همه کالاها');
   const testimonialsTitle =
     (Array.isArray(cfg.sections)
@@ -644,21 +661,22 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
     : selectedGroup
       ? items.filter((p) => p.category === selectedGroup.slug)
       : items;
-  const query = searchQuery.trim().toLocaleLowerCase('fa-IR');
+  const normalizeSearch = (value: string) => normalizePersianText(value).replace(/[\s\u200c]+/g, ' ').trim().toLocaleLowerCase('fa-IR');
+  const query = normalizeSearch(searchQuery);
   const searching = query.length > 0;
   const floorItems = searching
-    ? categoryItems.filter((p) => p.title.toLocaleLowerCase('fa-IR').includes(query) || (p.description || '').toLocaleLowerCase('fa-IR').includes(query))
+    ? categoryItems.filter(p => normalizeSearch([p.title, p.brand, p.description].filter(Boolean).join(' ')).includes(query))
     : categoryItems;
   const sortedFloorItems = [...floorItems].sort((a, b) => {
-    if (floorSort === 'cheapest') return a.price - b.price;
-    if (floorSort === 'expensive') return b.price - a.price;
-    if (floorSort === 'discount') return b.discountPercent - a.discountPercent;
+    if (floorSort === 'cheapest') return cardPriceOf(a).price - cardPriceOf(b).price;
+    if (floorSort === 'expensive') return cardPriceOf(b).price - cardPriceOf(a).price;
+    if (floorSort === 'discount') return cardPriceOf(b).discountPercent - cardPriceOf(a).discountPercent;
     return (b.salesCount || 0) - (a.salesCount || 0);
   });
   const floorTitle = searching ? `جستجو: «${searchQuery}»` : brandFilter || (selectedGroup ? selectedGroup.title : productsTitle);
-  const selectCategory = (slug: string): void => {
+  const selectCategory = (slug: string, clearSearch = true): void => {
     clearCatalogBrand();
-    setSearchQuery('');
+    if (clearSearch) setSearchQuery('');
     setSelectedCategory(slug);
   };
   const clearFloorFilter = (): void => {
@@ -689,7 +707,8 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
       case 'categoryRail':
         return (
           <Wrap>
-            <FashionMacroCategories groups={categoryGroups} ledger={ledger} onSelect={selectCategory} banners={banners} limit={Math.min(customCount(cfg, 'categoriesCount', 3), 3)} />
+            <FashionMacroCategories groups={categoryGroups} ledger={ledger} onSelect={selectCategory} banners={banners}
+              title={customText(cfg, 'categoriesTitle', 'دسته‌بندی‌ها')} limit={Math.min(customCount(cfg, 'categoriesCount', 3), 3)} />
           </Wrap>
         );
       case 'about': {
@@ -723,6 +742,7 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
               groups={categoryGroups}
               title={customText(cfg, 'collectionsTitle', 'مجموعه‌ها')}
               ledger={ledger}
+              onSelect={selectCategory}
             />
           </Wrap>
         );
@@ -760,7 +780,7 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
             const src = (p.image || '').trim();
             return src !== '' && !ledger.used.has(src);
           })
-          .slice(0, 5);
+          .slice(0, 4);
         picks.forEach((p) => claimImage(ledger, (p.image || '').trim()));
         return (
           <Wrap>
@@ -791,55 +811,63 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
       case 'products':
       case 'allProducts': {
         if (!once('products')) return null;
-        if (floorItems.length === 0 && !searching && !selectedGroup && !brandFilter) return null;
-        const count = floorItems.length;
-        const gridCls =
-          count === 1 ? 'grid-cols-1 max-w-sm mx-auto' : count === 2 ? 'grid-cols-2 max-w-2xl mx-auto' : 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4';
-        const wrapCls = count === 1 ? 'mx-auto w-full max-w-[380px]' : count === 2 ? 'mx-auto w-full max-w-[880px]' : '';
         return (
           <Wrap>
-            <section id="products" data-testid="store-products" className="fashion-catalogue space-y-6 lg:space-y-8">
+            <section id="products" data-testid="store-products" aria-labelledby={catalogueHeadingId} className="fashion-catalogue">
               <div className="fashion-catalogue-heading">
-                <div className="fashion-catalogue-title"><FashionSectionHeader title={floorTitle} /><span className="fashion-result-count">{toPersianDigits(floorItems.length)} کالا</span></div>
+                <div className="fashion-catalogue-title"><h2 id={catalogueHeadingId}>{floorTitle}</h2>
+                  {!productFeed?.loading && <span className="fashion-result-count" role="status">{toPersianDigits(floorItems.length)} کالا{productFeed?.hasMore ? ' تا اینجا' : ''}</span>}
+                </div>
                 {brandFilter || selectedGroup || searching ? (
                   <button
                     type="button"
                     onClick={clearFloorFilter}
-                    className={`inline-flex min-h-[44px] shrink-0 items-center text-xs font-bold text-[#737373] underline decoration-2 underline-offset-8 transition hover:text-[#1c1c1a] ${FOCUS_RING}`}
+                    className="fashion-text-action"
                   >
                     نمایش همه کالاها
                   </button>
                 ) : null}
               </div>
-              <div className="flex items-center gap-3 overflow-x-auto no-scrollbar py-0.5" role="group" aria-label="مرتب‌سازی محصولات">
-                {[
-                  { id: 'featured', label: 'محبوب‌ترین' },
-                  { id: 'cheapest', label: 'ارزان‌ترین' },
-                  { id: 'expensive', label: 'گران‌ترین' },
-                  { id: 'discount', label: 'بیشترین تخفیف' },
-                ].map((sort) => (
-                  <button key={sort.id} type="button" aria-pressed={floorSort === sort.id} onClick={() => setFloorSort(sort.id as typeof floorSort)}
-                    className={`shrink-0 text-xs font-bold transition hover:text-[#1c1c1a] ${floorSort === sort.id ? 'text-[#1c1c1a] underline decoration-2 underline-offset-8' : 'text-[#737373]'}`}>
-                    {sort.label}
-                  </button>
-                ))}
+              <div className="fashion-catalogue-tools">
+                <div className="fashion-search-field">
+                  <Search size={18} aria-hidden="true" />
+                  <input id="fashion-search" type="search" name="q" autoComplete="off" aria-label="جست‌وجو در ویترین" placeholder="نام کالا یا برند…" value={searchQuery}
+                    onChange={event => setSearchQuery(event.target.value)} />
+                  {searchQuery && <button type="button" aria-label="پاک کردن جست‌وجو" onClick={() => setSearchQuery('')}><X size={17} aria-hidden="true" /></button>}
+                </div>
+                <label className="fashion-sort-field">
+                  <SlidersHorizontal size={16} aria-hidden="true" />
+                  <span className="sr-only">مرتب‌سازی محصولات</span>
+                  <select value={floorSort} onChange={event => setFloorSort(event.target.value as typeof floorSort)}>
+                    {Object.entries(SORT_OPTIONS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+                  </select>
+                </label>
               </div>
               {categoryGroups.length > 1 && <nav className="fashion-catalogue-filters" aria-label="فیلتر دسته‌بندی محصولات">
-                <button type="button" aria-pressed={!selectedGroup && !brandFilter} onClick={() => selectCategory('all')}>همه</button>
+                <button type="button" aria-pressed={!selectedGroup && !brandFilter} onClick={() => selectCategory('all', false)}>همه</button>
                 {categoryGroups.map(group => <button key={group.slug} type="button" aria-pressed={selectedGroup?.slug === group.slug && !brandFilter}
-                  onClick={() => selectCategory(group.slug)}>{group.title}</button>)}
+                  onClick={() => selectCategory(group.slug, false)}>{group.title}</button>)}
               </nav>}
-              {floorItems.length === 0 ? (
-                <p className="py-6 text-center text-xs font-bold text-[#737373]">کالایی با این مشخصات یافت نشد.</p>
+              {productFeed?.loading ? <RouteLoading label="در حال دریافت کالاها…" /> : floorItems.length === 0 ? (
+                !productFeed?.error && <div className="fashion-empty">
+                  <p>{productFeed?.hasMore ? 'در کالاهای نمایش‌داده‌شده نتیجه‌ای پیدا نشد.' : searching || selectedGroup || brandFilter
+                    ? 'کالایی با این مشخصات یافت نشد.' : 'هنوز کالایی در این ویترین ثبت نشده است.'}</p>
+                  {(searching || selectedGroup || brandFilter) && <button type="button" className="fashion-text-action" onClick={clearFloorFilter}>پاک کردن فیلترها</button>}
+                </div>
               ) : (
-                <div className={wrapCls}>
-                  <div className={`grid gap-x-3 gap-y-8 lg:gap-x-7 lg:gap-y-12 ${gridCls}`}>
+                  <div className="fashion-product-grid">
                     {sortedFloorItems.map((p) => (
                       <FashionProductCard key={p.id} product={p} onOpen={openProductDetail} />
                     ))}
                   </div>
-                </div>
               )}
+              {productFeed?.error && <div className="fashion-empty" role="status">
+                <p>{productFeed.error}</p>
+                <button type="button" className="fashion-text-action" onClick={productFeed.retry}>تلاش مجدد</button>
+              </div>}
+              {productFeed?.hasMore && !productFeed.error && <button type="button" className="fashion-button fashion-load-more" disabled={productFeed.loadingMore} onClick={productFeed.loadMore}>
+                {productFeed.loadingMore ? 'در حال دریافت…' : 'نمایش کالاهای بیشتر'}
+              </button>}
             </section>
           </Wrap>
         );
@@ -870,12 +898,13 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
   const lastKey = order[order.length - 1];
 
   return (
-    <div
+    <main id="fashion-main"
       className={`fashion-storefront flex-1 bg-[#faf8f5] text-[#1c1c1a] ${lastKey === 'newsletter' ? '' : 'pb-10 lg:pb-14'}`}
       style={{ ['--tpl-accent' as string]: accentColor } as React.CSSProperties}
     >
+      {!order.some(key => key === 'hero' || key === 'heroSlides') && <h1 className="sr-only">{store.name}</h1>}
       <div className="fashion-section-stack">{nodes}</div>
-    </div>
+    </main>
   );
 };
 export default FashionTemplate;

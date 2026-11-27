@@ -97,7 +97,7 @@ export const ProductDetailGallery: React.FC<Props> = ({
       ? 'relative w-full h-44 lg:h-64 bg-[#f2f2f2] rounded-none border border-[#e5e0d8] flex flex-col items-center justify-center gap-2 overflow-hidden'
       : 'relative w-full h-44 lg:h-64 bg-slate-50 rounded-3xl border border-slate-200/90 flex flex-col items-center justify-center gap-2 overflow-hidden shadow-xs'
     : fashion
-      ? 'relative w-full aspect-square xl:max-h-[560px] 2xl:max-h-[620px] bg-white rounded-none border border-[#e5e0d8] p-4 flex items-center justify-center overflow-hidden group'
+      ? 'relative w-full aspect-square xl:max-h-[560px] 2xl:max-h-[620px] bg-[#eee6dc] rounded-xl border border-[#ded4c8] p-2 flex items-center justify-center overflow-hidden group'
       : 'relative w-full aspect-square xl:max-h-[560px] 2xl:max-h-[620px] bg-white rounded-3xl border border-slate-200/90 p-4 flex items-center justify-center overflow-hidden shadow-xs group';
 
   const swipeHandlers = {

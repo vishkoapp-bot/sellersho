@@ -19,6 +19,7 @@ export function batch8Browser({
   let javascript: string;
   let styles: string;
   let editorialBanner: Buffer;
+  let fashionImages: Map<string, Buffer>;
   const editorialPath = '/static/uploads/banners/selersho-editorial-digital-v1.webp';
   before(async () => {
     cacheDir = await mkdtemp(join(tmpdir(), 'batch8-vite-'));
@@ -47,6 +48,8 @@ export function batch8Browser({
     if (!compiled) throw new Error('Missing compiled fixture stylesheet');
     styles = compiled.code + '\n' + await readFile('src/components/storefront/templates/fashion.css', 'utf8');
     editorialBanner = await readFile('public/storefront/campaigns/selersho-editorial-digital-v1.webp');
+    fashionImages = new Map(await Promise.all(['hero.webp', 'knitwear.webp'].map(async file =>
+      [`/templates/fashion/${file}`, await readFile(`public/templates/fashion/${file}`)] as const)));
     if (inlineVazirmatn) {
       // Geometry tests need the app font; the hermetic browser aborts asset requests.
       const sources = new Set(styles.match(/(?:[^"'()\s]*\/)?Vazirmatn(?:\[wght\]|%5Bwght%5D)\.woff2/gi));
@@ -82,6 +85,8 @@ export function batch8Browser({
           void request.respond({ status: 200, contentType: 'text/html', body: html });
         } else if (url.origin === origin && url.pathname === editorialPath) {
           void request.respond({ status: 200, contentType: 'image/webp', body: editorialBanner });
+        } else if (url.origin === origin && fashionImages.has(url.pathname)) {
+          void request.respond({ status: 200, contentType: 'image/webp', body: fashionImages.get(url.pathname) });
         } else if (url.protocol === 'data:') {
           void request.continue();
         } else {

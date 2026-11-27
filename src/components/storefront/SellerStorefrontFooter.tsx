@@ -3,9 +3,11 @@ import { useStore } from '../../context/StoreContext';
 import { mapBackendProduct } from '../../context/ProductContext';
 import { catalogApi } from '../../services/catalogApi';
 import type { Product } from '../../types';
-import { Store, Phone, Instagram, Home, LayoutGrid, User, MessageCircle, X } from 'lucide-react';
+import { Store, Phone, Instagram, Home, LayoutGrid, User, MessageCircle, X, Heart } from 'lucide-react';
 import { storefrontProducts } from './templates/templateTypes';
 import { ProductCard } from '../ProductCard';
+import { pathForView } from '../../utils/routing';
+import { followStoreLink } from '../../utils/followStoreLink';
 
 // FIX 13: live's storefront footer (bundle component z4) — dark #1C1917
 // rounded-top footer with the about line, store navigation, trust
@@ -102,7 +104,7 @@ export const SellerStorefrontFooter: React.FC<SellerStorefrontFooterProps> = ({ 
         </div>
         <nav className="fashion-footer-links" aria-label="راهنمای فروشگاه">
           <button onClick={goToStoreAbout}>درباره ما</button>
-          <a href="#products">همه کالاها</a>
+          <a href={pathForView('seller_storefront', { storeSlug: currentStore.slug }) + '#products'}>همه کالاها</a>
           <button onClick={() => openStaticPage('terms')}>قوانین و مقررات</button>
           <button onClick={() => openStaticPage('privacy')}>حریم خصوصی</button>
           <button onClick={() => openStaticPage('faq')}>سوالات متداول</button>
@@ -227,19 +229,24 @@ export const SellerStorefrontFooter: React.FC<SellerStorefrontFooterProps> = ({ 
 // footer content, and the store header already carries these actions
 // there, so it is hidden at lg and up.
 export const StorefrontBottomNav: React.FC = () => {
-  const { setActiveView, currentStore } = useStore();
+  const { setActiveView, currentStore, activeView } = useStore();
   const fashion = currentStore.templateId === 'tpl-fashion-1';
-  const [active, setActive] = React.useState<'home' | 'categories' | 'account' | 'contact'>('home');
+  const [active, setActive] = React.useState<'home' | 'categories' | 'account' | 'contact' | 'wishlist'>('home');
 
-  const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
-  const go = (tab: 'home' | 'categories' | 'account' | 'contact') => {
+  const behavior = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+  const scrollToTop = () => window.scrollTo({ top: 0, behavior: behavior() });
+  const go = (tab: typeof active) => {
     setActive(tab);
-    if (tab === 'home') scrollToTop();
+    if (tab === 'home') {
+      if (activeView !== 'seller_storefront') setActiveView('seller_storefront', { storeSlug: currentStore.slug });
+      scrollToTop();
+    }
     else if (tab === 'account') setActiveView('customer_profile');
-    else if (tab === 'contact') window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    else if (tab === 'wishlist') setActiveView('customer_wishlist');
+    else if (tab === 'contact') window.scrollTo({ top: document.body.scrollHeight, behavior: behavior() });
     else {
-      const el = document.querySelector('[aria-label="دسته‌بندی‌ها"]');
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const el = document.querySelector('[aria-label="دسته‌بندی‌ها"]') ?? (fashion ? document.getElementById('products') : null);
+      if (el) el.scrollIntoView({ behavior: behavior(), block: 'start' });
       else scrollToTop();
     }
   };
@@ -248,12 +255,13 @@ export const StorefrontBottomNav: React.FC = () => {
     { id: 'home' as const, label: 'خانه', Icon: Home },
     { id: 'categories' as const, label: 'دسته‌بندی‌ها', Icon: LayoutGrid },
     { id: 'account' as const, label: 'حساب من', Icon: User },
-    { id: 'contact' as const, label: 'تماس', Icon: MessageCircle },
+    fashion ? { id: 'wishlist' as const, label: 'علاقه‌مندی‌ها', Icon: Heart } : { id: 'contact' as const, label: 'تماس', Icon: MessageCircle },
   ];
 
   return (
     <nav
-      className="fixed bottom-0 z-30 h-16 border-t border-x lg:hidden"
+      aria-label="منوی پایین ویترین"
+      className={`fixed bottom-0 z-30 h-16 border-t border-x lg:hidden ${fashion ? 'fashion-bottom-nav' : ''}`}
       style={{
         left: 0,
         right: 0,
@@ -261,23 +269,40 @@ export const StorefrontBottomNav: React.FC = () => {
         marginRight: 'auto',
         width: '100%',
         maxWidth: fashion ? undefined : 504,
-        backgroundColor: fashion ? '#faf8f5' : '#ffffff',
-        borderColor: fashion ? '#dedbd5' : '#ECE4D6',
+        backgroundColor: fashion ? undefined : '#ffffff',
+        borderColor: fashion ? undefined : '#ECE4D6',
         boxShadow: fashion ? 'none' : '0 -6px 24px rgba(28, 25, 23, 0.08)',
         paddingBottom: 'env(safe-area-inset-bottom)',
       }}
     >
       <div className="flex items-stretch justify-center px-2 py-1.5">
         {tabs.map(({ id, label, Icon }) => {
-          const isActive = active === id;
+          const isActive = activeView === 'customer_profile' ? id === 'account' : activeView === 'customer_wishlist' ? id === 'wishlist' : active === id;
+          const fashionHref = id === 'home' ? pathForView('seller_storefront', { storeSlug: currentStore.slug })
+            : id === 'categories' ? pathForView('seller_storefront', { storeSlug: currentStore.slug }) + '#products'
+              : pathForView(id === 'wishlist' ? 'customer_wishlist' : 'customer_profile', { storeSlug: currentStore.slug });
+          if (fashion) return (
+            <a key={id} href={fashionHref} aria-current={isActive ? 'true' : undefined}
+              onClick={event => followStoreLink(event, () => {
+                if (id === 'categories' && activeView !== 'seller_storefront') {
+                  setActiveView('seller_storefront', { storeSlug: currentStore.slug });
+                  window.history.replaceState(window.history.state, '', fashionHref);
+                  setActive(id);
+                } else go(id);
+              })}
+              className="flex min-h-11 min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 text-[11px] font-bold">
+              <Icon size={20} strokeWidth={1.6} aria-hidden="true" />
+              <span>{label}</span>
+            </a>
+          );
           return (
             <button
               key={id}
               onClick={() => go(id)}
               className="flex-1 min-w-0 flex flex-col items-center justify-center gap-1 px-1 py-2 rounded-2xl transition-all duration-200 ease-out active:scale-95"
               style={{
-                backgroundColor: fashion ? 'transparent' : isActive ? `${ACCENT}16` : 'transparent',
-                color: isActive ? (fashion ? '#1c1c1a' : ACCENT) : '#8a857d',
+                backgroundColor: isActive ? `${ACCENT}16` : 'transparent',
+                color: isActive ? ACCENT : '#8a857d',
               }}
             >
               <Icon className="w-[22px] h-[22px]" strokeWidth={isActive ? 2 : 1.5} />

@@ -222,13 +222,14 @@ export const CartDrawer: React.FC = () => {
   const directDiscount = directPricing ? directPricing.merchandiseDiscount : 0;
   const displayStoreName = isDirectBuy ? directLine?.storeName : (cart[0]?.storeName ?? currentStore?.name);
   const centralCheckout = !routeStoreSlug && activeView !== 'seller_storefront' && currentStore?.ownerType !== 'dropshipper';
+  const fashionCheckout = !centralCheckout && currentStore?.templateId === 'tpl-fashion-1';
   const checkoutStyle = {
-    '--checkout-accent': centralCheckout ? 'var(--shop-forest, #164638)' : 'var(--color-brand-deep)',
-    '--checkout-soft': centralCheckout ? 'var(--shop-soft, #edf2e9)' : 'var(--color-brand-soft)',
-    '--checkout-ink': centralCheckout ? 'var(--shop-ink, #172d26)' : '#1e293b',
-    '--checkout-bg': centralCheckout ? 'var(--shop-bg, #f8f6ef)' : '#f8fafc',
-    '--checkout-line': centralCheckout ? 'var(--shop-line, #dde2d7)' : 'var(--color-slate-200)',
-    '--checkout-muted': centralCheckout ? 'var(--shop-muted, #4f6359)' : 'var(--color-slate-600)',
+    '--checkout-accent': centralCheckout ? 'var(--shop-forest, #164638)' : fashionCheckout ? '#703738' : 'var(--color-brand-deep)',
+    '--checkout-soft': centralCheckout ? 'var(--shop-soft, #edf2e9)' : fashionCheckout ? '#eee6dc' : 'var(--color-brand-soft)',
+    '--checkout-ink': centralCheckout ? 'var(--shop-ink, #172d26)' : fashionCheckout ? '#29231f' : '#1e293b',
+    '--checkout-bg': centralCheckout ? 'var(--shop-bg, #f8f6ef)' : fashionCheckout ? '#fbf8f3' : '#f8fafc',
+    '--checkout-line': centralCheckout ? 'var(--shop-line, #dde2d7)' : fashionCheckout ? '#ded4c8' : 'var(--color-slate-200)',
+    '--checkout-muted': centralCheckout ? 'var(--shop-muted, #4f6359)' : fashionCheckout ? '#655a52' : 'var(--color-slate-600)',
     '--checkout-radius': centralCheckout ? 'var(--shop-radius, 16px)' : '1rem',
   } as React.CSSProperties;
   useEffect(() => {

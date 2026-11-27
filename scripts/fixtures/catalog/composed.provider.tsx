@@ -115,7 +115,18 @@ if (routeParams.has('legacy-parent')) {
 const central = { id: 'fixture-central', slug: 'central', name: 'فروشگاه مرکزی', ownerType: 'central' as const };
 const seller = {
   id: 'fixture-store', slug: 'batch-eight-store', name: 'فروشگاه نمونه', ownerType: 'dropshipper',
-  activeProductIds: products.map(product => product.id), templateId: 'tpl-electronic-1',
+  activeProductIds: products.map(product => product.id), templateId: routeParams.has('fashion') ? 'tpl-fashion-1' : 'tpl-electronic-1',
+  ...(routeParams.has('fashion') ? {
+    templateConfig: {
+      custom: {
+        heroTitle: 'لباس‌هایی برای هر روز',
+        heroSubtitle: 'پوشاک و اکسسوری برای استایل روزمره',
+        heroImage: '/templates/fashion/hero.webp',
+        lookbookTitle: 'بافت‌های سبک برای روزهای خنک',
+        lookbookImage: '/templates/fashion/knitwear.webp',
+      },
+    },
+  } : {}),
   signedContractVersion: routeParams.has('renew-contract') ? 1 : 2,
   activePlanId: routeParams.has('multi-store') ? 'vip' : undefined,
 } as Store & { activeProductIds: string[] };
@@ -338,6 +349,10 @@ catalogApi.getPriceBounds = async () => ({ minPrice: 100000, maxPrice: 600000, c
 catalogApi.getProductById = async () => products[0];
 catalogApi.getProductsPage = async (filter = {}, options = {}) => {
   if (filter.storeSlug) {
+    if (routeParams.has('fashion')) {
+      const items = options.cursor ? products.slice(8, 16) : products.slice(0, 8);
+      return { items, nextCursor: options.cursor ? null : 'fashion-page-2', total: 16, hasMore: !options.cursor };
+    }
     const items = products.slice(0, 8);
     return { items, nextCursor: null, total: items.length, hasMore: false };
   }

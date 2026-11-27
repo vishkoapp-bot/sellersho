@@ -6,6 +6,8 @@ import { resolveTemplateConfig, sectionEnabled, templateCustom, storefrontProduc
 import { groupProductsByCategory } from './templates/StoreSections';
 import './templates/fashion.css';
 import { NotificationDrawer } from '../common/NotificationDrawer';
+import { pathForView } from '../../utils/routing';
+import { followStoreLink } from '../../utils/followStoreLink';
 
 // FIX 13: live's storefront header (bundle component Db). Beige #FAF8F4
 // background, #ECE4D6 border, 40px CIRCLE icon filled with the resolved
@@ -47,6 +49,7 @@ export const SellerStorefrontHeader: React.FC<Props> = ({
   const [logoFailed, setLogoFailed] = useState(false);
   const [fashionMenuOpen, setFashionMenuOpen] = useState(false);
   const fashionMenuId = React.useId();
+  const fashionMenuButton = React.useRef<HTMLButtonElement>(null);
   useEffect(() => { setFashionMenuOpen(false); }, [currentStore.id]);
   // ISO-E: a failed logo for store A must not suppress store B's
   // valid logo (same component instance across SPA navigation).
@@ -181,43 +184,66 @@ export const SellerStorefrontHeader: React.FC<Props> = ({
     const custom = templateCustom(cfg);
     const groups = groupProductsByCategory(storefrontProducts(currentStore, navigationProducts ?? products), categories, custom.categoryOverrides);
     const navItems = groups.slice(0, 3).map(g => ({ title: g.title, slug: g.slug }));
-    const select = (slug: string) => {
-      clearCatalogBrand(); setSearchQuery(''); setSelectedCategory(slug); setFashionMenuOpen(false);
+    const storeSlug = routeStoreSlug || currentStore.slug;
+    const homePath = pathForView('seller_storefront', { storeSlug });
+    const hasCatalogue = sectionEnabled(cfg, 'products');
+    const jump = (event: React.MouseEvent<HTMLAnchorElement>, target: string, slug?: string) => followStoreLink(event, () => {
+      setFashionMenuOpen(false);
+      if (slug) {
+        clearCatalogBrand(); setSearchQuery(''); setSelectedCategory(slug);
+      }
       if (activeView !== 'seller_storefront') goToStoreHome();
+      const url = new URL(window.location.href);
+      url.hash = target;
+      window.history.replaceState(window.history.state, '', url);
+      const element = document.getElementById(target);
+      element?.scrollIntoView({ block: 'start' });
+      if (element instanceof HTMLInputElement) element.focus({ preventScroll: true });
+    });
+    const accountLink = (view: 'customer_profile' | 'customer_wishlist') => (event: React.MouseEvent<HTMLAnchorElement>) => {
+      followStoreLink(event, () => {
+        setFashionMenuOpen(false);
+        setActiveView(view, { storeSlug });
+      });
     };
-    return <header className="fashion-header">
+    return <header className="fashion-header" onKeyDown={event => {
+      if (event.key !== 'Escape' || !fashionMenuOpen) return;
+      setFashionMenuOpen(false);
+      fashionMenuButton.current?.focus();
+    }}>
       {sectionEnabled(cfg, 'announcement') && custom.announcementText && <div className="fashion-announcement" data-testid="store-announcement">
         {custom.announcementLink ? <a href={custom.announcementLink} {...(/^https?:\/\//i.test(custom.announcementLink) ? { target: '_blank', rel: 'noreferrer' } : {})}>{custom.announcementText}</a> : custom.announcementText}
       </div>}
       <div className="fashion-header-row">
-        <button type="button" className="fashion-icon-button fashion-mobile-toggle" onClick={() => setFashionMenuOpen(v => !v)} aria-label={fashionMenuOpen ? 'بستن منو' : 'باز کردن منو'} aria-expanded={fashionMenuOpen} aria-controls={fashionMenuId}>
+        <button ref={fashionMenuButton} type="button" className="fashion-icon-button fashion-mobile-toggle" onClick={() => setFashionMenuOpen(v => !v)} aria-label={fashionMenuOpen ? 'بستن منو' : 'باز کردن منو'} aria-expanded={fashionMenuOpen} aria-controls={fashionMenuId}>
           {fashionMenuOpen ? <X size={22} strokeWidth={1.5} /> : <Menu size={22} strokeWidth={1.5} />}
         </button>
-        <button type="button" className="fashion-wordmark" onClick={goToStoreHome} aria-label={`خانه ${currentStore.name}`}>
-          {currentStore.logo && !logoFailed && <img src={currentStore.logo} alt="" onError={() => setLogoFailed(true)} />}
+        <a href={homePath} className="fashion-wordmark" onClick={event => followStoreLink(event, goToStoreHome)} aria-label={`خانه ${currentStore.name}`}>
+          {currentStore.logo && !logoFailed && <img src={currentStore.logo} alt="" width={36} height={36} onError={() => setLogoFailed(true)} />}
           <span>{currentStore.name}</span>
-        </button>
+        </a>
         <nav className="fashion-header-nav" aria-label="منوی فروشگاه">
-          {navItems.map(item => <a key={item.slug} href="#products" onClick={() => select(item.slug)}>{item.title}</a>)}
-          <a href="#products" onClick={() => select('all')}>تازه‌ها</a>
-          <a href="#fashion-contact">تماس با ما</a>
+          {hasCatalogue && <a href={homePath + '#products'} onClick={event => jump(event, 'products', 'all')}>همه کالاها</a>}
+          {hasCatalogue && navItems.map(item => <a key={item.slug} href={homePath + '#products'} onClick={event => jump(event, 'products', item.slug)}>{item.title}</a>)}
+          <a href={homePath + '#fashion-contact'} onClick={event => jump(event, 'fashion-contact')}>تماس با ما</a>
         </nav>
         <div className="fashion-header-actions">
-          <button type="button" onClick={onOpenSearch} className="fashion-icon-button" aria-label="جستجو در محصولات"><Search size={21} strokeWidth={1.5} /></button>
-          <button type="button" onClick={() => setActiveView('customer_wishlist')} className="fashion-icon-button fashion-desktop-action" aria-label="علاقه‌مندی‌ها"><Heart size={21} strokeWidth={1.5} /></button>
-          <button type="button" onClick={() => setActiveView('customer_profile')} className="fashion-icon-button fashion-desktop-action" aria-label="حساب کاربری"><User size={21} strokeWidth={1.5} /></button>
+          {hasCatalogue && <a href={homePath + '#fashion-search'} onClick={event => jump(event, 'fashion-search')} className="fashion-icon-button" aria-label="جست‌وجو در ویترین"><Search size={21} strokeWidth={1.5} aria-hidden="true" /></a>}
+          <a href={pathForView('customer_wishlist', { storeSlug })} onClick={accountLink('customer_wishlist')} className="fashion-icon-button fashion-desktop-action" aria-label="علاقه‌مندی‌ها"><Heart size={21} strokeWidth={1.5} aria-hidden="true" /></a>
+          <a href={pathForView('customer_profile', { storeSlug })} onClick={accountLink('customer_profile')} className="fashion-icon-button fashion-desktop-action" aria-label="حساب کاربری"><User size={21} strokeWidth={1.5} aria-hidden="true" /></a>
           <button type="button" onClick={() => setIsCartOpen(true)} className="fashion-icon-button" aria-label="سبد خرید">
             <ShoppingBag size={21} strokeWidth={1.5} />
             {cartItemsCount > 0 && <span className="absolute top-0 right-0 min-w-4 h-4 bg-[#1c1c1a] text-white text-[9px] flex items-center justify-center rounded-full">{cartItemsCount > 99 ? '۹۹+' : toPersianDigits(cartItemsCount)}</span>}
           </button>
         </div>
       </div>
-      {fashionMenuOpen && <nav id={fashionMenuId} className="fashion-header-menu" aria-label="منوی موبایل">
-        {navItems.map(item => <a key={item.slug} href="#products" onClick={() => select(item.slug)}>{item.title}</a>)}
-        <a href="#products" onClick={() => select('all')}>همه کالاها</a>
-        <a href="#fashion-contact" onClick={() => setFashionMenuOpen(false)}>تماس با ما</a>
-        <a href="#" onClick={e => { e.preventDefault(); setFashionMenuOpen(false); setActiveView('customer_profile'); }}>حساب کاربری</a>
-      </nav>}
+      <nav id={fashionMenuId} hidden={!fashionMenuOpen} className="fashion-header-menu" aria-label="منوی موبایل">
+        {hasCatalogue && <a href={homePath + '#products'} onClick={event => jump(event, 'products', 'all')}>همه کالاها</a>}
+        {hasCatalogue && navItems.map(item => <a key={item.slug} href={homePath + '#products'} onClick={event => jump(event, 'products', item.slug)}>{item.title}</a>)}
+        <a href={homePath + '#fashion-contact'} onClick={event => jump(event, 'fashion-contact')}>تماس با ما</a>
+        <a href={pathForView('customer_wishlist', { storeSlug })} onClick={accountLink('customer_wishlist')}>علاقه‌مندی‌ها</a>
+        <a href={pathForView('customer_profile', { storeSlug })} onClick={accountLink('customer_profile')}>حساب کاربری</a>
+      </nav>
     </header>;
   }
 

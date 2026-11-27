@@ -192,6 +192,14 @@ export interface StorefrontTemplateProps {
   accentColor: string;
   config: TemplateConfig;
   categories?: Category[];
+  productFeed?: {
+    loading: boolean;
+    error: string;
+    hasMore: boolean;
+    loadingMore: boolean;
+    loadMore: () => void;
+    retry: () => void;
+  };
 }
 
 // Products actually active in this storefront (live public store response

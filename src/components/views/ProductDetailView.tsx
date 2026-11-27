@@ -399,7 +399,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
           <button
             onClick={handleAddToCart}
             title="افزودن کالا به سبد خرید"
-            className={fashion ? 'flex-1 py-3.5 lg:py-4 bg-white hover:bg-[#f2f2f2] text-[#1c1c1a] border border-[#1c1c1a] font-bold text-xs lg:text-sm xl:text-base rounded-none flex items-center justify-center gap-1 transition-colors' : 'flex-1 py-3.5 lg:py-4 bg-brand-soft hover:bg-brand-border text-brand border border-brand-border font-bold text-xs lg:text-sm xl:text-base rounded-xl shadow-2xs flex items-center justify-center gap-1 transition-colors'}
+            className={fashion ? 'fashion-pdp-action fashion-pdp-action--secondary' : 'flex-1 py-3.5 lg:py-4 bg-brand-soft hover:bg-brand-border text-brand border border-brand-border font-bold text-xs lg:text-sm xl:text-base rounded-xl shadow-2xs flex items-center justify-center gap-1 transition-colors'}
           >
             <ShoppingCart className="w-4 h-4"  strokeWidth={1.5}/>
             <span>افزودن به سبد</span>
@@ -407,7 +407,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
           <button
             onClick={handleBuyNow}
             title="خرید فوری بدون سبد خرید"
-            className={fashion ? 'flex-1 py-3.5 lg:py-4 bg-[#3a4441] hover:bg-[#1c1c1a] text-[#faf8f5] font-extrabold text-xs lg:text-sm xl:text-base rounded-none flex items-center justify-center gap-1 transition-colors' : 'flex-1 py-3.5 lg:py-4 bg-brand hover:bg-brand-deep text-white font-extrabold text-xs lg:text-sm xl:text-base rounded-xl shadow-xs flex items-center justify-center gap-1 transition-colors'}
+            className={fashion ? 'fashion-pdp-action' : 'flex-1 py-3.5 lg:py-4 bg-brand hover:bg-brand-deep text-white font-extrabold text-xs lg:text-sm xl:text-base rounded-xl shadow-xs flex items-center justify-center gap-1 transition-colors'}
           >
             <span>خرید فوری</span>
             <span className="text-[10px] lg:text-xs opacity-90">
@@ -609,12 +609,12 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
 
   return (
     <div
-      className={fashion ? 'flex-1 flex flex-col bg-[#faf8f5] text-[#1c1c1a] select-none pb-36 lg:pb-8' : 'flex-1 flex flex-col bg-white select-none pb-36 lg:pb-8'}
+      className={fashion ? 'fashion-storefront fashion-pdp flex-1 flex flex-col pb-36 lg:pb-8' : 'flex-1 flex flex-col bg-white select-none pb-36 lg:pb-8'}
       style={fashion ? ({ ['--tpl-accent' as string]: pdpTheme.accent } as React.CSSProperties) : undefined}
     >
       {/* Header Bar */}
-      <header className={fashion ? 'sticky top-0 z-30 lg:static bg-[#faf8f5] border-b border-[#e5e0d8] px-3 py-2 lg:py-3 flex items-center justify-between lg:px-8 xl:px-10 2xl:px-12' : 'sticky top-0 z-30 lg:static bg-white border-b border-slate-200 px-3 py-2 lg:py-3 flex items-center justify-between lg:px-8 xl:px-10 2xl:px-12'}>
-        <div className="flex items-center gap-2">
+      <header className={fashion ? 'fashion-pdp-toolbar' : 'sticky top-0 z-30 lg:static bg-white border-b border-slate-200 px-3 py-2 lg:py-3 flex items-center justify-between lg:px-8 xl:px-10 2xl:px-12'}>
+        <div className="flex min-w-0 items-center gap-2">
           <button
             onClick={onBack}
             aria-label="بازگشت"
@@ -642,6 +642,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
               else info('از لیست علاقه‌مندی‌ها حذف شد.');
             }}
             aria-label="علاقه‌مندی"
+            aria-pressed={wishlisted}
             className={`w-11 h-11 ${fashion ? 'rounded-none' : 'rounded-lg'} flex items-center justify-center ${
               wishlisted
                 ? 'text-rose-500 bg-rose-50'
@@ -665,7 +666,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
           variant box -> buy bar. No sticky bottom bar on desktop. */}
       <div className="p-3.5 space-y-4 lg:p-0">
         <ProductDetailInfo product={displayProduct} fashion={fashion} selectedVariantId={selectedVariant?.id ?? null} />
-        <ProductDetailTabs product={displayProduct} fashion={fashion} />
+        {!fashion && <ProductDetailTabs product={displayProduct} />}
         {selectionControls}
         <div ref={buyBarRef} className={buyBarClasses}>
           {buyBarControls}
@@ -675,6 +676,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
             {buyBarControls}
           </div>
         )}
+        {fashion && <ProductDetailTabs product={displayProduct} fashion />}
 
       </div>
       <ProductDetailRelated products={related} fashion={fashion} onOpen={openProductDetail} />

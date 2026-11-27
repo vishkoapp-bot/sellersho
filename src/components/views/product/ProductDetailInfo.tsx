@@ -292,7 +292,7 @@ export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean; 
         />
       )}
 
-      <div className={fashion ? 'bg-white border border-[#e5e0d8] rounded-none p-3 flex items-center justify-between' : 'bg-blue-50/50 border border-blue-100 rounded-xl p-3 flex items-center justify-between'}>
+      <div className={fashion ? 'fashion-pdp-price' : 'bg-blue-50/50 border border-blue-100 rounded-xl p-3 flex items-center justify-between'}>
         <div>
           <span className={`text-[10px] ${fashion ? 'text-[#737373]' : 'text-slate-400'} block`}>قیمت مصرف‌کننده:</span>
           {/* FIX 22: live PDP price box shows the strikethrough price
@@ -312,10 +312,10 @@ export const ProductDetailInfo: React.FC<{ product: Product; fashion?: boolean; 
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           <ProductStockLine product={product} fashion={fashion} selectedVariantId={selectedVariantId} />
           {product.discountPercent > 0 && (
-            <span className={fashion ? 'text-xs bg-rose-500 text-white font-bold px-2 py-0.5 rounded-none' : 'text-xs bg-rose-500 text-white font-bold px-2 py-0.5 rounded-lg'}>
+            <span className={fashion ? 'text-xs bg-[#703738] text-white font-bold px-2 py-1 rounded-md' : 'text-xs bg-rose-500 text-white font-bold px-2 py-0.5 rounded-lg'}>
               {product.campaignName || '٪' + toPersianDigits(product.discountPercent) + ' تخفیف'}
             </span>
           )}

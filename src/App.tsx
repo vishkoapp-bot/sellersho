@@ -360,10 +360,10 @@ export const AppContent: React.FC = () => {
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
-                variant={currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+                variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
               />
               <CustomerProfileView key={currentUser?.id} onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})} />
-              <SellerStorefrontFooter />
+              <SellerStorefrontFooter variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} />
             </>
           ) : (
             <>
@@ -379,10 +379,10 @@ export const AppContent: React.FC = () => {
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
-                variant={currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+                variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
               />
               <CustomerOrdersView onBack={() => setActiveView('customer_profile', { storeSlug: routeStoreSlug })} />
-              <SellerStorefrontFooter />
+              <SellerStorefrontFooter variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} />
             </>
           ) : (
             <>
@@ -398,10 +398,10 @@ export const AppContent: React.FC = () => {
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
-                variant={currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+                variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
               />
               <CustomerWishlistView onBack={() => setActiveView('customer_profile', { storeSlug: routeStoreSlug })} />
-              <SellerStorefrontFooter />
+              <SellerStorefrontFooter variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} />
             </>
           ) : (
             <>
@@ -417,10 +417,10 @@ export const AppContent: React.FC = () => {
             <>
               <SellerStorefrontHeader
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
-                variant={currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
+                variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
               />
               <StaticPageView onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})} />
-              <SellerStorefrontFooter />
+              <SellerStorefrontFooter variant={currentStore?.templateId === 'tpl-fashion-1' ? 'fashion' : 'modern'} />
             </>
           ) : (
             <>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { mapBackendProduct } from '../../context/ProductContext';
 import { SellerStorefrontHeader } from './SellerStorefrontHeader';
@@ -45,28 +45,56 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
   const [scopedCursor, setScopedCursor] = useState<string | null>(null);
   const [hasMoreScoped, setHasMoreScoped] = useState(false);
   const [scopedLoadingMore, setScopedLoadingMore] = useState(false);
+  const [loadedStoreSlug, setLoadedStoreSlug] = useState<string | null>(null);
+  const [scopedError, setScopedError] = useState('');
+  const [scopedReload, setScopedReload] = useState(0);
+  const feedGeneration = useRef(0);
+  const liveStoreSlug = useRef(currentStore?.slug);
+  liveStoreSlug.current = currentStore?.slug;
   // PERF-01: the storefront loads page 1 of its own assortment (store
   // prices) and pages on demand from the floor grid below; template
   // sections render from the loaded pages (same documented limitation
   // as the central catalog's facets).
   useEffect(() => {
+    const generation = ++feedGeneration.current;
+    setScopedError('');
+    setLoadedStoreSlug(null);
+    setScopedLoadingMore(false);
     if (currentStore?.ownerType !== 'dropshipper' || !currentStore.slug) {
       setScopedProducts(null);
       setScopedCursor(null);
       setHasMoreScoped(false);
       return;
     }
-    let cancelled = false;
-    catalogApi.getProductsPage({ storeSlug: currentStore.slug })
-      .then((page) => { if (!cancelled) { setScopedProducts(page.items.map(mapBackendProduct)); setScopedCursor(page.nextCursor); setHasMoreScoped(page.hasMore); } })
-      .catch((err) => { if (!cancelled) { console.warn('Failed to fetch store-scoped products:', err); setScopedProducts(null); } });
-    return () => { cancelled = true; };
-  }, [currentStore?.ownerType, currentStore?.slug]);
+    const slug = currentStore.slug;
+    const currentFeed = () => feedGeneration.current === generation && liveStoreSlug.current === slug;
+    catalogApi.getProductsPage({ storeSlug: slug })
+      .then(page => {
+        if (!currentFeed()) return;
+        setScopedProducts(page.items.map(mapBackendProduct));
+        setScopedCursor(page.nextCursor);
+        setHasMoreScoped(page.hasMore);
+        setLoadedStoreSlug(slug);
+      })
+      .catch(() => {
+        if (!currentFeed()) return;
+        setScopedProducts(null);
+        setHasMoreScoped(false);
+        setScopedError('دریافت کالاهای ویترین انجام نشد.');
+        setLoadedStoreSlug(slug);
+      });
+    return () => { feedGeneration.current += 1; };
+  }, [currentStore?.ownerType, currentStore?.slug, scopedReload]);
   const loadMoreScoped = async () => {
-    if (!currentStore?.slug || !hasMoreScoped || !scopedCursor || scopedLoadingMore) return;
+    if (!currentStore?.slug || loadedStoreSlug !== currentStore.slug || !hasMoreScoped || !scopedCursor || scopedLoadingMore) return;
+    const slug = currentStore.slug;
+    const generation = feedGeneration.current;
+    const currentFeed = () => generation === feedGeneration.current && liveStoreSlug.current === slug;
+    setScopedError('');
     setScopedLoadingMore(true);
     try {
-      const page = await catalogApi.getProductsPage({ storeSlug: currentStore.slug }, { cursor: scopedCursor });
+      const page = await catalogApi.getProductsPage({ storeSlug: slug }, { cursor: scopedCursor });
+      if (!currentFeed()) return;
       setScopedProducts((prev) => {
         const base = prev ?? [];
         const seen = new Set(base.map((p) => p.id));
@@ -75,10 +103,10 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
       });
       setScopedCursor(page.nextCursor);
       setHasMoreScoped(page.hasMore);
-    } catch (err) {
-      console.warn('Failed to load more store products:', err);
+    } catch {
+      if (currentFeed()) setScopedError('دریافت کالاهای بیشتر انجام نشد.');
     } finally {
-      setScopedLoadingMore(false);
+      if (currentFeed()) setScopedLoadingMore(false);
     }
   };
   const products = scopedProducts ?? centralProducts;
@@ -199,7 +227,9 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
   // takes its designed empty state (Fix81: template chrome plus the
   // coming-soon block), not an error page.
   const templateProducts =
-    currentStore.ownerType === 'dropshipper' ? scopedProducts ?? [] : products;
+    currentStore.ownerType === 'dropshipper'
+      ? loadedStoreSlug === currentStore.slug ? scopedProducts ?? [] : []
+      : products;
 
   // FIX3: when a template is resolved, the template component
   // renders the storefront (with the existing about/contact/footer
@@ -243,7 +273,7 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
     // active). Section components return null when empty, so the
     // template renders its own hero/chrome; the coming-soon message
     // below is kept so visitors still get the explanation.
-    if (items.length === 0) {
+    if (items.length === 0 && resolvedTemplateId !== 'tpl-fashion-1') {
       return (
         <div className="flex-1 flex flex-col bg-white">
           <SellerStorefrontHeader
@@ -310,6 +340,14 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
             categories={categories}
             accentColor={resolveTemplateAccent(resolvedTemplateId, templateConfig.accentColor)}
             config={templateConfig}
+            productFeed={resolvedTemplateId === 'tpl-fashion-1' && currentStore.ownerType === 'dropshipper' ? {
+              loading: loadedStoreSlug !== currentStore.slug,
+              error: loadedStoreSlug === currentStore.slug ? scopedError : '',
+              hasMore: loadedStoreSlug === currentStore.slug && hasMoreScoped,
+              loadingMore: scopedLoadingMore,
+              loadMore: () => void loadMoreScoped(),
+              retry: () => { if (hasMoreScoped) void loadMoreScoped(); else setScopedReload(n => n + 1); },
+            } : undefined}
           />
         ) : (
           <TemplateFallback templateId={resolvedTemplateId} />

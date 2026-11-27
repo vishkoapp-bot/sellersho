@@ -134,7 +134,7 @@ export interface AuthContextType {
   loginWithOTP: (mobile: string, otp: string, storeSlug?: string) => Promise<AuthUser>;
   logoutUser: () => void;
   registerUser: (userData: { mobile: string; fullName: string; role?: string }) => Promise<void>;
-  updateProfile: (updates: Partial<CustomerUser>) => Promise<void>;
+  updateProfileName: (fullName: string) => Promise<void>;
   refreshToken: () => Promise<void>;
   panelForRole: (role: string) => AuthenticatedPanel;
 }
@@ -426,14 +426,21 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  const updateProfile = async (updates: Partial<CustomerUser>) => {
-    setCustomerUser((prev) => ({ ...prev, ...updates }));
-    if (currentUser) {
-      setCurrentUser((prev) => prev ? {
-        ...prev,
-        fullName: updates.fullName || prev.fullName,
-        mobile: updates.mobile || prev.mobile,
-      } : null);
+  const updateProfileName = async (fullName: string) => {
+    const generation = authGeneration.current;
+    const credential = tokenStore.getToken();
+    const claims = isMockMode() ? null : await authApi.updateProfileName(fullName);
+    if (!ownsRequest(generation, credential)) throw new AuthRequestSupersededError();
+    profileSequence.current += 1;
+    const savedName = claims?.fullName ?? fullName;
+    setCustomerUser(previous => ({ ...previous, fullName: savedName }));
+    if (claims) {
+      const user: AuthUser = {
+        id: claims.userId, mobile: claims.mobile, fullName: savedName,
+        role: claims.role, capabilities: claims.capabilities ?? [],
+      };
+      setCurrentUser(user);
+      localStorage.setItem('drup_current_user', JSON.stringify(user));
     }
   };
 
@@ -504,7 +511,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     loginWithOTP,
     logoutUser,
     registerUser,
-    updateProfile,
+    updateProfileName,
     refreshToken,
     panelForRole,
   };

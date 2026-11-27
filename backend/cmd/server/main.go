@@ -355,18 +355,7 @@ func run(signalCtx context.Context) (result error) {
 		supplierHandlers.HandleRegister(w, r)
 	})
 
-	mux.HandleFunc("/api/v1/auth/me", AuthMiddleware(jwtService, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		claims, ok := r.Context().Value(userClaimsKey).(*auth.UserClaims)
-		if !ok || claims == nil {
-			http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
-			return
-		}
-		if claims.Capabilities != nil {
-			claims.Role = sessionRole(claims.Role, claims.Capabilities)
-		}
-		json.NewEncoder(w).Encode(claims)
-	}))
+	mux.HandleFunc("/api/v1/auth/me", AuthMiddleware(jwtService, handleAccountProfile(userRepo)))
 
 	// 1. Health check
 	mux.HandleFunc("/api/live", state.Live)

@@ -7,6 +7,30 @@ const storefront = '/store/batch-eight-store';
 const account = 'header button[title="ورود به حساب کاربری"]';
 const profile = 'پروفایل کاربری من';
 
+test('an existing account can save its missing name and open only its allowed panels without OTP', () =>
+  visit('/account?legacy-account-name&access-fixture-role=customer&access-fixture-caps=customer,seller,supplier,super_admin', 390, async page => {
+    const details = 'section[aria-label="مشخصات حساب"]';
+    const links = 'nav[aria-labelledby="account-panels-title"]';
+    await page.waitForSelector('#account-full-name', { visible: true });
+    assert.doesNotMatch(await page.$eval(details, element => element.textContent ?? ''), /کاربر جدید/);
+    await fillInput(page, '#account-full-name', 'مریم احمدی');
+    await clickText(page, 'ذخیرهٔ نام');
+    await page.waitForFunction(selector => document.querySelector(selector)?.textContent === 'مریم احمدی', {}, details + ' h2');
+    assert.deepEqual(await page.$$eval(links + ' a', nodes => nodes.map(node => node.getAttribute('href'))), ['/seller', '/supplier', '/admin']);
+    assert.match(await page.$eval(links, element => element.textContent ?? ''), /پنل سوپر ادمین/);
+    const token = await page.evaluate(() => localStorage.getItem('seler_sho_jwt_token'));
+    assert.ok(token);
+    await page.click(links + ' a[href="/seller"]');
+    await page.waitForSelector('#seller-main', { visible: true });
+    assert.equal(await page.evaluate(() => localStorage.getItem('seler_sho_jwt_token')), token);
+  }));
+
+test('a customer with no other capabilities sees their saved name and no workspace links', () =>
+  visit('/account?access-fixture-role=customer&access-fixture-caps=customer', 390, async page => {
+    await waitText(page, 'کاربر نمونه');
+    assert.equal(await page.$('#account-panels-title'), null);
+  }));
+
 test('opening the storefront account after a dashboard logout asks for OTP', () =>
   visit('/seller?seller', 1440, async page => {
     await page.waitForSelector('#seller-main');

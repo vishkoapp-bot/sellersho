@@ -362,14 +362,14 @@ export const AppContent: React.FC = () => {
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
                 variant={currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
               />
-              <CustomerProfileView onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})} />
+              <CustomerProfileView key={currentUser?.id} onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})} />
               <SellerStorefrontFooter />
             </>
           ) : (
             <>
               <Header sticky={false} />
               <Suspense fallback={<StorePageLoading />}>
-                <CustomerProfileView onBack={() => setActiveView('customer')} />
+                <CustomerProfileView key={currentUser?.id} onBack={() => setActiveView('customer')} />
               </Suspense>
               <Footer />
             </>

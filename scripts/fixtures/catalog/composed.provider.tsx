@@ -139,7 +139,8 @@ if (drp33) {
 }
 let drp33Override = ['override', 'locked', 'failure', 'missing'].includes(drp33 ?? '') ? 15 : undefined;
 let drp33Visible = false;
-const user = { id: 'fixture-user', mobile: '09120000000', fullName: 'کاربر نمونه', role: role, capabilities };
+const user = { id: 'fixture-user', mobile: '09120000000', fullName: routeParams.has('legacy-account-name')
+  ? sessionStorage.getItem('fixture-account-name') ?? 'کاربر جدید' : 'کاربر نمونه', role: role, capabilities };
 
 let release: ((outcome: 'success' | 'error') => void) | undefined;
 let holdInitialProfile = routeParams.has('holdInitialProfile');
@@ -278,6 +279,11 @@ authApi.getMe = async () => {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   return { ...user, userId: user.id } as Awaited<ReturnType<typeof authApi.getMe>>;
+};
+authApi.updateProfileName = async fullName => {
+  sessionStorage.setItem('fixture-account-name', fullName);
+  user.fullName = fullName;
+  return { ...user, userId: user.id };
 };
 if (hasSupplier) {
   authApi.getSupplierProfile = async () => ({

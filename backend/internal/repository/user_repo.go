@@ -19,6 +19,20 @@ func NewUserRepository(db *sql.DB) *UserRepository {
 	return &UserRepository{db: db}
 }
 
+func (r *UserRepository) GetProfileName(ctx context.Context, userID string) (string, error) {
+	var name string
+	err := r.db.QueryRowContext(ctx, `SELECT full_name FROM users WHERE id = $1 AND is_active`, userID).Scan(&name)
+	return name, err
+}
+
+func (r *UserRepository) SetProfileName(ctx context.Context, userID, name string) (string, error) {
+	err := r.db.QueryRowContext(ctx, `
+		UPDATE users SET full_name = $2, updated_at = NOW()
+		WHERE id = $1 AND is_active RETURNING full_name
+	`, userID, name).Scan(&name)
+	return name, err
+}
+
 // FindByMobile retrieves user by unique mobile phone
 func (r *UserRepository) FindByMobile(ctx context.Context, mobile string) (*domain.User, error) {
 	mobile = phone.Normalize(mobile)

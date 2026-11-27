@@ -1,11 +1,21 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
+import { adminRolesForCapabilities, panelsForCapabilities, useAuth, type AuthenticatedPanel } from '../../context/AuthContext';
 import { isMockMode } from '../../services/apiClient';
-import { ArrowRight, User, Package, Heart, ShieldCheck, LogOut, ChevronLeft, Wallet, RotateCcw } from 'lucide-react';
+import { ArrowRight, User, Package, Heart, ShieldCheck, LogOut, ChevronLeft, Wallet, RotateCcw, Store, Building2, Warehouse } from 'lucide-react';
 import { orderApi, type CustomerReturnDto } from '../../services/orderApi';
 import { toPersianDigits } from '../../utils/formatters';
 import { HelpExplainer } from '../common/HelpExplainer';
+import { pathForView } from '../../utils/routing';
+import { followStoreLink } from '../../utils/followStoreLink';
+
+const workspaceLinks = {
+  seller_dashboard: { title: 'پنل دراپ‌شیپر', icon: Store },
+  supplier_dashboard: { title: 'پنل تأمین‌کننده', icon: Building2 },
+  warehouse_panel: { title: 'پنل انبار', icon: Warehouse },
+  admin_panel: { title: 'پنل مدیریت', icon: ShieldCheck },
+} satisfies Record<Exclude<AuthenticatedPanel, 'customer'>, { title: string; icon: typeof Store }>;
 
 type AccountLayoutProps = React.PropsWithChildren<{
   title: string;
@@ -83,7 +93,42 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
     setActiveView, openStaticPage, formatPrice,
   } = useStore();
   const { success } = useToast();
+  const { currentUser, isAuthenticated, isSessionReady, updateProfileName } = useAuth();
   const central = routeStoreSlug == null && currentStore?.ownerType !== 'dropshipper';
+  const savedName = (currentUser?.fullName ?? customerUser.fullName).trim();
+  const fullName = savedName === 'کاربر جدید' ? '' : savedName;
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const [savingName, setSavingName] = useState(false);
+  const [nameError, setNameError] = useState('');
+  const [nameSaved, setNameSaved] = useState(false);
+  const capabilities = currentUser?.capabilities;
+  const panels = central && isAuthenticated && isSessionReady && currentUser
+    ? panelsForCapabilities(capabilities).filter(panel => panel !== 'customer')
+    : [];
+  const isSuperAdmin = adminRolesForCapabilities(capabilities).includes('super_admin');
+
+  const saveName = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (savingName) return;
+    const name = nameDraft.trim();
+    const length = Array.from(name).length;
+    if (length < 2 || length > 100 || name === 'کاربر جدید') {
+      setNameError('نام و نام خانوادگی را بین ۲ تا ۱۰۰ نویسه وارد کنید.');
+      return;
+    }
+    setNameError('');
+    setSavingName(true);
+    try {
+      await updateProfileName(name);
+      setNameSaved(true);
+      setEditingName(false);
+    } catch {
+      setNameError('ذخیرهٔ نام ممکن نشد. دوباره تلاش کنید.');
+    } finally {
+      setSavingName(false);
+    }
+  };
   const storeId = currentStore?.id;
   const orderCount = storeId ? orders.filter(order => order.storeId === storeId).length : 0;
 
@@ -125,7 +170,7 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
                 <User className="size-6" aria-hidden="true" />
               </span>
               <div className="min-w-0">
-                {customerUser.fullName && <h2 className="break-words text-base font-extrabold">{customerUser.fullName}</h2>}
+                <h2 className="break-words text-base font-extrabold">{fullName || 'مشخصات حساب'}</h2>
                 <bdi dir="ltr" className="inline-block select-text text-sm font-semibold tabular-nums text-[var(--account-muted)]">{toPersianDigits(customerUser.mobile)}</bdi>
               </div>
             </div>
@@ -135,7 +180,47 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
             {customerUser.nationalCode && <p className="mt-2 border-t border-slate-100 pt-2 text-xs text-slate-600">
               کد ملی <bdi dir="ltr" className="ms-1 select-text font-bold">{toPersianDigits(customerUser.nationalCode)}</bdi>
             </p>}
+            {(editingName || !fullName) ? (
+              <form onSubmit={saveName} className="mt-4 space-y-2 border-t border-[var(--account-line)] pt-4">
+                <label htmlFor="account-full-name" className="block text-sm font-bold">نام و نام خانوادگی</label>
+                <input id="account-full-name" name="fullName" autoComplete="name" value={nameDraft}
+                  onChange={event => setNameDraft(event.target.value)} required disabled={savingName}
+                  aria-invalid={nameError ? true : undefined} aria-describedby={nameError ? 'account-name-error' : undefined}
+                  className="min-h-11 w-full rounded-xl border border-[var(--account-line)] px-3 text-base" />
+                {nameError && <p id="account-name-error" role="alert" className="text-sm text-rose-800">{nameError}</p>}
+                <div className="flex flex-wrap gap-2">
+                  <button type="submit" disabled={savingName} className="min-h-11 rounded-xl bg-[var(--account-accent)] px-4 text-sm font-bold text-white disabled:opacity-60">
+                    {savingName ? 'در حال ذخیره…' : 'ذخیرهٔ نام'}
+                  </button>
+                  {fullName && <button type="button" disabled={savingName} onClick={() => setEditingName(false)} className="min-h-11 px-3 text-sm">انصراف</button>}
+                </div>
+              </form>
+            ) : (
+              <button type="button" onClick={() => {
+                setNameDraft(fullName);
+                setNameError('');
+                setNameSaved(false);
+                setEditingName(true);
+              }} className="mt-2 min-h-11 text-sm font-bold text-[var(--account-accent)] underline underline-offset-4">ویرایش نام</button>
+            )}
+            {nameSaved && <p role="status" className="mt-2 text-sm text-[var(--account-muted)]">نام ذخیره شد.</p>}
           </section>
+          {panels.length > 0 && (
+            <nav aria-labelledby="account-panels-title" className="overflow-hidden rounded-[var(--account-radius)] border border-[var(--account-line)] bg-white">
+              <h2 id="account-panels-title" className="px-4 pb-2 pt-4 text-base font-extrabold sm:px-6">پنل‌های من</h2>
+              {panels.map(panel => {
+                const { title, icon: Icon } = workspaceLinks[panel];
+                return (
+                  <a key={panel} href={pathForView(panel)} onClick={event => followStoreLink(event, () => setActiveView(panel))}
+                    className="flex min-h-12 items-center gap-3 border-t border-[var(--account-line)] px-4 py-3 text-sm font-bold hover:bg-[var(--account-soft)] sm:px-6">
+                    <Icon className="size-5 shrink-0 text-[var(--account-accent)]" aria-hidden="true" />
+                    <span className="flex-1">{panel === 'admin_panel' && isSuperAdmin ? 'پنل سوپر ادمین' : title}</span>
+                    <ChevronLeft className="size-4 shrink-0" aria-hidden="true" />
+                  </a>
+                );
+              })}
+            </nav>
+          )}
           {!central && <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-xs">
             <span className="flex items-center gap-1.5 font-bold">
               <Wallet className="size-4 text-[var(--account-accent)]" aria-hidden="true" /> کیف پول و پاداش خرید

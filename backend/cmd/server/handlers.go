@@ -1637,12 +1637,16 @@ func handleRegisterStore(w http.ResponseWriter, r *http.Request, ctx context.Con
 	randSuffix := strings.ToUpper(uuid.New().String()[:8])
 	uniqueReferralCode := fmt.Sprintf("DRUP-%s", randSuffix)
 
+	ownerName := claims.FullName
+	if ownerName == "" || ownerName == legacyProfileName {
+		ownerName = strings.TrimSpace(req.OwnerName)
+	}
 	newStore := domain.Store{
 		ID:                    fmt.Sprintf("store-%s", uuid.New().String()),
 		Name:                  req.StoreName,
 		Slug:                  cleanSlug,
 		OwnerType:             "dropshipper",
-		OwnerName:             claims.FullName,
+		OwnerName:             ownerName,
 		OwnerUserID:           &claims.UserID,
 		ProfitMarginPercent:   req.ProfitMarginPercent,
 		ReferralCode:          uniqueReferralCode,

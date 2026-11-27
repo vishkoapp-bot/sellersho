@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/drup/platform/internal/accesspolicy"
 	"github.com/drup/platform/internal/auth"
@@ -21,6 +25,69 @@ import (
 type contextKey string
 
 const userClaimsKey contextKey = "userClaims"
+const legacyProfileName = "کاربر جدید"
+
+type accountNameStore interface {
+	GetProfileName(context.Context, string) (string, error)
+	SetProfileName(context.Context, string, string) (string, error)
+}
+
+func handleAccountProfile(users accountNameStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		claims, _ := r.Context().Value(userClaimsKey).(*auth.UserClaims)
+		if claims == nil {
+			http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		var name string
+		var err error
+		switch r.Method {
+		case http.MethodGet:
+			name, err = users.GetProfileName(r.Context(), claims.UserID)
+		case http.MethodPatch:
+			var body struct {
+				FullName string `json:"fullName"`
+			}
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2048))
+			decoder.DisallowUnknownFields()
+			if decoder.Decode(&body) != nil || decoder.Decode(new(any)) != io.EOF {
+				http.Error(w, `{"error":"اطلاعات نام معتبر نیست."}`, http.StatusBadRequest)
+				return
+			}
+			name = strings.TrimSpace(body.FullName)
+			length := utf8.RuneCountInString(name)
+			if length < 2 || length > 100 || name == legacyProfileName || strings.ContainsFunc(name, unicode.IsControl) {
+				http.Error(w, `{"error":"نام و نام خانوادگی را بین ۲ تا ۱۰۰ نویسه وارد کنید."}`, http.StatusBadRequest)
+				return
+			}
+			name, err = users.SetProfileName(r.Context(), claims.UserID, name)
+		default:
+			w.Header().Set("Allow", "GET, PATCH")
+			writeMethodNotAllowed(w)
+			return
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, `{"error":"Account is disabled"}`, http.StatusForbidden)
+			return
+		}
+		if err != nil {
+			log.Printf("load or update account name: %v", err)
+			http.Error(w, `{"error":"دریافت یا ذخیرهٔ نام حساب ممکن نشد."}`, http.StatusServiceUnavailable)
+			return
+		}
+		updated := *claims
+		updated.FullName = strings.TrimSpace(name)
+		if updated.FullName == legacyProfileName {
+			updated.FullName = ""
+		}
+		if updated.Capabilities != nil {
+			updated.Role = sessionRole(updated.Role, updated.Capabilities)
+		}
+		json.NewEncoder(w).Encode(updated)
+	}
+}
 
 // AuthMiddleware requires a valid JWT Bearer token and stores its claims in the request context.
 func AuthMiddleware(jwtService *auth.JWTService, next http.HandlerFunc) http.HandlerFunc {
@@ -248,7 +315,6 @@ func handleVerifyOTP(
 		return
 	}
 
-	name := "کاربر جدید"
 	if existingUser != nil && !existingUser.IsActive {
 		// GAP 19b (OTP path): the code has verified by this point, so
 		// account ownership is proven and a supplier owner may be told
@@ -292,7 +358,7 @@ func handleVerifyOTP(
 	if existingUser != nil {
 		user = existingUser
 	} else {
-		user, err = userRepo.UpsertUser(ctx, mobile, name, role)
+		user, err = userRepo.UpsertUser(ctx, mobile, "", role)
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

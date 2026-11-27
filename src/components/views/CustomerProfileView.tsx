@@ -159,6 +159,9 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
   const [nameError, setNameError] = useState('');
   const [nameSaved, setNameSaved] = useState(false);
   const capabilities = currentUser?.capabilities;
+  const canShop = !!capabilities?.includes('customer') || (isMockMode() && customerUser.isLoggedIn);
+  const accountSection = canShop ? section : null;
+  const mobile = currentUser?.mobile || customerUser.mobile;
   const panels = central && isAuthenticated && isSessionReady && currentUser
     ? panelsForCapabilities(capabilities).filter(panel => panel !== 'customer')
     : [];
@@ -191,13 +194,13 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
   const [myReturns, setMyReturns] = useState<CustomerReturnDto[] | null>(null);
   const [returnsUnavailable, setReturnsUnavailable] = useState(false);
   useEffect(() => {
-    if (central && !customerUser.isLoggedIn) return;
+    if (!canShop) return;
     let active = true;
     orderApi.getMyReturns()
       .then((list) => { if (active) setMyReturns(list); })
       .catch(() => { if (active) setReturnsUnavailable(true); });
     return () => { active = false; };
-  }, [central, customerUser.isLoggedIn, customerUser.mobile]);
+  }, [canShop, mobile]);
 
   const returnsCount = myReturns && myReturns.filter(row => orders.some(order => order.id === row.orderId && order.storeId === storeId)).length;
   const logout = () => {
@@ -207,8 +210,8 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
   };
 
   return (
-    <CustomerAccountLayout title="پروفایل کاربری من" onBack={section ? backToAccountMenu : onBack} central={central}
-      backLabel={section ? 'بازگشت به منوی حساب' : undefined}
+    <CustomerAccountLayout title="پروفایل کاربری من" onBack={accountSection ? backToAccountMenu : onBack} central={central}
+      backLabel={accountSection ? 'بازگشت به منوی حساب' : undefined}
       extra={<button type="button" onClick={logout} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-rose-200 bg-white px-3 text-sm font-bold text-rose-800 hover:bg-rose-50">
         <LogOut className="size-4" aria-hidden="true" /> خروج
       </button>}>
@@ -221,7 +224,7 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
               </span>
               <div className="min-w-0">
                 <h2 className="break-words text-base font-extrabold">{fullName || 'مشخصات حساب'}</h2>
-                <bdi dir="ltr" className="inline-block select-text text-sm font-semibold tabular-nums text-[var(--account-muted)]">{toPersianDigits(customerUser.mobile)}</bdi>
+                <bdi dir="ltr" className="inline-block select-text text-sm font-semibold tabular-nums text-[var(--account-muted)]">{toPersianDigits(mobile)}</bdi>
               </div>
             </div>
             <p className="mt-4 flex items-center gap-2 text-xs font-semibold text-[var(--account-accent)]">
@@ -280,7 +283,7 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
           </div>}
         </div>
 
-        {section ? (
+        {canShop && (section ? (
           <div tabIndex={-1} ref={accountContentRef} className="order-first min-w-0 lg:order-none">
             <Suspense fallback={<RouteLoading label="در حال باز کردن بخش حساب…" />}>
               {section === 'orders' || section === 'returns'
@@ -302,7 +305,7 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
             قوانین خرید و ضمانت کالا
           </AccountRow>
         </nav>
-        )}
+        ))}
       </div>
     </CustomerAccountLayout>
   );

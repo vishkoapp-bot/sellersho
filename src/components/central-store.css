@@ -165,7 +165,6 @@
 }
 @keyframes route-loader-spin { to { transform: rotate(1turn); } }
 .central-overlay-loading { position: fixed; z-index: 60; inset-block-start: max(12px, env(safe-area-inset-top)); inset-inline-start: 50%; translate: 50% 0; padding: 9px 15px; border: 1px solid var(--shop-line, #dde2d7); border-radius: 12px; background: var(--shop-paper, white); color: var(--shop-ink, #172d26); font-size: .875rem; white-space: nowrap; pointer-events: none; }
-.central-site > .workspace-switcher { --color-brand-deep: var(--shop-forest); --color-brand-soft: var(--shop-soft); --color-brand-border: var(--shop-line); }
 
 .central-home { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--shop-section-gap); padding-block: clamp(16px, 3vw, 32px) clamp(32px, 5vw, 64px); }
 .central-hero { min-width: 0; }

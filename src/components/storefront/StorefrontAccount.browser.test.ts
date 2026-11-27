@@ -8,13 +8,16 @@ const account = 'header button[title="ورود به حساب کاربری"]';
 const profile = 'پروفایل کاربری من';
 const pendingSession = 'holdInitialProfile&access-fixture-role=customer&access-fixture-caps=customer,seller';
 
-test('a pending account check never blocks the public shop or shows cached workspace links', () =>
+test('the public shop has no workspace switcher before or after verifying a multi-role session', () =>
   visit('/?' + pendingSession, 390, async page => {
     await page.waitForFunction(() => (window as any).batch8Fixture.initialProfilePending());
     await page.waitForSelector('.central-hero', { visible: true });
     assert.equal(await page.$('.workspace-switcher, .route-loading--screen'), null);
     await page.evaluate(() => (window as any).batch8Fixture.finishInitialProfile());
-    await page.waitForSelector('.workspace-switcher', { visible: true });
+    await page.waitForFunction(() => (window as any).batch8Fixture.state().isSessionReady);
+    assert.equal(await page.$('.workspace-switcher, #account-panels-title'), null);
+    await page.click('nav[aria-label="منوی پایین فروشگاه"] a[href="/account"]');
+    await page.waitForSelector('#account-panels-title', { visible: true });
   }));
 
 test('protected routes show a loader and retry a failed session check with the same credential', () =>

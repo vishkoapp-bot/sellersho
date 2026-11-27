@@ -121,6 +121,7 @@ export const AppContent: React.FC = () => {
   const isWarehouseView = protectedPanel === 'warehouse_panel';
   const isOnboardingActive = isSellerModalOpen && !protectedPanel;
   const authorizedPanels = currentUser ? panelsForCapabilities(currentUser.capabilities) : [];
+  const canOpenCentralProfile = activeView === 'customer_profile' && !routeStoreSlug && authorizedPanels.length > 0;
   const defaultPanel = currentUser ? defaultPanelForUser(currentUser) : 'customer';
 
   useEffect(() => {
@@ -197,28 +198,16 @@ export const AppContent: React.FC = () => {
       </Suspense>
     );
   }
-  const workspaceSwitcher = isSessionReady && currentUser && authorizedPanels.length > 1 && (
-    <nav dir="rtl" aria-label="پنل‌های مجاز" className="workspace-switcher flex flex-wrap items-center gap-1 border-b border-slate-200 bg-white px-3 py-1.5">
-      {authorizedPanels.map(panel => (
-        <button key={panel} type="button" aria-pressed={activeView === panel}
-          onClick={() => setActiveView(panel)}
-          className={`min-h-11 rounded-xl px-3 text-xs font-bold focus-visible:outline-2 focus-visible:outline-brand ${activeView === panel ? 'bg-brand-deep text-white' : 'bg-brand-soft text-brand-deep hover:bg-brand-border'}`}>
-          {workspaceLabels[panel]}
-        </button>
-      ))}
-    </nav>
-  );
-
   if (currentUser && protectedPanel && !isWarehouseView) {
-    if (!authorizedPanels.includes(protectedPanel)) {
+    if (!canOpenCentralProfile && !authorizedPanels.includes(protectedPanel)) {
       return (
         <main dir="rtl" className="grid min-h-dvh w-full content-center justify-items-center bg-[#f7f7fa] p-4">
           <section aria-labelledby="workspace-access-title" className="w-full max-w-md space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
             <h1 id="workspace-access-title" className="text-base font-extrabold text-slate-900">حساب فعلی مجوز پنل {workspaceLabels[protectedPanel]} را ندارد.</h1>
             <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={() => setActiveView(defaultPanel)}
+              <button type="button" onClick={() => setActiveView(authorizedPanels.length ? 'customer_profile' : 'customer')}
                 className="min-h-11 rounded-xl bg-brand-deep px-3 text-sm font-bold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
-                {defaultPanel === 'customer' ? 'بازگشت به سایت' : `باز کردن پنل ${workspaceLabels[defaultPanel]}`}
+                {authorizedPanels.length ? 'رفتن به حساب کاربری' : 'بازگشت به سایت'}
               </button>
               <button type="button" onClick={logoutUser} className="min-h-11 rounded-xl border border-slate-200 px-3 text-sm font-bold text-slate-800 focus-visible:outline-2 focus-visible:outline-brand">خروج و ورود با حساب دیگر</button>
               {protectedPanel === 'seller_dashboard' && authorizedPanels.includes('customer') && (
@@ -247,7 +236,6 @@ export const AppContent: React.FC = () => {
   if (activeView === 'admin_panel') {
     return (
       <>
-        {workspaceSwitcher}
         <Suspense fallback={<PanelLoading />}>
           <AdminDashboardView onBackToCustomerSite={() => setActiveView('customer')} />
         </Suspense>
@@ -269,7 +257,6 @@ export const AppContent: React.FC = () => {
     <div className="min-h-screen bg-[#f8f6ef] flex justify-center text-slate-800 antialiased font-sans">
       <SeoManager />
       <div className={shellClass}>
-        {workspaceSwitcher}
         {/* Developer & Multi-Role Navigation Bar */}
         <RoleSwitcherBar />
 

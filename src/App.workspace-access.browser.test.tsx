@@ -57,8 +57,17 @@ for (const account of cases) {
       }
       if (!(account.capabilities as readonly string[]).includes('customer')) {
         await openWorkspace(page, 'customer_profile');
-        await waitText(page, 'حساب فعلی مجوز پنل فروشگاه را ندارد');
+        if (account.panels.length) {
+          await waitText(page, 'پنل‌های من');
+          assert.equal(await page.$('nav[aria-label="امکانات حساب"]'), null);
+          const links = await page.$$eval('nav[aria-labelledby="account-panels-title"] a', elements => elements.map(link => link.getAttribute('href')));
+          assert.deepEqual(links, account.panels.map(panel => '/' + panel));
+        } else {
+          await waitText(page, 'حساب فعلی مجوز پنل فروشگاه را ندارد');
+        }
         assert.equal(await page.$('[data-panel-workspace]'), null);
+        await openWorkspace(page, 'customer_orders');
+        await waitText(page, 'حساب فعلی مجوز پنل فروشگاه را ندارد');
       }
     }));
 }
@@ -73,7 +82,10 @@ test('stored base role does not widen a specialist workspace and combined grants
     for (const section of ['finance-overview', 'support-tickets', 'ad-network', 'historical-reconciliation']) {
       assert.ok(await page.$(`aside [data-section="${section}"]`), section);
     }
-    assert.deepEqual(await page.$$eval('nav[aria-label="پنل‌های مجاز"] button', buttons => buttons.map(button => button.textContent?.trim())), ['انبار', 'مدیریت']);
+    assert.equal(await page.$('nav[aria-label="پنل‌های مجاز"]'), null);
+    await openWorkspace(page, 'customer_profile');
+    await page.waitForSelector('#account-panels-title');
+    assert.deepEqual(await page.$$eval('nav[aria-labelledby="account-panels-title"] a', links => links.map(link => link.getAttribute('href'))), ['/warehouse', '/admin']);
   }));
 
 test('warehouse city scope is honored in the menu and direct link even with an active admin grant', () =>

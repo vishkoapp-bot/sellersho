@@ -346,7 +346,7 @@ function bp(templateId: string, tagline: string, sections: string[], custom: Tem
 export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
   'tpl-modern-1': bp('tpl-modern-1', 'مینیمال و آرام؛ تمرکز روی خودِ کالا', [
     'announcement', 'hero', 'trustStrip', 'categoryRail', 'featured', 'banners',
-    'bestsellers', 'about', 'testimonials', 'newsletter', 'faq', 'products',
+    'bestsellers', 'about', 'testimonials', 'products', 'faq', 'newsletter',
   ], {
     categoriesTitle: 'دسته‌بندی‌ها',
     featuredTitle: 'منتخب‌های فروشگاه',
@@ -454,13 +454,16 @@ export function resolveTemplateConfig(templateId: string, saved?: TemplateConfig
   for (const k of blueprint.sections) {
     if (!orderedKeys.includes(k)) orderedKeys.push(k);
   }
-  const sections: TemplateSection[] = orderedKeys.map((k) => {
+  // Apply the end-of-page placement to existing Modern stores as well as new ones.
+  const fixedEndSections = templateId === 'tpl-modern-1' ? ['faq', 'newsletter'] : [];
+  const displayKeys = [...orderedKeys.filter(key => !fixedEndSections.includes(key)), ...fixedEndSections];
+  const sections: TemplateSection[] = displayKeys.map((k) => {
     const savedSec = savedByKey.get(k);
     return {
       key: k,
       label: sectionLabel(k),
       toggleable: true,
-      orderable: true,
+      orderable: !fixedEndSections.includes(k),
       defaultEnabled: blueprint.sections.includes(k),
       selfHidesWhenEmpty: true,
       enabled: savedSec ? savedSec.enabled !== false : blueprint.sections.includes(k),

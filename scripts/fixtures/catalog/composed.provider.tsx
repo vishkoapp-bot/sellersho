@@ -127,6 +127,11 @@ const seller = {
         lookbookImage: '/templates/fashion/knitwear.webp',
       },
     },
+  } : routeParams.has('modern-support-order') ? {
+    templateConfig: {
+      sections: ['hero', 'faq', 'newsletter', 'products', 'brands'].map(key => ({ key, enabled: true })),
+      custom: { faqItems: [{ q: 'ارسال چقدر طول می‌کشد؟', a: 'زمان ارسال در سبد خرید مشخص می‌شود.' }] },
+    },
   } : {}),
   signedContractVersion: routeParams.has('renew-contract') ? 1 : 2,
   activePlanId: routeParams.has('multi-store') ? 'vip' : undefined,

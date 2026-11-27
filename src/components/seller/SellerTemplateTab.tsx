@@ -345,6 +345,7 @@ export const SellerTemplateTab: React.FC = () => {
     if (!draft) return;
     const j = idx + dir;
     if (j < 0 || j >= sections.length) return;
+    if (sections[idx].orderable === false || sections[j].orderable === false) return;
     const next = [...sections];
     const [item] = next.splice(idx, 1);
     next.splice(j, 0, item);
@@ -765,7 +766,7 @@ export const SellerTemplateTab: React.FC = () => {
                 return (
                   <div key={`${key}-${idx}`} className={`overflow-hidden rounded-2xl border ${enabled ? 'border-slate-200' : 'border-slate-200 bg-slate-50/60'}`}>
                     <div className="flex items-center gap-2 p-3">
-                      <div className="flex flex-col gap-0.5">
+                      {sec.orderable !== false && <div className="flex flex-col gap-0.5">
                         <button
                           type="button"
                           onClick={() => moveSection(idx, -1)}
@@ -778,18 +779,19 @@ export const SellerTemplateTab: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => moveSection(idx, 1)}
-                          disabled={idx === sections.length - 1}
+                          disabled={idx === sections.length - 1 || sections[idx + 1].orderable === false}
                           aria-label="انتقال به پایین"
                           className="rounded-md p-1 text-slate-500 hover:bg-slate-100 disabled:opacity-30"
                         >
                           <ArrowDown className="h-3.5 w-3.5" strokeWidth={1.5} />
                         </button>
-                      </div>
+                      </div>}
                       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-[11px] font-black text-slate-500">
                         {toPersianDigits(idx + 1)}
                       </span>
                       <div className="min-w-0 flex-1">
                         <p className={`truncate text-xs font-bold ${enabled ? 'text-slate-800' : 'text-slate-400'}`}>{sec.label}</p>
+                        {sec.orderable === false && <p className="mt-1 text-[11px] text-slate-500">پایین ویترین</p>}
                       </div>
                       <Switch checked={enabled} onChange={() => toggleSection(idx)} ariaLabel={`نمایش بخش ${sec.label}`} />
                       <button

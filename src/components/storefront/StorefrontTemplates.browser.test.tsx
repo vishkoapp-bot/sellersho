@@ -13,6 +13,15 @@ const themes = {
   digikala: 'rgb(248, 246, 244)',
 };
 
+test('Modern renders the catalogue before FAQ and newsletter even with an older saved layout', () =>
+  visit(`${storefront}?template=modern&modern-support-order`, 390, async page => {
+    await page.waitForSelector(items);
+    await page.waitForSelector('[data-testid="store-newsletter"]');
+    const order = await page.$$eval('main.modern-showcase [data-testid="store-products"], main.modern-showcase [data-testid="store-faq"], main.modern-showcase [data-testid="store-newsletter"]', sections =>
+      sections.map(section => section.getAttribute('data-testid')));
+    assert.deepEqual(order, ['store-products', 'store-faq', 'store-newsletter']);
+  }));
+
 test('modern keeps its category links, spotlight and availability filter usable on a narrow display', () =>
   visit(`${storefront}?template=modern&modern-stock-filter`, 320, async page => {
     await page.waitForSelector(items);

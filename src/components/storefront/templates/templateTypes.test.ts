@@ -14,7 +14,7 @@ test('saving the editorial fashion preset does not restore legacy bundled sectio
 });
 
 // B3: dict-form sections carry no order — they must resolve to
-// blueprint order (hero before faq before products), never
+// blueprint order (hero before products before faq), never
 // alphabetical, with aliases canonicalised into their blueprint slot.
 test('dict-form sections resolve to blueprint order, never alphabetical', () => {
   const resolved = resolveTemplateConfig('tpl-modern-1', {
@@ -22,31 +22,30 @@ test('dict-form sections resolve to blueprint order, never alphabetical', () => 
   });
   const enabled = orderedEnabledSections(resolved);
   assert.ok(enabled.indexOf('hero') < enabled.indexOf('faq'), 'hero before faq');
-  assert.ok(enabled.indexOf('faq') < enabled.indexOf('products'), 'faq before products');
+  assert.ok(enabled.indexOf('products') < enabled.indexOf('faq'), 'products before faq');
   assert.ok(enabled.indexOf('categoryRail') < enabled.indexOf('faq'), 'categories alias lands in the categoryRail blueprint slot');
   assert.ok(!enabled.includes('newsletter'), 'explicit false stays disabled');
-  // A dict key with no blueprint slot is appended after all blueprint keys.
+  // Additional sections render before Modern's fixed end-of-page sections.
   const withUnknown = resolveTemplateConfig('tpl-modern-1', {
     sections: { faq: true, futureSection: true, hero: true },
   });
   const enabledUnknown = orderedEnabledSections(withUnknown);
-  assert.ok(enabledUnknown.indexOf('futureSection') > enabledUnknown.indexOf('faq'));
+  assert.ok(enabledUnknown.indexOf('futureSection') < enabledUnknown.indexOf('faq'));
 });
 
-// B3: array-form sections are the seller's drag-to-reorder — the saved
-// order wins even when it deliberately puts faq first.
-test('array-form sections keep the saved order (seller reorder preserved)', () => {
+test('Modern moves support sections after saved catalogue and promotional sections', () => {
   const resolved = resolveTemplateConfig('tpl-modern-1', {
     sections: [
       { key: 'faq', enabled: true, label: 'faq', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
       { key: 'hero', enabled: true, label: 'hero', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
       { key: 'products', enabled: true, label: 'products', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
+      { key: 'deals', enabled: true, label: 'deals', toggleable: true, orderable: true, defaultEnabled: false, selfHidesWhenEmpty: true },
     ],
   });
   const enabled = orderedEnabledSections(resolved);
-  assert.equal(enabled[0], 'faq');
-  assert.equal(enabled[1], 'hero');
-  assert.equal(enabled[2], 'products');
+  assert.deepEqual(enabled.slice(0, 3), ['hero', 'products', 'deals']);
+  assert.deepEqual(enabled.slice(-2), ['faq', 'newsletter']);
+  assert.ok(Array.isArray(resolved.sections) && resolved.sections.slice(-2).every(section => !section.orderable));
 });
 
 // M-4 (Batch 3 fix): pin ALL FIVE blueprint orders on the frontend
@@ -57,7 +56,7 @@ test('array-form sections keep the saved order (seller reorder preserved)', () =
 // order. These lists must match the backend mirror table in
 // team05_store_handlers.go (team05TemplateBlueprintSections).
 const allBlueprints: Record<string, string[]> = {
-  'tpl-modern-1': ['announcement', 'hero', 'trustStrip', 'categoryRail', 'featured', 'banners', 'bestsellers', 'about', 'testimonials', 'newsletter', 'faq', 'products'],
+  'tpl-modern-1': ['announcement', 'hero', 'trustStrip', 'categoryRail', 'featured', 'banners', 'bestsellers', 'about', 'testimonials', 'products', 'faq', 'newsletter'],
   'tpl-electronic-1': ['announcement', 'hero', 'categoryRail', 'deals', 'timedDeals', 'banners', 'bestsellers', 'brands', 'discounted', 'testimonials', 'faq', 'products'],
   'tpl-fashion-1': ['announcement', 'hero', 'categoryRail', 'products', 'lookbook', 'about'],
   'tpl-digikala-1': ['announcement', 'hero', 'categoryRail', 'deals', 'timedDeals', 'banners', 'brands', 'bestsellers', 'discounted', 'topRated', 'campaign', 'faq', 'products'],

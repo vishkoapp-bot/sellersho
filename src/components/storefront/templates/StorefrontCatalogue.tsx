@@ -5,6 +5,7 @@ import { useStore } from '../../../context/StoreContext';
 import { toPersianDigits } from '../../../utils/formatters';
 import { normalizePersianText } from '../../../utils/routing';
 import { cardPriceOf } from '../../../utils/cardPrice';
+import { activeProductVariants, resolvePurchase } from '../../../utils/productPurchase';
 import { RouteLoading } from '../../common/RouteLoading';
 import { FashionProductCard } from '../FashionProductCard';
 import type { StorefrontTemplateProps } from './templateTypes';
@@ -22,9 +23,10 @@ function normalizeSearch(value: string) {
   return normalizePersianText(value).replace(/[\s\u200c]+/g, ' ').trim().toLocaleLowerCase('fa-IR');
 }
 
-export function StorefrontCatalogue({ items, categoryGroups, productsTitle, productFeed, editorial = false }: {
+export function StorefrontCatalogue({ items, categoryGroups, productsTitle, productFeed, editorial = false, showAvailabilityFilter = false }: {
   items: Product[];
   editorial?: boolean;
+  showAvailabilityFilter?: boolean;
   categoryGroups: CategoryGroup[];
   productsTitle: string;
   productFeed?: StorefrontTemplateProps['productFeed'];
@@ -32,6 +34,7 @@ export function StorefrontCatalogue({ items, categoryGroups, productsTitle, prod
   const { openProductDetail, selectedCategory, setSelectedCategory,
     catalogBrandRequest, clearCatalogBrand, searchQuery, setSearchQuery } = useStore();
   const [floorSort, setFloorSort] = useState<keyof typeof SORT_OPTIONS>('featured');
+  const [availableOnly, setAvailableOnly] = useState(false);
   const catalogueHeadingId = useId();
   const selectedGroup = categoryGroups.find((g) => g.slug === selectedCategory);
   const brandFilter =
@@ -43,9 +46,13 @@ export function StorefrontCatalogue({ items, categoryGroups, productsTitle, prod
     (!brandFilter || (product.brand || '').trim() === brandFilter)), [items, selectedGroup, brandFilter]);
   const query = normalizeSearch(searchQuery);
   const searching = query.length > 0;
-  const floorItems = useMemo(() => searching
-    ? categoryItems.filter(p => normalizeSearch([p.title, p.brand, p.description].filter(Boolean).join(' ')).includes(query))
-    : categoryItems, [categoryItems, query, searching]);
+  const floorItems = useMemo(() => categoryItems.filter(product => {
+    const matchesQuery = !searching || normalizeSearch([product.title, product.brand, product.description].filter(Boolean).join(' ')).includes(query);
+    if (!matchesQuery || !availableOnly) return matchesQuery;
+    return product.variants?.length
+      ? activeProductVariants(product).some(variant => Boolean(resolvePurchase(product, variant.id)))
+      : Boolean(resolvePurchase(product));
+  }), [availableOnly, categoryItems, query, searching]);
   const sortedFloorItems = useMemo(() => [...floorItems].sort((a, b) => {
     if (floorSort === 'cheapest') return cardPriceOf(a).price - cardPriceOf(b).price;
     if (floorSort === 'expensive') return cardPriceOf(b).price - cardPriceOf(a).price;
@@ -61,7 +68,9 @@ export function StorefrontCatalogue({ items, categoryGroups, productsTitle, prod
     if (brandFilter) clearCatalogBrand();
     if (selectedGroup) setSelectedCategory('all');
     if (searching) setSearchQuery('');
+    setAvailableOnly(false);
   };
+  const filtered = Boolean(brandFilter || selectedGroup || searching || availableOnly);
 
   return (
     <section id="products" data-testid="store-products" aria-labelledby={catalogueHeadingId} className="fashion-catalogue">
@@ -69,7 +78,7 @@ export function StorefrontCatalogue({ items, categoryGroups, productsTitle, prod
         <div className="fashion-catalogue-title"><h2 id={catalogueHeadingId}>{floorTitle}</h2>
           {!productFeed?.loading && <span className="fashion-result-count" role="status">{toPersianDigits(floorItems.length)} کالا{productFeed?.hasMore ? ' تا اینجا' : ''}</span>}
         </div>
-        {brandFilter || selectedGroup || searching ? (
+        {filtered ? (
           <button
             type="button"
             onClick={clearFloorFilter}
@@ -93,6 +102,10 @@ export function StorefrontCatalogue({ items, categoryGroups, productsTitle, prod
             {Object.entries(SORT_OPTIONS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
           </select>
         </label>
+        {showAvailabilityFilter && <label className="modern-availability">
+          <input type="checkbox" checked={availableOnly} onChange={event => setAvailableOnly(event.target.checked)} />
+          فقط کالاهای موجود
+        </label>}
       </div>
       {categoryGroups.length > 1 && <nav className="fashion-catalogue-filters" aria-label="فیلتر دسته‌بندی محصولات">
         <button type="button" aria-pressed={!selectedGroup && !brandFilter} onClick={() => selectCategory('all')}>همه</button>
@@ -101,9 +114,9 @@ export function StorefrontCatalogue({ items, categoryGroups, productsTitle, prod
       </nav>}
       {productFeed?.loading ? <RouteLoading label="در حال دریافت کالاها…" /> : floorItems.length === 0 ? (
         !productFeed?.error && <div className="fashion-empty">
-          <p>{productFeed?.hasMore ? 'در کالاهای نمایش‌داده‌شده نتیجه‌ای پیدا نشد.' : searching || selectedGroup || brandFilter
+          <p>{productFeed?.hasMore ? 'در کالاهای نمایش‌داده‌شده نتیجه‌ای پیدا نشد.' : filtered
             ? 'کالایی با این مشخصات یافت نشد.' : 'هنوز کالایی در این ویترین ثبت نشده است.'}</p>
-          {(searching || selectedGroup || brandFilter) && <button type="button" className="fashion-text-action" onClick={clearFloorFilter}>پاک کردن فیلترها</button>}
+          {filtered && <button type="button" className="fashion-text-action" onClick={clearFloorFilter}>پاک کردن فیلترها</button>}
         </div>
       ) : editorial ? (
           <div className="fashion-product-grid">

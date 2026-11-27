@@ -70,6 +70,7 @@ const products = Array.from({ length: 24 }, (_, index) => ({
   isActive: true,
   image: '/templates/fashion/knitwear.webp',
 } as ProductDto));
+if (routeParams.has('modern-stock-filter')) products[1].stock = 0;
 if (routeParams.has('promo-badges')) {
   Object.assign(products[0], {
     campaignName: 'پیشنهاد شگفت‌انگیز پایان هفته برای کالاهای دیجیتال',

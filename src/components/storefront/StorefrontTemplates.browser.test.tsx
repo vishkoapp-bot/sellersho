@@ -13,6 +13,22 @@ const themes = {
   digikala: 'rgb(248, 246, 244)',
 };
 
+test('modern keeps its category links, spotlight and availability filter usable on a narrow display', () =>
+  visit(`${storefront}?template=modern&modern-stock-filter`, 320, async page => {
+    await page.waitForSelector(items);
+    const spotlight = '[data-testid="store-featured"] a[href*="/product/"]';
+    assert.match(await page.$eval(spotlight, link => link.getAttribute('href') || ''), /\/store\/batch-eight-store\/product\//);
+    await clickText(page, 'جست‌وجوی کالا', '.showcase-hero a');
+    assert.equal(new URL(page.url()).hash, '#fashion-search');
+    await page.$eval('[data-testid="store-category-mosaic"] a[data-category="digital"]', link => (link as HTMLAnchorElement).click());
+    await page.waitForFunction(selector => document.querySelectorAll(selector).length === 2, {}, items);
+    await page.click('.modern-availability input');
+    await page.waitForFunction(selector => document.querySelectorAll(selector).length === 1, {}, items);
+    await clickText(page, 'نمایش همه کالاها', '#products button');
+    await page.waitForFunction(selector => document.querySelectorAll(selector).length === 8, {}, items);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 320);
+  }));
+
 for (const [template, paper] of Object.entries(themes)) {
   test(`${template} keeps discovery, model selection and checkout scoped on mobile`, () =>
     visit(`${storefront}?template=${template}&pdp-flow`, 320, async page => {

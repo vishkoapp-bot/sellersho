@@ -1,15 +1,17 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { ArrowLeft, ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Pause, Play, Search } from 'lucide-react';
 import type { Product, Store } from '../../../types';
 import { toPersianDigits } from '../../../utils/formatters';
 import { FallbackImage } from '../../common/FallbackImage';
+import { followStoreSection } from '../../../utils/followStoreLink';
 import { customText, heroSlidesOf, orderedEnabledSections, templateCustom, type TemplateConfig } from './templateTypes';
 
-export function StorefrontHero({ store, config, products, aside }: {
+export function StorefrontHero({ store, config, products, aside, showSearchShortcut = false }: {
   store: Store;
   config: TemplateConfig;
   products: Product[];
   aside?: ReactNode;
+  showSearchShortcut?: boolean;
 }) {
   const custom = templateCustom(config);
   const sections = orderedEnabledSections(config);
@@ -50,7 +52,12 @@ export function StorefrontHero({ store, config, products, aside }: {
       <div className="showcase-hero-copy">
         <h1>{title}</h1>
         {subtitle && <p>{subtitle}</p>}
-        {href && <a href={href} className="showcase-hero-cta">{custom.heroCtaText || 'مشاهده کالاها'}<ArrowLeft size={19} aria-hidden="true" /></a>}
+        <div className="showcase-hero-actions">
+          {href && <a href={href} className="showcase-hero-cta" onClick={showSearchShortcut && href.startsWith('#') ? followStoreSection : undefined}>{custom.heroCtaText || 'مشاهده کالاها'}<ArrowLeft size={19} aria-hidden="true" /></a>}
+          {showSearchShortcut && catalogEnabled && <a href="#fashion-search" className="modern-text-link" onClick={followStoreSection}>
+            <Search size={18} aria-hidden="true" /> جست‌وجوی کالا
+          </a>}
+        </div>
         {count > 1 && <div className="showcase-hero-controls">
           <button type="button" aria-label="اسلاید قبلی" onClick={() => setIndex((active - 1 + count) % count)}><ChevronRight size={18} aria-hidden="true" /></button>
           <span aria-live={stopped || focused || hovered ? 'polite' : 'off'}>{toPersianDigits(active + 1)} از {toPersianDigits(count)}</span>

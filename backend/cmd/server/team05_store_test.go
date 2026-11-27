@@ -473,7 +473,7 @@ func TestTeam05PublicTemplateConfigSectionsBlueprintOrder(t *testing.T) {
 	// key appended last.
 	got := team05PublicTemplateConfig(json.RawMessage(`{"accentColor":"#123456","sections":{"faq":true,"about":true,"hero":true,"products":true,"categories":true,"newsletter":false,"deals":true}}`), "tpl-modern-1")
 	sections := sectionsOf(t, got)
-	wantKeys := []string{"hero", "categoryRail", "about", "products", "faq", "newsletter", "deals"}
+	wantKeys := []string{"hero", "categoryRail", "products", "about", "faq", "newsletter", "deals"}
 	if gotKeys := keysOf(sections); strings.Join(gotKeys, ",") != strings.Join(wantKeys, ",") {
 		t.Fatalf("dict-form order: got %v, want %v", gotKeys, wantKeys)
 	}
@@ -537,7 +537,7 @@ func TestTeam05PublicTemplateConfigSectionsBlueprintOrder(t *testing.T) {
 	// keys alphabetically — the same scrambled order jsonb delivers)
 	// and must come out in exactly blueprint order.
 	blueprints := map[string][]string{
-		"tpl-modern-1":     {"announcement", "hero", "trustStrip", "categoryRail", "featured", "banners", "bestsellers", "about", "testimonials", "products", "faq", "newsletter"},
+		"tpl-modern-1":     {"announcement", "hero", "categoryRail", "products", "featured", "banners", "bestsellers", "trustStrip", "about", "testimonials", "faq", "newsletter"},
 		"tpl-electronic-1": {"announcement", "hero", "categoryRail", "deals", "timedDeals", "banners", "bestsellers", "brands", "discounted", "testimonials", "faq", "products"},
 		"tpl-fashion-1":    {"announcement", "hero", "categoryRail", "products", "lookbook", "about"},
 		"tpl-digikala-1":   {"announcement", "hero", "categoryRail", "deals", "timedDeals", "banners", "brands", "bestsellers", "discounted", "topRated", "campaign", "faq", "products"},

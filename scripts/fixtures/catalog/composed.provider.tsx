@@ -71,6 +71,11 @@ const products = Array.from({ length: 24 }, (_, index) => ({
   image: '/templates/fashion/knitwear.webp',
 } as ProductDto));
 if (routeParams.has('modern-stock-filter')) products[1].stock = 0;
+if (routeParams.has('modern-support-order')) {
+  products.slice(3, 8).forEach((product, index) => {
+    product.category = ['پوشاک', 'زیبایی', 'خانه', 'ورزش', 'کتاب'][index];
+  });
+}
 if (routeParams.has('promo-badges')) {
   Object.assign(products[0], {
     campaignName: 'پیشنهاد شگفت‌انگیز پایان هفته برای کالاهای دیجیتال',
@@ -129,8 +134,11 @@ const seller = {
     },
   } : routeParams.has('modern-support-order') ? {
     templateConfig: {
-      sections: ['hero', 'faq', 'newsletter', 'products', 'brands'].map(key => ({ key, enabled: true })),
-      custom: { faqItems: [{ q: 'ارسال چقدر طول می‌کشد؟', a: 'زمان ارسال در سبد خرید مشخص می‌شود.' }] },
+      sections: ['trustStrip', 'featured', 'faq', 'newsletter', 'products', 'hero', 'brands', 'categoryRail'].map(key => ({ key, enabled: true })),
+      custom: {
+        trustItems: [{ title: 'امکان پیگیری سفارش', subtitle: 'وضعیت سفارش را در حساب خود ببینید.' }],
+        faqItems: [{ q: 'ارسال چقدر طول می‌کشد؟', a: 'زمان ارسال در سبد خرید مشخص می‌شود.' }],
+      },
     },
   } : {}),
   signedContractVersion: routeParams.has('renew-contract') ? 1 : 2,

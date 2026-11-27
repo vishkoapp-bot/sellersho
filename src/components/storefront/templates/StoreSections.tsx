@@ -543,6 +543,9 @@ export const NewsletterSection: React.FC<{
         <form onSubmit={submit} className="flex gap-2">
           <input
             type="tel"
+            name="mobile"
+            autoComplete="tel-national"
+            aria-label="شماره موبایل"
             dir="ltr"
             value={mobile}
             onChange={(e) => setMobile(e.target.value)}

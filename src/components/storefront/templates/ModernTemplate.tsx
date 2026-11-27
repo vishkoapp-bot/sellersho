@@ -1,6 +1,6 @@
 import { StorefrontCatalogue } from './StorefrontCatalogue';
 import { StorefrontHero } from './StorefrontHero';
-import React from 'react';
+import React, { useId, useState } from 'react';
 import { ArrowLeft, LayoutGrid, Package, Star } from 'lucide-react';
 import type { Product } from '../../../types';
 import type { StorefrontTemplateProps, TemplateConfig } from './templateTypes';
@@ -63,6 +63,8 @@ function CategoryMosaic({ groups, config, hasCatalogue }: {
   config: TemplateConfig;
   hasCatalogue: boolean;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const categoriesId = useId();
   if (groups.length === 0) return null;
   const shown = groups.slice(0, customCount(config, 'categoriesCount', 8));
   return (
@@ -71,7 +73,7 @@ function CategoryMosaic({ groups, config, hasCatalogue }: {
         <h2>{customText(config, 'categoriesTitle', 'دسته‌بندی‌ها')}</h2>
         {hasCatalogue && <a href="#products" className="modern-text-link" onClick={followStoreSection}>فهرست کالاها <ArrowLeft size={16} aria-hidden="true" /></a>}
       </div>
-      <div className="modern-category-grid" data-single={shown.length === 1}>
+      <div className="modern-category-grid" id={categoriesId} data-single={shown.length === 1} data-expanded={expanded}>
         {shown.map(group => {
           const images = [group.image, ...group.products.map(productImage)];
           const content = <>
@@ -89,6 +91,10 @@ function CategoryMosaic({ groups, config, hasCatalogue }: {
           ) : <div key={group.slug} className="modern-category">{content}</div>;
         })}
       </div>
+      {shown.length > 4 && <button type="button" className="modern-text-link modern-category-expand"
+        aria-expanded={expanded} aria-controls={categoriesId} onClick={() => setExpanded(value => !value)}>
+        {expanded ? 'نمایش دسته‌های کمتر' : 'نمایش همه دسته‌ها'}
+      </button>}
     </section>
   );
 }

@@ -345,8 +345,8 @@ function bp(templateId: string, tagline: string, sections: string[], custom: Tem
 
 export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
   'tpl-modern-1': bp('tpl-modern-1', 'مینیمال و آرام؛ تمرکز روی خودِ کالا', [
-    'announcement', 'hero', 'trustStrip', 'categoryRail', 'featured', 'banners',
-    'bestsellers', 'about', 'testimonials', 'products', 'faq', 'newsletter',
+    'announcement', 'hero', 'categoryRail', 'products', 'featured', 'banners',
+    'bestsellers', 'trustStrip', 'about', 'testimonials', 'faq', 'newsletter',
   ], {
     categoriesTitle: 'دسته‌بندی‌ها',
     featuredTitle: 'منتخب‌های فروشگاه',
@@ -454,16 +454,26 @@ export function resolveTemplateConfig(templateId: string, saved?: TemplateConfig
   for (const k of blueprint.sections) {
     if (!orderedKeys.includes(k)) orderedKeys.push(k);
   }
-  // Apply the end-of-page placement to existing Modern stores as well as new ones.
-  const fixedEndSections = templateId === 'tpl-modern-1' ? ['faq', 'newsletter'] : [];
-  const displayKeys = [...orderedKeys.filter(key => !fixedEndSections.includes(key)), ...fixedEndSections];
+  // Apply the shopping-first layout to older Modern configurations and the editor preview.
+  const fixedStartSections = templateId === 'tpl-modern-1'
+    ? ['announcement', 'hero', 'heroSlides', 'categoryRail', 'products', 'allProducts']
+    : [];
+  const fixedEndSections = templateId === 'tpl-modern-1'
+    ? ['trustStrip', 'about', 'testimonials', 'faq', 'newsletter']
+    : [];
+  const fixedSections = new Set([...fixedStartSections, ...fixedEndSections]);
+  const displayKeys = [
+    ...fixedStartSections.filter(key => orderedKeys.includes(key)),
+    ...orderedKeys.filter(key => !fixedSections.has(key)),
+    ...fixedEndSections.filter(key => orderedKeys.includes(key)),
+  ];
   const sections: TemplateSection[] = displayKeys.map((k) => {
     const savedSec = savedByKey.get(k);
     return {
       key: k,
       label: sectionLabel(k),
       toggleable: true,
-      orderable: !fixedEndSections.includes(k),
+      orderable: !fixedSections.has(k),
       defaultEnabled: blueprint.sections.includes(k),
       selfHidesWhenEmpty: true,
       enabled: savedSec ? savedSec.enabled !== false : blueprint.sections.includes(k),

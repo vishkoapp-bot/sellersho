@@ -33,18 +33,19 @@ test('dict-form sections resolve to blueprint order, never alphabetical', () => 
   assert.ok(enabledUnknown.indexOf('futureSection') < enabledUnknown.indexOf('faq'));
 });
 
-test('Modern moves support sections after saved catalogue and promotional sections', () => {
+test('Modern restores the shopping order and keeps saved promotional sections together', () => {
   const resolved = resolveTemplateConfig('tpl-modern-1', {
     sections: [
       { key: 'faq', enabled: true, label: 'faq', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
-      { key: 'hero', enabled: true, label: 'hero', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
-      { key: 'products', enabled: true, label: 'products', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
       { key: 'deals', enabled: true, label: 'deals', toggleable: true, orderable: true, defaultEnabled: false, selfHidesWhenEmpty: true },
+      { key: 'hero', enabled: true, label: 'hero', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
+      { key: 'products', enabled: false, label: 'products', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
+      { key: 'allProducts', enabled: true, label: 'allProducts', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
     ],
   });
   const enabled = orderedEnabledSections(resolved);
-  assert.deepEqual(enabled.slice(0, 3), ['hero', 'products', 'deals']);
-  assert.deepEqual(enabled.slice(-2), ['faq', 'newsletter']);
+  assert.deepEqual(enabled.slice(0, 6), ['announcement', 'hero', 'categoryRail', 'allProducts', 'deals', 'featured']);
+  assert.deepEqual(enabled.slice(-5), ['trustStrip', 'about', 'testimonials', 'faq', 'newsletter']);
   assert.ok(Array.isArray(resolved.sections) && resolved.sections.slice(-2).every(section => !section.orderable));
 });
 
@@ -56,7 +57,7 @@ test('Modern moves support sections after saved catalogue and promotional sectio
 // order. These lists must match the backend mirror table in
 // team05_store_handlers.go (team05TemplateBlueprintSections).
 const allBlueprints: Record<string, string[]> = {
-  'tpl-modern-1': ['announcement', 'hero', 'trustStrip', 'categoryRail', 'featured', 'banners', 'bestsellers', 'about', 'testimonials', 'products', 'faq', 'newsletter'],
+  'tpl-modern-1': ['announcement', 'hero', 'categoryRail', 'products', 'featured', 'banners', 'bestsellers', 'trustStrip', 'about', 'testimonials', 'faq', 'newsletter'],
   'tpl-electronic-1': ['announcement', 'hero', 'categoryRail', 'deals', 'timedDeals', 'banners', 'bestsellers', 'brands', 'discounted', 'testimonials', 'faq', 'products'],
   'tpl-fashion-1': ['announcement', 'hero', 'categoryRail', 'products', 'lookbook', 'about'],
   'tpl-digikala-1': ['announcement', 'hero', 'categoryRail', 'deals', 'timedDeals', 'banners', 'brands', 'bestsellers', 'discounted', 'topRated', 'campaign', 'faq', 'products'],

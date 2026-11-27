@@ -770,7 +770,7 @@ export const SellerTemplateTab: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => moveSection(idx, -1)}
-                          disabled={idx === 0}
+                          disabled={idx === 0 || sections[idx - 1].orderable === false}
                           aria-label="انتقال به بالا"
                           className="rounded-md p-1 text-slate-500 hover:bg-slate-100 disabled:opacity-30"
                         >
@@ -791,7 +791,7 @@ export const SellerTemplateTab: React.FC = () => {
                       </span>
                       <div className="min-w-0 flex-1">
                         <p className={`truncate text-xs font-bold ${enabled ? 'text-slate-800' : 'text-slate-400'}`}>{sec.label}</p>
-                        {sec.orderable === false && <p className="mt-1 text-[11px] text-slate-500">پایین ویترین</p>}
+                        {sec.orderable === false && <p className="mt-1 text-[11px] text-slate-500">جای ثابت در ویترین</p>}
                       </div>
                       <Switch checked={enabled} onChange={() => toggleSection(idx)} ariaLabel={`نمایش بخش ${sec.label}`} />
                       <button

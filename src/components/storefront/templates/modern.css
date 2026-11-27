@@ -39,6 +39,7 @@
 .modern-category-caption h3 { font-size: clamp(.82rem, .76rem + .25vw, 1rem); font-weight: 800; }
 .modern-category-caption p { font-size: .75rem; color: var(--fashion-muted); }
 .modern-category-caption svg { color: var(--fashion-accent); }
+.modern-category-expand { display: none; }
 
 .modern-spotlight { display: grid; grid-template-columns: minmax(0, 1fr); overflow: hidden; border: 1px solid var(--fashion-line); border-radius: 20px; background: #fff; }
 .modern-spotlight-image { aspect-ratio: 5 / 3; }
@@ -64,8 +65,35 @@
 .fashion-footer[data-storefront-theme="tpl-modern-1"] { border-top-color: var(--fashion-line); background: #edf0e7; }
 
 @media (max-width: 639px) {
+  .modern-showcase .modern-sections > * + * { margin-block-start: 20px; }
+  .modern-showcase .showcase-hero-copy { padding: 16px; }
+  .modern-showcase .showcase-hero-copy h1 { font-size: clamp(1.35rem, 5.4vw, 1.8rem); }
+  .modern-showcase .showcase-hero-actions { margin-block-start: 8px; }
+  .modern-showcase .showcase-hero[data-custom-image="false"]:has(.showcase-hero-media img) {
+    grid-template-columns: minmax(0, 1fr) clamp(72px, 25vw, 136px);
+  }
+  .modern-showcase .showcase-hero[data-custom-image="false"] .showcase-hero-media {
+    align-self: center;
+    margin-inline-end: 10px;
+    padding: 4px;
+    border-radius: 10px;
+  }
+  .modern-showcase .showcase-hero[data-custom-image="false"] .showcase-hero-media img { aspect-ratio: 1; border-radius: 7px; }
+  .modern-showcase .showcase-hero[data-custom-image="false"] .showcase-hero-media img ~ img { display: none; }
+  .modern-showcase .showcase-hero[data-custom-image="true"] .showcase-hero-media { block-size: clamp(82px, 25vw, 142px); }
+  .modern-showcase .showcase-hero[data-custom-image="true"] .showcase-hero-media img { aspect-ratio: auto; }
+  .modern-category-grid[data-expanded="false"] > :nth-child(n + 5) { display: none; }
+  .modern-category { flex-direction: row; min-height: 52px; align-items: center; gap: 6px; }
+  .modern-category-image { flex: 0 0 34px; aspect-ratio: 1; border-radius: 7px; }
+  .modern-category-image svg { width: 18px; }
+  .modern-category-caption { min-inline-size: 0; padding: 3px 0; }
+  .modern-category-caption svg { width: 13px; }
+  .modern-category-expand { display: inline-flex; }
   .modern-showcase .fashion-search-field { grid-column: 1 / -1; }
   .modern-showcase .fashion-sort-field { justify-self: start; }
+  .modern-showcase .fashion-catalogue-filters { flex-wrap: nowrap; overflow-x: auto; }
+  .modern-showcase .fashion-catalogue-filters button { flex: 0 0 auto; padding-inline: 10px; }
+  .modern-showcase .fashion-catalogue-filters button:focus-visible { outline-offset: -2px; }
   .modern-availability { justify-self: end; }
 }
 @media (min-width: 640px) {

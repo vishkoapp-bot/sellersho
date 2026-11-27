@@ -13,13 +13,23 @@ const themes = {
   digikala: 'rgb(248, 246, 244)',
 };
 
-test('Modern renders the catalogue before FAQ and newsletter even with an older saved layout', () =>
-  visit(`${storefront}?template=modern&modern-support-order`, 390, async page => {
+test('Modern makes categories and the catalogue reachable early on narrow screens with an older layout', () =>
+  visit(`${storefront}?template=modern&modern-support-order`, 320, async page => {
     await page.waitForSelector(items);
     await page.waitForSelector('[data-testid="store-newsletter"]');
-    const order = await page.$$eval('main.modern-showcase [data-testid="store-products"], main.modern-showcase [data-testid="store-faq"], main.modern-showcase [data-testid="store-newsletter"]', sections =>
+    const order = await page.$$eval('.modern-sections > section[data-testid]', sections =>
       sections.map(section => section.getAttribute('data-testid')));
-    assert.deepEqual(order, ['store-products', 'store-faq', 'store-newsletter']);
+    assert.deepEqual(order.slice(0, 5), ['store-hero-slider', 'store-category-mosaic', 'store-products', 'store-featured', 'store-trust-strip']);
+    assert.deepEqual(order.slice(-2), ['store-faq', 'store-newsletter']);
+    const category = 'a.modern-category';
+    assert.equal(await page.$$eval(category, cards => cards.filter(card => card.getClientRects().length).length), 4);
+    const start = await page.$eval('#products', section => section.getBoundingClientRect().top);
+    assert.ok(start < await page.evaluate(() => innerHeight - 60), `catalogue starts at ${start}px`);
+    await page.click('.modern-category-expand');
+    assert.equal(await page.$$eval(category, cards => cards.filter(card => card.getClientRects().length).length), 7);
+    await page.click(`${category}[data-category="کتاب"]`);
+    await page.waitForFunction(selector => document.querySelectorAll(selector).length === 1, {}, items);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 320);
   }));
 
 test('modern keeps its category links, spotlight and availability filter usable on a narrow display', () =>

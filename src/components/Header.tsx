@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Bell, ChevronLeft, Heart, LayoutGrid, Package, Search, ShoppingBag, Truck, User, X } from 'lucide-react';
 import { activeStoreSlugOf, expandCategorySlugsWithAncestors, useActiveStoreCategorySlugs, useStore, useStoreManager } from '../context/StoreContext';
 import { mapBackendProduct } from '../context/ProductContext';
@@ -6,7 +6,7 @@ import { catalogApi, type ProductDto } from '../services/catalogApi';
 import { cardPriceOf } from '../utils/cardPrice';
 import { followStoreLink } from '../utils/followStoreLink';
 import { buildProductUrl, pathForView } from '../utils/routing';
-import { NotificationDrawer } from './common/NotificationDrawer';
+const NotificationDrawer = lazy(() => import('./common/NotificationDrawer').then(module => ({ default: module.NotificationDrawer })));
 
 export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky = true, mainId }) => {
   const {
@@ -238,7 +238,11 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
         </div>
       </nav>
 
-      <NotificationDrawer central isOpen={isNotifOpen} onClose={() => setIsNotifOpen(false)} />
+      {isNotifOpen && (
+        <Suspense fallback={<p className="central-overlay-loading" role="status">در حال بارگذاری اعلان‌ها…</p>}>
+          <NotificationDrawer central isOpen={isNotifOpen} onClose={() => setIsNotifOpen(false)} />
+        </Suspense>
+      )}
     </header>
   );
 };

@@ -30,6 +30,17 @@ test('checkout names its next step and keeps the delivery form within a narrow v
     assert.equal(layout.width, 320);
     assert.equal(layout.contentWidth, 320);
     assert.match(layout.step ?? '', /نشانی و ثبت/);
+
+    // The lazily loaded cart must keep the delivery draft between openings.
+    const nameField = '#cart-checkout-full-name';
+    await page.$eval(nameField, input => (input as HTMLInputElement).select());
+    await page.type(nameField, 'Test Recipient');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector(cart, { hidden: true });
+    await page.click('.central-bottom-nav button[aria-label*="سبد خرید"]');
+    await clickText(page, 'ادامه به نشانی و ارسال', `${cart} button`);
+    await page.waitForSelector(nameField, { visible: true });
+    assert.equal(await page.$eval(nameField, input => (input as HTMLInputElement).value), 'Test Recipient');
   }));
 
 test('central notifications on narrow screens match the storefront and return focus on Escape', () =>

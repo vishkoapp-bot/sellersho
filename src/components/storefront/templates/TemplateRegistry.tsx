@@ -1,12 +1,6 @@
 import React from 'react';
 import type { StorefrontTemplateProps } from './templateTypes';
-import { ModernTemplate } from './ModernTemplate';
 
-// Team 08 live parity (D04): template registry. Live mapping (H4):
-// tpl-digikala-1 / tpl-fashion-1 / tpl-electronic-1 / tpl-tech-1 -> lazy
-// chunks; tpl-modern-1 -> component inside the main bundle (Cv). This
-// registry reproduces exactly that split: ModernTemplate is statically
-// imported (main bundle); the other four are React.lazy chunks.
 // Accent defaults are the live Ue map. tpl-tech-1 has NO accent in the
 // recovered Ue evidence, so it has no entry here and falls back to the
 // templateConfig accent or the platform theme colour; inventing a tech
@@ -39,6 +33,7 @@ export function resolveTemplateAccent(templateId: string, configAccent?: string)
   return accent || '#5d44f8';
 }
 
+const ModernTemplate = React.lazy(() => import('./ModernTemplate').then(module => ({ default: module.ModernTemplate })));
 const DigikalaTemplate = React.lazy(() => import('./DigikalaTemplate'));
 const FashionTemplate = React.lazy(() => import('./FashionTemplate'));
 const ElectronicTemplate = React.lazy(() => import('./ElectronicTemplate'));
@@ -78,7 +73,6 @@ export const StorefrontTemplate: React.FC<
     ) : (
       <TechTemplate {...props} />
     );
-  if (templateId === 'tpl-modern-1') return body;
   return (
     <React.Suspense fallback={<div className="p-6 text-center text-xs text-slate-500">در حال بارگذاری قالب ویترین…</div>}>
       {body}

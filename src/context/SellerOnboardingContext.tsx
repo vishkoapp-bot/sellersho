@@ -16,7 +16,11 @@ export function makeSellerSignatureCode() {
 function useSellerOnboardingState() {
   const [isOpen, setOpen] = useState(false);
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
-  const [formData, setFormData] = useState(emptySellerOnboardingForm);
+  const [formData, setFormData] = useState(() => {
+    // Capture referral links before navigation or the first opening of the form.
+    const referralCode = typeof window === 'undefined' ? '' : new URLSearchParams(window.location.search).get('ref')?.trim().toUpperCase();
+    return referralCode ? { ...emptySellerOnboardingForm, referralCode } : emptySellerOnboardingForm;
+  });
   const [contractAccepted, setContractAccepted] = useState(false);
   const [signatureCode, setSignatureCode] = useState('');
   const setIsOpen = useCallback((open: boolean) => {

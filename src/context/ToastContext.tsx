@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import { CheckCircle2, AlertCircle, AlertTriangle, Info, X } from 'lucide-react';
-import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
 
@@ -22,7 +21,6 @@ const ToastContext = createContext<ToastContextType | undefined>(undefined);
 
 export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const reduceMotion = useReducedMotion();
 
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -48,7 +46,6 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       {/* Floating Toast Notification Container pinned inside viewport */}
       <div data-toast-stack aria-live="polite" aria-relevant="additions" className="fixed top-4 inset-x-0 max-w-[480px] mx-auto z-[10000] pointer-events-none px-3 flex flex-col gap-2">
-        <AnimatePresence>
           {toasts.map((toast) => {
             const styles = {
               success: 'bg-slate-900/95 text-white border-emerald-500/40',
@@ -72,13 +69,9 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             }[toast.type];
 
             return (
-              <motion.div
+              <div
                 key={toast.id}
-                initial={reduceMotion ? false : { opacity: 0, y: 16, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -10, scale: 0.95 }}
-                transition={{ duration: reduceMotion ? 0 : 0.2 }}
-                className={`rounded-2xl border py-1.5 ps-3 pe-1.5 shadow-xl backdrop-blur-md flex items-center justify-between gap-2.5 ${styles}`}
+                className={`toast-message rounded-2xl border py-1.5 ps-3 pe-1.5 shadow-xl backdrop-blur-md flex items-center justify-between gap-2.5 ${styles}`}
               >
                 <div className="flex items-center gap-2 min-w-0">
                   <Icon aria-hidden="true" className={`size-4 shrink-0 ${iconColor}`} />
@@ -94,10 +87,9 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 >
                   <X aria-hidden="true" className="size-4" strokeWidth={1.5} />
                 </button>
-              </motion.div>
+              </div>
             );
           })}
-        </AnimatePresence>
       </div>
     </ToastContext.Provider>
   );

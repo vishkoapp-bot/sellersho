@@ -49,10 +49,10 @@ export function batch8Browser({
     editorialBanner = await readFile('public/storefront/campaigns/selersho-editorial-digital-v1.webp');
     if (inlineVazirmatn) {
       // Geometry tests need the app font; the hermetic browser aborts asset requests.
-      const sources = [...new Set([...styles.matchAll(/(?:[^"'()\s]*\/)?(Vazirmatn-[A-Za-z]+\.woff2)/g)].map(match => match[0]))];
-      if (!sources.length) throw new Error('Missing Vazirmatn asset references in compiled fixture styles');
+      const sources = new Set(styles.match(/(?:[^"'()\s]*\/)?Vazirmatn(?:\[wght\]|%5Bwght%5D)\.woff2/gi));
+      if (!sources.size) throw new Error('Missing Vazirmatn asset references in compiled fixture styles');
       for (const source of sources) {
-        const file = source.split('/').at(-1)!;
+        const file = decodeURIComponent(source.split('/').at(-1)!);
         const font = await readFile(join('node_modules/vazirmatn/fonts/webfonts', file));
         styles = styles.replaceAll(source, `data:font/woff2;base64,${font.toString('base64')}`);
       }

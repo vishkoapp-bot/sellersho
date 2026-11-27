@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useRef } from 'react';
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { AuthProvider } from './context/AuthContext';
 import { ProductProvider } from './context/ProductContext';
 import { CartProvider } from './context/CartContext';
@@ -15,37 +15,34 @@ import { GitDeployProbe } from './components/GitDeployProbe';
 import { SpecialDealsSlider } from './components/SpecialDealsSlider';
 import { HomeFeedSections } from './components/HomeFeedSections';
 import { Footer } from './components/Footer';
-import { ProductDetailModal } from './components/ProductDetailModal';
-import { CartDrawer } from './components/CartDrawer';
 import { SellerOnboardingProvider } from './context/SellerOnboardingContext';
-import { SellerOnboardingModal } from './components/SellerOnboardingModal';
-import { OrderTrackingModal } from './components/OrderTrackingModal';
 import { BottomNav } from './components/BottomNav';
-import { StorefrontBottomNav } from './components/storefront/SellerStorefrontFooter';
 import { storeApi } from './services/storeApi';
 import { defaultPanelForUser, panelsForCapabilities, useAuth, type AuthenticatedPanel } from './context/AuthContext';
 
-// Customer-Facing Priority 1 Views
-import { ProductDetailView } from './components/views/ProductDetailView';
-import { SellerStorefrontHeader } from './components/storefront/SellerStorefrontHeader';
-import { SellerStorefrontFooter } from './components/storefront/SellerStorefrontFooter';
-import { CatalogView } from './components/views/CatalogView';
-import { CategoriesTreeView } from './components/views/CategoriesTreeView';
-import { CustomerProfileView } from './components/views/CustomerProfileView';
-import { CustomerOrdersView } from './components/views/CustomerOrdersView';
-import { CustomerWishlistView } from './components/views/CustomerWishlistView';
-import { StaticPageView } from './components/views/StaticPageView';
-import { SupplierLandingView } from './components/views/SupplierLandingView';
-import { DropshipperLandingView } from './components/views/DropshipperLandingView';
-
-// Phase 2, 3, 4, 5, 6 & 7 Components
-import { SellerStorefrontView } from './components/storefront/SellerStorefrontView';
 import { NotFoundView } from './components/NotFoundView';
-import { StoreUnsubscribeView } from './components/storefront/StoreUnsubscribeView';
 import { SeoManager } from './seo/SeoManager';
-import { AuthModal } from './components/auth/AuthModal';
 import { isMockMode } from './services/apiClient';
 
+const ProductDetailView = lazy(() => import('./components/views/ProductDetailView').then(module => ({ default: module.ProductDetailView })));
+const CatalogView = lazy(() => import('./components/views/CatalogView').then(module => ({ default: module.CatalogView })));
+const CategoriesTreeView = lazy(() => import('./components/views/CategoriesTreeView').then(module => ({ default: module.CategoriesTreeView })));
+const CustomerProfileView = lazy(() => import('./components/views/CustomerProfileView').then(module => ({ default: module.CustomerProfileView })));
+const CustomerOrdersView = lazy(() => import('./components/views/CustomerOrdersView').then(module => ({ default: module.CustomerOrdersView })));
+const CustomerWishlistView = lazy(() => import('./components/views/CustomerWishlistView').then(module => ({ default: module.CustomerWishlistView })));
+const StaticPageView = lazy(() => import('./components/views/StaticPageView').then(module => ({ default: module.StaticPageView })));
+const SupplierLandingView = lazy(() => import('./components/views/SupplierLandingView').then(module => ({ default: module.SupplierLandingView })));
+const DropshipperLandingView = lazy(() => import('./components/views/DropshipperLandingView').then(module => ({ default: module.DropshipperLandingView })));
+const SellerStorefrontView = lazy(() => import('./components/storefront/SellerStorefrontView').then(module => ({ default: module.SellerStorefrontView })));
+const SellerStorefrontHeader = lazy(() => import('./components/storefront/SellerStorefrontHeader').then(module => ({ default: module.SellerStorefrontHeader })));
+const SellerStorefrontFooter = lazy(() => import('./components/storefront/SellerStorefrontFooter').then(module => ({ default: module.SellerStorefrontFooter })));
+const StorefrontBottomNav = lazy(() => import('./components/storefront/SellerStorefrontFooter').then(module => ({ default: module.StorefrontBottomNav })));
+const StoreUnsubscribeView = lazy(() => import('./components/storefront/StoreUnsubscribeView').then(module => ({ default: module.StoreUnsubscribeView })));
+const ProductDetailModal = lazy(() => import('./components/ProductDetailModal').then(module => ({ default: module.ProductDetailModal })));
+const CartDrawer = lazy(() => import('./components/CartDrawer').then(module => ({ default: module.CartDrawer })));
+const SellerOnboardingModal = lazy(() => import('./components/SellerOnboardingModal').then(module => ({ default: module.SellerOnboardingModal })));
+const OrderTrackingModal = lazy(() => import('./components/OrderTrackingModal').then(module => ({ default: module.OrderTrackingModal })));
+const AuthModal = lazy(() => import('./components/auth/AuthModal').then(module => ({ default: module.AuthModal })));
 const PanelsPreview = lazy(() => import('./components/PanelsPreview').then(module => ({ default: module.PanelsPreview })));
 const SellerDashboardView = lazy(() => import('./components/seller/SellerDashboardView').then(module => ({ default: module.SellerDashboardView })));
 const SupplierDashboardView = lazy(() => import('./components/supplier/SupplierDashboardView').then(module => ({ default: module.SupplierDashboardView })));
@@ -54,6 +51,14 @@ const AdminDashboardView = lazy(() => import('./components/admin/AdminDashboardV
 
 function PanelLoading() {
   return <div className="central-route-loading" role="status">در حال بارگذاری پنل…</div>;
+}
+
+function StorePageLoading({ children = 'در حال بارگذاری…' }: React.PropsWithChildren) {
+  return <main id="main-content" tabIndex={-1} className="central-wrap central-product-loading"><p role="status">{children}</p></main>;
+}
+
+function OverlayLoading() {
+  return <p className="central-overlay-loading" role="status">در حال بارگذاری…</p>;
 }
 
 const workspaceLabels: Record<AuthenticatedPanel, string> = {
@@ -68,9 +73,11 @@ function CustomerAccountSignIn({ onBack, central }: { onBack: () => void; centra
   const signedIn = useRef(false);
   return (
     <main dir="rtl" className={central ? "min-h-dvh bg-[#f8f6ef]" : "min-h-dvh bg-[#f7f7fa]"}>
-      <AuthModal isOpen central={central} disableAutoNavigate roleTitle="ورود به حساب کاربری"
-        onSuccess={() => { signedIn.current = true; }}
-        onClose={() => { if (!signedIn.current) onBack(); }} />
+      <Suspense fallback={<p className="central-route-loading" role="status">در حال بارگذاری ورود…</p>}>
+        <AuthModal isOpen central={central} disableAutoNavigate roleTitle="ورود به حساب کاربری"
+          onSuccess={() => { signedIn.current = true; }}
+          onClose={() => { if (!signedIn.current) onBack(); }} />
+      </Suspense>
     </main>
   );
 }
@@ -98,9 +105,14 @@ export const AppContent: React.FC = () => {
     selectedCategory,
     searchQuery,
     openStorefront,
+    isCartOpen,
+    isTrackingModalOpen,
+    selectedProduct,
     isSellerModalOpen,
     setIsSellerModalOpen,
   } = useStore();
+  const [cartOpened, setCartOpened] = useState(false);
+  useEffect(() => { if (isCartOpen) setCartOpened(true); }, [isCartOpen]);
 
   const customerAccountView = activeView === 'customer_profile' || activeView === 'customer_orders' || activeView === 'customer_wishlist';
   const protectedPanel = customerAccountView ? 'customer' : (Object.keys(workspaceLabels) as AuthenticatedPanel[])
@@ -248,7 +260,7 @@ export const AppContent: React.FC = () => {
         {/* Developer & Multi-Role Navigation Bar */}
         <RoleSwitcherBar />
 
-        {/* View Switching based on active role & subpages */}
+        <Suspense fallback={<StorePageLoading />}>
         {activeView === 'seller_dashboard' ? (
           <Suspense fallback={<PanelLoading />}>
             <SellerDashboardView
@@ -297,9 +309,7 @@ export const AppContent: React.FC = () => {
             ) : (
               <>
                 <Header sticky={false} mainId="main-content" />
-                <main id="main-content" tabIndex={-1} className="central-wrap central-product-loading">
-                  <p role="status">در حال بارگذاری کالا…</p>
-                </main>
+                <StorePageLoading>در حال بارگذاری کالا…</StorePageLoading>
                 <Footer />
               </>
             )
@@ -323,20 +333,26 @@ export const AppContent: React.FC = () => {
           ) : (
             <>
               <Header sticky={false} mainId="main-content" />
-              <ProductDetailView product={currentProductDetail} onBack={backFromCentralProduct} />
+              <Suspense fallback={<StorePageLoading />}>
+                <ProductDetailView product={currentProductDetail} onBack={backFromCentralProduct} />
+              </Suspense>
               <Footer />
             </>
           )
         ) : activeView === 'catalog' ? (
           <>
             <Header mainId="main-content" />
-            <CatalogView onBack={() => setActiveView('customer')} />
+            <Suspense fallback={<StorePageLoading />}>
+              <CatalogView onBack={() => setActiveView('customer')} />
+            </Suspense>
             <Footer />
           </>
         ) : activeView === 'categories_tree' ? (
           <>
             <Header sticky={false} mainId="main-content" />
-            <CategoriesTreeView onBack={() => setActiveView('customer')} />
+            <Suspense fallback={<StorePageLoading />}>
+              <CategoriesTreeView onBack={() => setActiveView('customer')} />
+            </Suspense>
             <Footer />
           </>
         ) : activeView === 'customer_profile' ? (
@@ -352,7 +368,9 @@ export const AppContent: React.FC = () => {
           ) : (
             <>
               <Header sticky={false} mainId="main-content" />
-              <CustomerProfileView onBack={() => setActiveView('customer')} />
+              <Suspense fallback={<StorePageLoading />}>
+                <CustomerProfileView onBack={() => setActiveView('customer')} />
+              </Suspense>
               <Footer />
             </>
           )
@@ -369,7 +387,9 @@ export const AppContent: React.FC = () => {
           ) : (
             <>
               <Header sticky={false} mainId="main-content" />
-              <CustomerOrdersView onBack={() => setActiveView('customer')} />
+              <Suspense fallback={<StorePageLoading />}>
+                <CustomerOrdersView onBack={() => setActiveView('customer')} />
+              </Suspense>
               <Footer />
             </>
           )
@@ -386,7 +406,9 @@ export const AppContent: React.FC = () => {
           ) : (
             <>
               <Header sticky={false} mainId="main-content" />
-              <CustomerWishlistView onBack={() => setActiveView('customer')} />
+              <Suspense fallback={<StorePageLoading />}>
+                <CustomerWishlistView onBack={() => setActiveView('customer')} />
+              </Suspense>
               <Footer />
             </>
           )
@@ -403,20 +425,26 @@ export const AppContent: React.FC = () => {
           ) : (
             <>
               <Header sticky={false} mainId="main-content" />
-              <StaticPageView onBack={() => setActiveView('customer')} />
+              <Suspense fallback={<StorePageLoading />}>
+                <StaticPageView onBack={() => setActiveView('customer')} />
+              </Suspense>
               <Footer />
             </>
           )
         ) : activeView === 'supplier_landing' ? (
           <>
             <Header sticky={false} mainId="main-content" />
-            <SupplierLandingView onBack={() => setActiveView('customer')} />
+            <Suspense fallback={<StorePageLoading />}>
+              <SupplierLandingView onBack={() => setActiveView('customer')} />
+            </Suspense>
             <Footer />
           </>
         ) : activeView === 'dropshipper_landing' ? (
           <>
             <Header sticky={false} mainId="main-content" />
-            <DropshipperLandingView onBack={() => setActiveView('customer')} />
+            <Suspense fallback={<StorePageLoading />}>
+              <DropshipperLandingView onBack={() => setActiveView('customer')} />
+            </Suspense>
             <Footer />
           </>
         ) : (
@@ -432,13 +460,21 @@ export const AppContent: React.FC = () => {
             <Footer />
           </>
         )}
+        </Suspense>
 
-        {/* Global Modals & Drawers */}
-        <ProductDetailModal />
-        <CartDrawer />
-        <SellerOnboardingModal />
-        <OrderTrackingModal central={isCentralSite} />
-        {showStorefrontNav ? <StorefrontBottomNav /> : isCentralSite ? <BottomNav /> : null}
+        <Suspense fallback={<OverlayLoading />}>
+          {selectedProduct && <ProductDetailModal />}
+        </Suspense>
+        <Suspense fallback={<OverlayLoading />}>
+          {(isCartOpen || cartOpened) && <CartDrawer />}
+        </Suspense>
+        <Suspense fallback={<OverlayLoading />}>
+          {isSellerModalOpen && <SellerOnboardingModal />}
+        </Suspense>
+        <Suspense fallback={<OverlayLoading />}>
+          {isTrackingModalOpen && <OrderTrackingModal central={isCentralSite} />}
+        </Suspense>
+        {showStorefrontNav ? <Suspense fallback={null}><StorefrontBottomNav /></Suspense> : isCentralSite ? <BottomNav /> : null}
       </div>
     </div>
   );

@@ -4,12 +4,14 @@ import { ZoomIn, X, Package, ChevronLeft, ChevronRight } from 'lucide-react';
 import { toPersianDigits } from '../../../utils/formatters';
 import { SaleCountdown } from '../../common/SaleCountdown';
 import { FallbackImage } from '../../common/FallbackImage';
+import { CampaignDiscountBadge } from '../../common/CampaignDiscountBadge';
 
 interface Props {
   mainImage: string;
   images?: string[];
   title: string;
   discountPercent?: number;
+  campaignName?: string;
   fashion?: boolean;
   central?: boolean;
   // P0: when the variant image itself 404s, fall back to the product
@@ -26,6 +28,7 @@ export const ProductDetailGallery: React.FC<Props> = ({
   images = [],
   title,
   discountPercent = 0,
+  campaignName,
   fashion = false,
   central = false,
   fallbackImage,
@@ -181,16 +184,18 @@ export const ProductDetailGallery: React.FC<Props> = ({
       {/* Badges Row (live: flow row below the image) */}
       {discountPercent > 0 && (
       <div className="flex items-center gap-1.5 flex-wrap mt-2.5 px-1">
+        {central ? <CampaignDiscountBadge central campaignName={campaignName} discountPercent={discountPercent} /> : (
           <span className={fashion ? 'text-[10px] font-black bg-rose-500 text-white px-2.5 py-1 rounded-none' : 'text-[10px] font-black bg-rose-500 text-white px-2.5 py-1 rounded-full'}>
             {toPersianDigits(discountPercent)}٪ تخفیف ویژه
           </span>
+        )}
       </div>
       )}
       {/* P1(c): sale countdown on its own line under the badges (390px
           is too narrow to sit next to the badge). */}
       {saleEndsAt && (
         <div className="mt-1.5 px-1">
-          <SaleCountdown endsAt={saleEndsAt} startsAt={saleStartsAt} fashion={fashion} />
+          <SaleCountdown endsAt={saleEndsAt} startsAt={saleStartsAt} fashion={fashion} central={central} />
         </div>
       )}
 

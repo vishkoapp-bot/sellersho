@@ -1,12 +1,13 @@
 import React from 'react';
 import { Sparkles, Flame, Tag } from 'lucide-react';
-import { useStore } from '../../context/StoreContext';
+import { toPersianDigits } from '../../utils/formatters';
 
 interface CampaignDiscountBadgeProps {
   campaignName?: string;
   discountPercent?: number;
   size?: 'sm' | 'md' | 'lg';
   className?: string;
+  central?: boolean;
 }
 
 export const CampaignDiscountBadge: React.FC<CampaignDiscountBadgeProps> = ({
@@ -14,9 +15,8 @@ export const CampaignDiscountBadge: React.FC<CampaignDiscountBadgeProps> = ({
   discountPercent,
   size = 'md',
   className = '',
+  central = false,
 }) => {
-  const { toPersianDigits } = useStore();
-
   if (!campaignName && (!discountPercent || discountPercent <= 0)) {
     return null;
   }
@@ -24,6 +24,20 @@ export const CampaignDiscountBadge: React.FC<CampaignDiscountBadgeProps> = ({
   const cleanName = campaignName
     ? campaignName.replace(/\([^)]*\)/g, '').trim()
     : 'جشنواره تخفیف';
+
+  if (central) {
+    const title = campaignName ? cleanName : '';
+    if (!title && !(discountPercent && discountPercent > 0)) return null;
+    return (
+      <span className={`shop-badge shop-badge--campaign ${className}`}>
+        <Tag aria-hidden="true" />
+        <span className={size === 'sm' ? 'truncate' : 'min-w-0 break-words'}>{title || 'تخفیف ویژه'}</span>
+        {!!discountPercent && discountPercent > 0 && (
+          <bdi className="shop-badge-percent">{toPersianDigits(discountPercent)}٪</bdi>
+        )}
+      </span>
+    );
+  }
 
   if (size === 'sm') {
     return (

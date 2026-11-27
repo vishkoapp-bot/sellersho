@@ -426,6 +426,7 @@ export const ProductDetailView: React.FC<{ product: Product; onBack: () => void 
       images={displayProduct.images}
       title={displayProduct.title}
       discountPercent={displayProduct.discountPercent}
+      campaignName={displayProduct.campaignName}
       fashion={fashion}
       central={central}
       fallbackImage={displayBase.image}

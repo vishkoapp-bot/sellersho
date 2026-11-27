@@ -12,11 +12,12 @@ interface SaleCountdownProps {
   endsAt: string;
   startsAt?: string | null;
   fashion?: boolean;
+  central?: boolean;
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
-export const SaleCountdown: React.FC<SaleCountdownProps> = ({ endsAt, startsAt, fashion = false }) => {
+export const SaleCountdown: React.FC<SaleCountdownProps> = ({ endsAt, startsAt, fashion = false, central = false }) => {
   const [, setTick] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => setTick((t) => t + 1), 1000);
@@ -31,7 +32,7 @@ export const SaleCountdown: React.FC<SaleCountdownProps> = ({ endsAt, startsAt, 
     if (Number.isFinite(start) && start > now) {
       const date = new Date(startsAt).toLocaleDateString('fa-IR', { day: 'numeric', month: 'long' });
       return (
-        <span className={fashion ? 'text-[10px] font-bold text-[#737373]' : 'text-[10px] font-bold text-slate-500'}>
+        <span className={central ? 'shop-badge shop-badge--time' : fashion ? 'text-[10px] font-bold text-[#737373]' : 'text-[10px] font-bold text-slate-500'}>
           حراج از {toPersianDigits(date)} شروع می‌شود
         </span>
       );
@@ -48,7 +49,7 @@ export const SaleCountdown: React.FC<SaleCountdownProps> = ({ endsAt, startsAt, 
   return (
     <span
       data-testid="sale-countdown"
-      className={fashion ? 'text-[10px] font-bold text-[#1c1c1a]' : 'text-[10px] font-bold text-rose-600'}
+      className={central ? 'shop-badge shop-badge--time' : fashion ? 'text-[10px] font-bold text-[#1c1c1a]' : 'text-[10px] font-bold text-rose-600'}
     >
       {days > 0
         ? `پایان حراج تا ${toPersianDigits(days)} روز و ${clock}`

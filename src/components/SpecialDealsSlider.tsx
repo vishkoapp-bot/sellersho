@@ -34,7 +34,7 @@ export const SpecialDealsSlider: React.FC<SpecialDealsSliderProps> = ({ products
     return (
       <section id="Campaign_Home" data-testid="personalized-carousel-banner" className="central-deals" aria-labelledby="central-deals-title">
         <div className="central-section-title">
-          <h2 id="central-deals-title">کالاهای تخفیف‌دار</h2>
+          <h2 id="central-deals-title"><span className="shop-badge shop-badge--campaign" aria-hidden="true"><Tag /></span> کالاهای تخفیف‌دار</h2>
         </div>
         <ProductCarousel products={dealProducts} />
       </section>

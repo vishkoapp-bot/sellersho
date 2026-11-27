@@ -24,6 +24,7 @@ interface ProductCardProps {
 export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = true }) => {
   const { openProductDetail, addToCart, formatPrice, toPersianDigits, currentStore, routeStoreSlug, cart } = useStore();
   const published = isProductPublishedInStore(currentStore, product.id);
+  const central = !routeStoreSlug && currentStore?.ownerType !== 'dropshipper';
   // Card display price = the default variant's triple (owner decision, see utils/cardPrice).
   const displayPrice = cardPriceOf(product);
   // P1(a): secondary range line only; the main price above is untouched.
@@ -67,6 +68,12 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
           fallback={<Package className="w-10 h-10 text-slate-400" strokeWidth={1.5} aria-hidden="true" />}
         />
 
+        {central ? (
+          <div className="pointer-events-none absolute inset-x-2 top-2 z-10 flex flex-col items-start gap-1">
+            {displayPrice.discountPercent > 0 && product.campaignName && <CampaignDiscountBadge campaignName={product.campaignName} central size="sm" />}
+            {product.isOriginal === false && <span className="shop-badge shop-badge--notice">غیر اصل</span>}
+          </div>
+        ) : <>
         {displayPrice.discountPercent > 0 && (
           <div className="product-card-campaign pointer-events-none absolute top-2 right-2 z-10">
             <CampaignDiscountBadge
@@ -82,6 +89,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
             غیر اصل
           </div>
         )}
+        </>}
 
       </div>
 
@@ -142,7 +150,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
                   data-testid="cash-back-badge"
                   className="product-card-cashback flex items-center gap-0.5 text-[#6148fe] text-[11px] font-bold"
                 >
-                  <span>{toPersianDigits(product.cashbackPercent)}٪ <span className="product-card-cashback-note hidden">پاداش خرید</span></span>
+                  <span className={central ? 'shop-badge shop-badge--reward' : undefined}>{toPersianDigits(product.cashbackPercent)}٪ <span className="product-card-cashback-note hidden">پاداش خرید</span></span>
                 </div>
               )}
 

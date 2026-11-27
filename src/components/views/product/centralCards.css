@@ -113,12 +113,52 @@
   font-variant-numeric: tabular-nums;
 }
 
-:where(.central-site, .central-catalog, .central-pdp) .product-card-discount {
+:where(.central-site, .central-catalog, .central-pdp) :is(.shop-badge, .product-card-discount) {
   display: inline-flex;
   align-items: center;
-  min-height: 20px;
-  color: #823925;
-  background: #fbece2;
+  gap: .3rem;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 1.45rem;
+  padding: .15rem .45rem;
+  border: 1px solid transparent;
+  border-radius: .5rem;
+  font-size: .6875rem;
+  font-weight: 750;
+  line-height: 1.4;
+}
+
+:where(.central-site, .central-catalog, .central-pdp) .shop-badge--campaign {
+  background: var(--shop-gold, #efc771);
+  color: #362915;
+  border-color: #bf9348;
+}
+
+.shop-badge--campaign > svg { width: .8rem; height: .8rem; flex: none; }
+.shop-badge-percent {
+  border-inline-start: 1px solid #9d723e;
+  padding-inline-start: .3rem;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+:where(.central-site, .central-catalog, .central-pdp) .product-card-discount {
+  color: #563916;
+  background: #f8edda;
+  border-color: #e5d0ae;
+  font-variant-numeric: tabular-nums;
+}
+
+:where(.central-site, .central-catalog, .central-pdp) .shop-badge--notice {
+  background: var(--shop-paper, #fff);
+  border-color: #e5d0ae;
+  color: #684626;
+}
+
+:where(.central-site, .central-catalog, .central-pdp) :is(.shop-badge--reward, .shop-badge--time) {
+  background: var(--shop-soft, #edf2e9);
+  border-color: var(--shop-line, #dde2d7);
+  color: var(--shop-forest, #164638);
 }
 
 :where(.central-site, .central-catalog, .central-pdp) .product-card-offer {
@@ -127,13 +167,6 @@
 }
 
 :where(.central-site, .central-catalog, .central-pdp) .product-card-price-spacer { height: 24px; }
-
-:where(.central-site, .central-catalog, .central-pdp) .product-card-identity {
-  max-width: 76%;
-  border-radius: 7px;
-  background: #f9e8cd;
-  color: #74411c;
-}
 
 :where(.central-site, .central-catalog, .central-pdp) .product-card-status {
   display: inline-flex;

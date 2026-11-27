@@ -4,6 +4,35 @@ import { batch8Browser, clickText, waitText } from '../../../scripts/fixtures/ca
 
 const visit = batch8Browser({ inlineVazirmatn: true });
 const buy = 'button[aria-label="افزایش تعداد"]';
+
+test('central campaign and discount badges fit a narrow screen and keep the actual discount beside the old price', async () => {
+  const campaign = '.shop-badge--campaign';
+  const palette = 'rgb(239, 199, 113)';
+  await visit('/?category=all&promo-badges', 320, async page => {
+    const card = '[data-testid="product-item"]:has([href*="batch8-product-0"])';
+    await page.waitForSelector(card + ' ' + campaign);
+    const badges = await page.$eval(card, (node, selector) => {
+      const promo = node.querySelector(selector)!;
+      const notice = node.querySelector('.shop-badge--notice')!;
+      const media = node.querySelector('.product-card-media')!.getBoundingClientRect();
+      const box = promo.getBoundingClientRect();
+      return {
+        color: getComputedStyle(promo).backgroundColor,
+        fits: box.left >= media.left && box.right <= media.right && box.bottom <= notice.getBoundingClientRect().top,
+        campaignCount: node.querySelectorAll(selector).length,
+        priceBadge: node.querySelector('[data-testid="discount-badge"]')?.textContent?.trim(),
+      };
+    }, campaign);
+    assert.deepEqual(badges, { color: palette, fits: true, campaignCount: 1, priceBadge: '۲۰٪' });
+  });
+  await visit('/product/batch8-product-0?promo-badges', 320, async page => {
+    const badge = '.central-pdp-gallery ' + campaign;
+    await page.waitForSelector(badge);
+    assert.equal(await page.$eval(badge, node => getComputedStyle(node).backgroundColor), palette);
+    assert.equal(await page.$eval(badge + ' bdi', node => node.textContent), '۲۰٪');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 320);
+  });
+});
 test('a legacy product asks for a real model and ignores links to the parent placeholder', async () => {
   await visit('/product/batch8-product-0?legacy-parent&spnc=LEGACY-PARENT', 390, async page => {
     const options = '.central-pdp-options button';

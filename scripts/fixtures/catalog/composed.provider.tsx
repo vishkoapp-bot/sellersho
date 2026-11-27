@@ -70,6 +70,14 @@ const products = Array.from({ length: 24 }, (_, index) => ({
   isActive: true,
   image: '/templates/fashion/knitwear.webp',
 } as ProductDto));
+if (routeParams.has('promo-badges')) {
+  Object.assign(products[0], {
+    campaignName: 'پیشنهاد شگفت‌انگیز پایان هفته برای کالاهای دیجیتال',
+    originalPrice: 125000,
+    discountPercent: 20,
+    isOriginal: false,
+  });
+}
 if (routeParams.has('pdp-flow')) {
   const stock = routeParams.has('sold-out') ? 0 : 4;
   Object.assign(products[0], {

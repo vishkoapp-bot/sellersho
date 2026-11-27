@@ -21,7 +21,7 @@ export const NotFoundView: React.FC<{
   const isStore = variant === 'store';
   return (
     <div className="flex-1 flex flex-col bg-white min-h-screen">
-      {!isStore && <Header mainId="main-content" />}
+      {!isStore && <Header />}
       <main id={isStore ? undefined : 'main-content'} tabIndex={-1} className={`flex-1 flex flex-col items-center justify-center px-6 py-16 text-center ${isStore ? 'bg-[#FAF9F7]' : 'bg-[var(--shop-bg,#f8f6ef)] text-[var(--shop-ink,#172d26)]'}`}>
         <div className={`w-20 h-20 rounded-full flex items-center justify-center mb-5 ${isStore ? 'bg-stone-200/70' : 'bg-[var(--shop-soft,#edf2e9)]'}`}>
           <SearchX className={`w-10 h-10 ${isStore ? 'text-stone-400' : 'text-[var(--shop-forest,#164638)]'}`} strokeWidth={1.5} aria-hidden="true" />

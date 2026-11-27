@@ -308,7 +308,7 @@ export const AppContent: React.FC = () => {
               <div role="status" className="flex-1 flex items-center justify-center p-6 text-sm text-slate-600">در حال بارگذاری کالا…</div>
             ) : (
               <>
-                <Header sticky={false} mainId="main-content" />
+                <Header sticky={false} />
                 <StorePageLoading>در حال بارگذاری کالا…</StorePageLoading>
                 <Footer />
               </>
@@ -332,7 +332,7 @@ export const AppContent: React.FC = () => {
             </>
           ) : (
             <>
-              <Header sticky={false} mainId="main-content" />
+              <Header sticky={false} />
               <Suspense fallback={<StorePageLoading />}>
                 <ProductDetailView product={currentProductDetail} onBack={backFromCentralProduct} />
               </Suspense>
@@ -341,7 +341,7 @@ export const AppContent: React.FC = () => {
           )
         ) : activeView === 'catalog' ? (
           <>
-            <Header mainId="main-content" />
+            <Header />
             <Suspense fallback={<StorePageLoading />}>
               <CatalogView onBack={() => setActiveView('customer')} />
             </Suspense>
@@ -349,7 +349,7 @@ export const AppContent: React.FC = () => {
           </>
         ) : activeView === 'categories_tree' ? (
           <>
-            <Header sticky={false} mainId="main-content" />
+            <Header sticky={false} />
             <Suspense fallback={<StorePageLoading />}>
               <CategoriesTreeView onBack={() => setActiveView('customer')} />
             </Suspense>
@@ -367,7 +367,7 @@ export const AppContent: React.FC = () => {
             </>
           ) : (
             <>
-              <Header sticky={false} mainId="main-content" />
+              <Header sticky={false} />
               <Suspense fallback={<StorePageLoading />}>
                 <CustomerProfileView onBack={() => setActiveView('customer')} />
               </Suspense>
@@ -386,7 +386,7 @@ export const AppContent: React.FC = () => {
             </>
           ) : (
             <>
-              <Header sticky={false} mainId="main-content" />
+              <Header sticky={false} />
               <Suspense fallback={<StorePageLoading />}>
                 <CustomerOrdersView onBack={() => setActiveView('customer')} />
               </Suspense>
@@ -405,7 +405,7 @@ export const AppContent: React.FC = () => {
             </>
           ) : (
             <>
-              <Header sticky={false} mainId="main-content" />
+              <Header sticky={false} />
               <Suspense fallback={<StorePageLoading />}>
                 <CustomerWishlistView onBack={() => setActiveView('customer')} />
               </Suspense>
@@ -424,7 +424,7 @@ export const AppContent: React.FC = () => {
             </>
           ) : (
             <>
-              <Header sticky={false} mainId="main-content" />
+              <Header sticky={false} />
               <Suspense fallback={<StorePageLoading />}>
                 <StaticPageView onBack={() => setActiveView('customer')} />
               </Suspense>
@@ -433,7 +433,7 @@ export const AppContent: React.FC = () => {
           )
         ) : activeView === 'supplier_landing' ? (
           <>
-            <Header sticky={false} mainId="main-content" />
+            <Header sticky={false} />
             <Suspense fallback={<StorePageLoading />}>
               <SupplierLandingView onBack={() => setActiveView('customer')} />
             </Suspense>
@@ -441,7 +441,7 @@ export const AppContent: React.FC = () => {
           </>
         ) : activeView === 'dropshipper_landing' ? (
           <>
-            <Header sticky={false} mainId="main-content" />
+            <Header sticky={false} />
             <Suspense fallback={<StorePageLoading />}>
               <DropshipperLandingView onBack={() => setActiveView('customer')} />
             </Suspense>
@@ -449,7 +449,7 @@ export const AppContent: React.FC = () => {
           </>
         ) : (
           <>
-            <Header mainId="main-content" />
+            <Header />
             <GitDeployProbe />
             <main id="main-content" tabIndex={-1} className="central-wrap central-home">
               <HeroSlider />

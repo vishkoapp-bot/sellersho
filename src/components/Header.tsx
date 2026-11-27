@@ -8,7 +8,7 @@ import { followStoreLink } from '../utils/followStoreLink';
 import { buildProductUrl, pathForView } from '../utils/routing';
 const NotificationDrawer = lazy(() => import('./common/NotificationDrawer').then(module => ({ default: module.NotificationDrawer })));
 
-export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky = true, mainId }) => {
+export const Header: React.FC<{ sticky?: boolean }> = ({ sticky = true }) => {
   const {
     currentStore, routeStoreSlug, cartItemsCount, setIsCartOpen, searchQuery,
     openCatalogCategory, setIsTrackingModalOpen, customerUser, setActiveView,
@@ -112,7 +112,6 @@ export const Header: React.FC<{ sticky?: boolean; mainId?: string }> = ({ sticky
 
   return (
     <header ref={headerRef} className={`central-header ${sticky ? 'central-header--sticky' : ''}`}>
-      {mainId && <a className="central-skip" href={`#${mainId}`}>رفتن به محتوای اصلی</a>}
       <div className="central-wrap central-header-main">
         <a className="central-wordmark" href="/" onClick={event => followStoreLink(event, () => setActiveView('customer'))}>
           <span className="central-mark"><ShoppingBag size={22} aria-hidden="true" /></span>

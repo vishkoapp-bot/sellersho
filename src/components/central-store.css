@@ -149,8 +149,6 @@
 .central-menu-detail .central-menu-all { grid-column: 1 / -1; font-weight: 900; }
 .central-menu-panel :is(a, button):hover, .central-menu-panel button[aria-pressed="true"] { background: #edf2eb; color: #164638; }
 
-.central-skip { position: absolute; inset-inline-start: 18px; top: 8px; padding: 10px 14px; background: #164638; color: white; border-radius: 8px; z-index: 100; transform: translateY(-150%); }
-.central-skip:focus { transform: translateY(0); }
 .central-site :is(a, button, input, select, textarea, summary):focus-visible { outline: 2px solid var(--shop-focus, #98601c); outline-offset: 3px; }
 .central-site main :is(a, button, input, select, textarea, summary) { scroll-margin-block: calc(var(--shop-header-height, 0px) + 12px) 12px; }
 .central-search input:focus-visible { outline: none; }

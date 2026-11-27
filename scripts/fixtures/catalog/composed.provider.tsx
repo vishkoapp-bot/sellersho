@@ -152,6 +152,7 @@ const user = { id: 'fixture-user', mobile: '09120000000', fullName: routeParams.
 
 let release: ((outcome: 'success' | 'error') => void) | undefined;
 let holdInitialProfile = routeParams.has('holdInitialProfile');
+let rejectInitialProfile = routeParams.has('rejectInitialProfile');
 let resolveInitialProfile: (() => void) | undefined;
 const fixture = {
   registrations: 0,
@@ -285,6 +286,10 @@ authApi.getMe = async () => {
     await new Promise<void>(resolve => { resolveInitialProfile = resolve; });
   } else {
     await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  if (rejectInitialProfile) {
+    rejectInitialProfile = false;
+    throw new ApiError(0, 'Fixture session unavailable');
   }
   return { ...user, userId: user.id } as Awaited<ReturnType<typeof authApi.getMe>>;
 };

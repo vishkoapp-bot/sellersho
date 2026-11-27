@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { useToast } from '../../context/ToastContext';
 import { adminRolesForCapabilities, panelsForCapabilities, useAuth, type AuthenticatedPanel } from '../../context/AuthContext';
@@ -9,6 +9,18 @@ import { toPersianDigits } from '../../utils/formatters';
 import { HelpExplainer } from '../common/HelpExplainer';
 import { pathForView } from '../../utils/routing';
 import { followStoreLink } from '../../utils/followStoreLink';
+import { RouteLoading } from '../common/RouteLoading';
+
+const AccountOrders = lazy(() => import('./CustomerOrdersView').then(module => ({ default: module.CustomerOrdersView })));
+const AccountWishlist = lazy(() => import('./CustomerWishlistView').then(module => ({ default: module.CustomerWishlistView })));
+const AccountTerms = lazy(() => import('./StaticPageView').then(module => ({ default: module.StaticPageView })));
+
+type AccountSection = 'orders' | 'returns' | 'wishlist' | 'terms';
+
+function readAccountSection(): AccountSection | null {
+  const section = new URLSearchParams(window.location.search).get('section');
+  return section === 'orders' || section === 'returns' || section === 'wishlist' || section === 'terms' ? section : null;
+}
 
 const workspaceLinks = {
   seller_dashboard: { title: 'پنل دراپ‌شیپر', icon: Store },
@@ -22,9 +34,13 @@ type AccountLayoutProps = React.PropsWithChildren<{
   onBack: () => void;
   extra?: React.ReactNode;
   central: boolean;
+  embedded?: boolean;
+  backLabel?: string;
 }>;
 
-export const CustomerAccountLayout: React.FC<AccountLayoutProps> = ({ title, onBack, extra, central, children }) => {
+export const CustomerAccountLayout: React.FC<AccountLayoutProps> = ({
+  title, onBack, extra, central, embedded = false, backLabel = 'بازگشت به فروشگاه', children,
+}) => {
   const Container = central ? 'main' : 'div';
   const tone = {
     '--account-accent': central ? 'var(--shop-forest, #164638)' : 'var(--color-brand-deep)',
@@ -35,13 +51,24 @@ export const CustomerAccountLayout: React.FC<AccountLayoutProps> = ({ title, onB
     '--account-muted': central ? 'var(--shop-muted, #4f6359)' : 'var(--color-slate-600)',
     '--account-radius': central ? 'var(--shop-radius, 16px)' : '1rem',
   } as React.CSSProperties;
+  if (embedded) {
+    return (
+      <div className="min-w-0">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-extrabold sm:text-lg">{title}</h2>
+          {extra}
+        </div>
+        {children}
+      </div>
+    );
+  }
   return (
     <Container id={central ? 'main-content' : undefined} tabIndex={central ? -1 : undefined} style={tone}
       className="flex-1 bg-[var(--account-bg)] text-[var(--account-ink)]">
       <div className={central ? 'central-wrap pb-12 pt-5 sm:pt-8' : 'mx-auto w-full max-w-6xl px-4 pb-12 pt-5 sm:px-6 sm:pt-9 lg:px-8'}>
         <header className={`mb-5 flex flex-wrap items-center justify-between gap-3 sm:mb-7 ${central ? 'border-b border-[var(--account-line)] pb-4 sm:pb-5' : ''}`}>
           <div className="flex min-w-0 items-center gap-3">
-            <button type="button" onClick={onBack} aria-label="بازگشت به فروشگاه"
+            <button type="button" onClick={onBack} aria-label={backLabel}
               className="grid size-11 shrink-0 place-items-center rounded-xl border border-[var(--account-line)] bg-white text-[var(--account-accent)] hover:bg-[var(--account-soft)]">
               <ArrowRight className="size-5" aria-hidden="true" />
             </button>
@@ -90,10 +117,39 @@ export const CustomerReturnsMenuRow: React.FC<{
 export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const {
     customerUser, logoutCustomer, orders, wishlistIds, currentStore, routeStoreSlug,
-    setActiveView, openStaticPage, formatPrice,
+    setActiveView, formatPrice,
   } = useStore();
   const { success } = useToast();
   const { currentUser, isAuthenticated, isSessionReady, updateProfileName } = useAuth();
+  const [section, setSection] = useState(readAccountSection);
+  const accountContentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const restoreSection = () => setSection(readAccountSection());
+    window.addEventListener('popstate', restoreSection);
+    return () => window.removeEventListener('popstate', restoreSection);
+  }, []);
+  useEffect(() => {
+    if (section) accountContentRef.current?.focus({ preventScroll: true });
+  }, [section]);
+
+  const openSection = (next: AccountSection) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('section', next);
+    if (section) window.history.replaceState(window.history.state, '', url);
+    else window.history.pushState({ ...window.history.state, fromAccountMenu: true }, '', url);
+    setSection(next);
+  };
+
+  const backToAccountMenu = () => {
+    if (window.history.state?.fromAccountMenu) {
+      window.history.back();
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete('section');
+    window.history.replaceState(window.history.state, '', url);
+    setSection(null);
+  };
   const central = routeStoreSlug == null && currentStore?.ownerType !== 'dropshipper';
   const savedName = (currentUser?.fullName ?? customerUser.fullName).trim();
   const fullName = savedName === 'کاربر جدید' ? '' : savedName;
@@ -143,13 +199,6 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
     return () => { active = false; };
   }, [central, customerUser.isLoggedIn, customerUser.mobile]);
 
-  const goToReturns = () => {
-    setActiveView('customer_orders');
-    const url = new URL(window.location.href);
-    url.hash = 'returns';
-    window.history.replaceState(window.history.state, '', url);
-  };
-
   const returnsCount = myReturns && myReturns.filter(row => orders.some(order => order.id === row.orderId && order.storeId === storeId)).length;
   const logout = () => {
     logoutCustomer();
@@ -158,7 +207,8 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
   };
 
   return (
-    <CustomerAccountLayout title="پروفایل کاربری من" onBack={onBack} central={central}
+    <CustomerAccountLayout title="پروفایل کاربری من" onBack={section ? backToAccountMenu : onBack} central={central}
+      backLabel={section ? 'بازگشت به منوی حساب' : undefined}
       extra={<button type="button" onClick={logout} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-rose-200 bg-white px-3 text-sm font-bold text-rose-800 hover:bg-rose-50">
         <LogOut className="size-4" aria-hidden="true" /> خروج
       </button>}>
@@ -230,18 +280,29 @@ export const CustomerProfileView: React.FC<{ onBack: () => void }> = ({ onBack }
           </div>}
         </div>
 
+        {section ? (
+          <div tabIndex={-1} ref={accountContentRef} className="order-first min-w-0 lg:order-none">
+            <Suspense fallback={<RouteLoading label="در حال باز کردن بخش حساب…" />}>
+              {section === 'orders' || section === 'returns'
+                ? <AccountOrders onBack={backToAccountMenu} accountSection={section} onAccountSectionChange={openSection} />
+                : section === 'wishlist' ? <AccountWishlist onBack={backToAccountMenu} embedded />
+                : <AccountTerms onBack={backToAccountMenu} embedded />}
+            </Suspense>
+          </div>
+        ) : (
         <nav aria-label="امکانات حساب" className="divide-y divide-[var(--account-line)] overflow-hidden rounded-[var(--account-radius)] border border-[var(--account-line)] bg-white">
-          <AccountRow title="سفارش‌های من" icon={Package} onOpen={() => setActiveView('customer_orders')}>
+          <AccountRow title="سفارش‌های من" icon={Package} onOpen={() => openSection('orders')}>
             {orderCount === 0 ? 'وضعیت خریدهای این فروشگاه' : `${toPersianDigits(orderCount)} سفارش در این فروشگاه`}
           </AccountRow>
-          <CustomerReturnsMenuRow returnsCount={returnsCount} unavailable={returnsUnavailable} onOpen={goToReturns} />
-          <AccountRow title="علاقه‌مندی‌ها" icon={Heart} onOpen={() => setActiveView('customer_wishlist')}>
+          <CustomerReturnsMenuRow returnsCount={returnsCount} unavailable={returnsUnavailable} onOpen={() => openSection('returns')} />
+          <AccountRow title="علاقه‌مندی‌ها" icon={Heart} onOpen={() => openSection('wishlist')}>
             {wishlistIds.length === 0 ? 'کالاهای ذخیره‌شده برای خرید بعدی' : `${toPersianDigits(wishlistIds.length)} کالای ذخیره‌شده`}
           </AccountRow>
-          <AccountRow title="شرایط خرید و مرجوعی" icon={ShieldCheck} onOpen={() => openStaticPage('terms')}>
+          <AccountRow title="شرایط خرید و مرجوعی" icon={ShieldCheck} onOpen={() => openSection('terms')}>
             قوانین خرید و ضمانت کالا
           </AccountRow>
         </nav>
+        )}
       </div>
     </CustomerAccountLayout>
   );

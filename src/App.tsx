@@ -23,6 +23,7 @@ import { defaultPanelForUser, panelsForCapabilities, useAuth, type Authenticated
 import { NotFoundView } from './components/NotFoundView';
 import { SeoManager } from './seo/SeoManager';
 import { isMockMode } from './services/apiClient';
+import { RouteLoading } from './components/common/RouteLoading';
 
 const ProductDetailView = lazy(() => import('./components/views/ProductDetailView').then(module => ({ default: module.ProductDetailView })));
 const CatalogView = lazy(() => import('./components/views/CatalogView').then(module => ({ default: module.CatalogView })));
@@ -50,11 +51,11 @@ const WarehouseDashboardView = lazy(() => import('./components/warehouse/Warehou
 const AdminDashboardView = lazy(() => import('./components/admin/AdminDashboardView').then(module => ({ default: module.AdminDashboardView })));
 
 function PanelLoading() {
-  return <div className="central-route-loading" role="status">در حال بارگذاری پنل…</div>;
+  return <RouteLoading label="در حال بارگذاری پنل…" screen />;
 }
 
-function StorePageLoading({ children = 'در حال بارگذاری…' }: React.PropsWithChildren) {
-  return <main id="main-content" tabIndex={-1} className="central-wrap central-product-loading"><p role="status">{children}</p></main>;
+function StorePageLoading({ children = 'در حال بارگذاری…' }: { children?: string }) {
+  return <main id="main-content" tabIndex={-1} className="central-wrap central-product-loading"><RouteLoading label={children} /></main>;
 }
 
 function OverlayLoading() {
@@ -73,7 +74,7 @@ function CustomerAccountSignIn({ onBack, central }: { onBack: () => void; centra
   const signedIn = useRef(false);
   return (
     <main dir="rtl" className={central ? "min-h-dvh bg-[#f8f6ef]" : "min-h-dvh bg-[#f7f7fa]"}>
-      <Suspense fallback={<p className="central-route-loading" role="status">در حال بارگذاری ورود…</p>}>
+      <Suspense fallback={<RouteLoading label="در حال آماده‌سازی ورود…" screen />}>
         <AuthModal isOpen central={central} disableAutoNavigate roleTitle="ورود به حساب کاربری"
           onSuccess={() => { signedIn.current = true; }}
           onClose={() => { if (!signedIn.current) onBack(); }} />
@@ -83,7 +84,7 @@ function CustomerAccountSignIn({ onBack, central }: { onBack: () => void; centra
 }
 
 export const AppContent: React.FC = () => {
-  const { currentUser, isSessionReady, logoutUser, supplierSession, sellerSession, adminSession, panelSessionErrors, retryPanelSession } = useAuth();
+  const { currentUser, isSessionReady, sessionCheckFailed, retrySessionCheck, logoutUser, supplierSession, sellerSession, adminSession, panelSessionErrors, retryPanelSession } = useAuth();
   const {
     activeView,
     setActiveView,
@@ -158,12 +159,22 @@ export const AppContent: React.FC = () => {
     openProductDetail(product);
   }, [products, openProductDetail, activeView, storefrontResolved, storefrontInvalid, storefrontSuspended, routeStoreSlug, routeStoreResolved]);
 
-  // OTP login revalidates the session while an open wizard still owns its draft.
-  if (!isSessionReady && (activeView === 'dashboard' || !isOnboardingActive)) return <div role="status">در حال بررسی نشست…</div>;
+  // Public pages can render while the session is verified. Workspace entry still waits.
+  if (!isSessionReady && (protectedPanel || activeView === 'dashboard')) {
+    if (sessionCheckFailed) {
+      return (
+        <main dir="rtl" className="grid min-h-dvh place-content-center justify-items-center gap-4 bg-[#f8f6ef] px-4 text-center">
+          <p role="alert" className="text-sm font-semibold text-[#172d26]">بررسی حساب ممکن نشد. اتصال اینترنت را بررسی کنید.</p>
+          <button type="button" onClick={retrySessionCheck} className="central-button">تلاش مجدد</button>
+        </main>
+      );
+    }
+    return <RouteLoading label="در حال بررسی حساب…" screen />;
+  }
   if (routeStoreSlug && (!routeStoreResolved || routeStoreInvalid)) {
     return routeStoreInvalid
       ? <NotFoundView variant="store" onBack={() => setActiveView('seller_storefront', { storeSlug: routeStoreSlug })} />
-      : <div className="central-route-loading" role="status">در حال بارگذاری ویترین…</div>;
+      : <RouteLoading label="در حال بارگذاری ویترین…" screen />;
   }
   if ((activeView === 'customer_profile' || activeView === 'customer_orders' || activeView === 'customer_wishlist') &&
     !currentUser && !isMockMode()) {
@@ -176,7 +187,7 @@ export const AppContent: React.FC = () => {
     }} />;
   }
   if (activeView === 'dashboard') {
-    if (currentUser) return <div role="status">در حال انتقال به پنل مجاز…</div>;
+    if (currentUser) return <RouteLoading label="در حال باز کردن پنل…" screen />;
     return (
       <Suspense fallback={<PanelLoading />}>
         <SellerDashboardView
@@ -186,7 +197,7 @@ export const AppContent: React.FC = () => {
       </Suspense>
     );
   }
-  const workspaceSwitcher = currentUser && authorizedPanels.length > 1 && (
+  const workspaceSwitcher = isSessionReady && currentUser && authorizedPanels.length > 1 && (
     <nav dir="rtl" aria-label="پنل‌های مجاز" className="workspace-switcher flex flex-wrap items-center gap-1 border-b border-slate-200 bg-white px-3 py-1.5">
       {authorizedPanels.map(panel => (
         <button key={panel} type="button" aria-pressed={activeView === panel}
@@ -224,10 +235,12 @@ export const AppContent: React.FC = () => {
     if (!ready) {
       const panelSessionError = protectedPanel === 'supplier_dashboard' || protectedPanel === 'seller_dashboard'
         ? panelSessionErrors[protectedPanel] : undefined;
-      return <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-4" dir="rtl">
-        {panelSessionError ? <><p role="alert">{panelSessionError}</p><button type="button" className="min-h-11 rounded-xl bg-brand-soft px-4 font-bold text-brand-deep" onClick={retryPanelSession}>تلاش مجدد</button></>
-          : <p role="status">در حال آماده‌سازی پنل…</p>}
-      </div>;
+      return panelSessionError
+        ? <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-4" dir="rtl">
+            <p role="alert">{panelSessionError}</p>
+            <button type="button" className="min-h-11 rounded-xl bg-brand-soft px-4 font-bold text-brand-deep" onClick={retryPanelSession}>تلاش مجدد</button>
+          </div>
+        : <RouteLoading label="در حال آماده‌سازی پنل…" screen />;
     }
   }
 
@@ -272,7 +285,7 @@ export const AppContent: React.FC = () => {
           storefrontUnsubscribeSlug ? (
             <StoreUnsubscribeView slug={storefrontUnsubscribeSlug} onBack={() => setActiveView('seller_storefront', { storeSlug: storefrontUnsubscribeSlug })} />
           ) : storefrontLoading ? (
-            <div role="status" className="flex-1 flex items-center justify-center p-6 text-xs text-slate-500">در حال بارگذاری ویترین فروشگاه…</div>
+            <RouteLoading label="در حال بارگذاری ویترین فروشگاه…" />
           ) : storefrontInvalid ? (
             <NotFoundView variant="store" onBack={() => setActiveView('customer')} />
           ) : storefrontSuspended ? (
@@ -305,7 +318,7 @@ export const AppContent: React.FC = () => {
         ) : activeView === 'product_detail' ? (
           routeProductPending ? (
             routeStoreSlug ? (
-              <div role="status" className="flex-1 flex items-center justify-center p-6 text-sm text-slate-600">در حال بارگذاری کالا…</div>
+              <RouteLoading label="در حال بارگذاری کالا…" />
             ) : (
               <>
                 <Header sticky={false} />
@@ -381,14 +394,14 @@ export const AppContent: React.FC = () => {
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
                 variant={currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
               />
-              <CustomerOrdersView onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})} />
+              <CustomerOrdersView onBack={() => setActiveView('customer_profile', { storeSlug: routeStoreSlug })} />
               <SellerStorefrontFooter />
             </>
           ) : (
             <>
               <Header sticky={false} />
               <Suspense fallback={<StorePageLoading />}>
-                <CustomerOrdersView onBack={() => setActiveView('customer')} />
+                <CustomerOrdersView onBack={() => setActiveView('customer_profile')} />
               </Suspense>
               <Footer />
             </>
@@ -400,14 +413,14 @@ export const AppContent: React.FC = () => {
                 onOpenSearch={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})}
                 variant={currentStore?.templateId === 'tpl-digikala-1' ? 'digikala' : 'modern'}
               />
-              <CustomerWishlistView onBack={() => setActiveView('seller_storefront', routeStoreSlug ? { storeSlug: routeStoreSlug } : {})} />
+              <CustomerWishlistView onBack={() => setActiveView('customer_profile', { storeSlug: routeStoreSlug })} />
               <SellerStorefrontFooter />
             </>
           ) : (
             <>
               <Header sticky={false} />
               <Suspense fallback={<StorePageLoading />}>
-                <CustomerWishlistView onBack={() => setActiveView('customer')} />
+                <CustomerWishlistView onBack={() => setActiveView('customer_profile')} />
               </Suspense>
               <Footer />
             </>

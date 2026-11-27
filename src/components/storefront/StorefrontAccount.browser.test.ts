@@ -6,6 +6,29 @@ const visit = batch8Browser();
 const storefront = '/store/batch-eight-store';
 const account = 'header button[title="ورود به حساب کاربری"]';
 const profile = 'پروفایل کاربری من';
+const pendingSession = 'holdInitialProfile&access-fixture-role=customer&access-fixture-caps=customer,seller';
+
+test('a pending account check never blocks the public shop or shows cached workspace links', () =>
+  visit('/?' + pendingSession, 390, async page => {
+    await page.waitForFunction(() => (window as any).batch8Fixture.initialProfilePending());
+    await page.waitForSelector('.central-hero', { visible: true });
+    assert.equal(await page.$('.workspace-switcher, .route-loading--screen'), null);
+    await page.evaluate(() => (window as any).batch8Fixture.finishInitialProfile());
+    await page.waitForSelector('.workspace-switcher', { visible: true });
+  }));
+
+test('protected routes show a loader and retry a failed session check with the same credential', () =>
+  visit('/account?rejectInitialProfile&' + pendingSession, 390, async page => {
+    const loader = '.route-loading--screen[role="status"]';
+    await page.waitForSelector(loader + ' .route-loading-icon', { visible: true });
+    assert.equal(await page.$('#account-panels-title'), null);
+    await page.waitForFunction(() => (window as any).batch8Fixture.initialProfilePending());
+    await page.evaluate(() => (window as any).batch8Fixture.finishInitialProfile());
+    await waitText(page, 'بررسی حساب ممکن نشد.');
+    await clickText(page, 'تلاش مجدد');
+    await waitText(page, profile);
+    assert.ok(await page.evaluate(() => localStorage.getItem('seler_sho_jwt_token')));
+  }));
 
 test('an existing account can save its missing name and open only its allowed panels without OTP', () =>
   visit('/account?legacy-account-name&access-fixture-role=customer&access-fixture-caps=customer,seller,supplier,super_admin', 390, async page => {
@@ -29,6 +52,36 @@ test('a customer with no other capabilities sees their saved name and no workspa
   visit('/account?access-fixture-role=customer&access-fixture-caps=customer', 390, async page => {
     await waitText(page, 'کاربر نمونه');
     assert.equal(await page.$('#account-panels-title'), null);
+  }));
+
+test('account sections open inside the profile and both back buttons restore the account menu', () =>
+  visit('/account?access-fixture-role=customer&access-fixture-caps=customer', 390, async page => {
+    const menu = 'nav[aria-label="امکانات حساب"]';
+    const back = 'button[aria-label="بازگشت به منوی حساب"]';
+    for (const [label, section] of [
+      ['سفارش‌های من', 'orders'],
+      ['مرجوعی‌های من', 'returns'],
+      ['علاقه‌مندی‌ها', 'wishlist'],
+      ['شرایط خرید و مرجوعی', 'terms'],
+    ]) {
+      await clickText(page, label, menu + ' button > span > span:first-child');
+      await page.waitForSelector(back, { visible: true });
+      assert.equal(new URL(page.url()).pathname, '/account');
+      assert.equal(new URL(page.url()).searchParams.get('section'), section);
+      assert.equal(await page.$eval('main h1', node => node.textContent?.trim()), profile);
+      if (section === 'orders' || section === 'returns') {
+        const tab = 'nav[aria-label="سفارش و مرجوعی"] button[aria-pressed="true"]';
+        await page.waitForSelector(tab, { visible: true });
+        assert.equal(await page.$eval(tab, node => node.textContent?.trim()), section === 'returns' ? 'مرجوعی‌های من' : 'سفارش‌ها');
+      } else {
+        await waitText(page, section === 'terms' ? label : 'هنوز کالایی ذخیره نکرده‌اید');
+      }
+      if (section === 'wishlist') await page.goBack();
+      else await page.click(back);
+      await page.waitForSelector(menu, { visible: true });
+      assert.equal(new URL(page.url()).pathname, '/account');
+      assert.equal(new URL(page.url()).searchParams.has('section'), false);
+    }
   }));
 
 test('opening the storefront account after a dashboard logout asks for OTP', () =>

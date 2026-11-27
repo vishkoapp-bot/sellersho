@@ -63,10 +63,12 @@ export const authApi = {
     });
   },
 
-  getMe: async (): Promise<UserClaims> => {
+  getMe: async (signal?: AbortSignal): Promise<UserClaims> => {
     return apiRequest<UserClaims>('/auth/me', {
       method: 'GET',
       auth: true,
+      signal,
+      timeout: 6000,
     });
   },
 

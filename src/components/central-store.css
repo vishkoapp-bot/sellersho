@@ -156,6 +156,14 @@
 .central-site :is(#main-content, section[id]) { scroll-margin-top: calc(var(--shop-header-height, 120px) + 12px); }
 .central-route-loading { display: grid; min-height: 75dvh; place-items: center; color: #164638; }
 .central-product-loading { flex: 1; display: grid; min-height: 48dvh; place-items: center; padding-block: 2rem; color: var(--shop-muted); }
+.route-loading { display: grid; justify-items: center; align-content: center; gap: 12px; padding: 1.5rem; min-block-size: 36dvh; color: var(--shop-muted, #4f6359); font-size: .875rem; font-weight: 650; }
+.route-loading--screen { min-block-size: 100dvh; background: var(--shop-bg, #f8f6ef); }
+.route-loading-icon { display: grid; place-items: center; width: 50px; height: 50px; border-radius: 14px; background: var(--shop-soft, #edf2e9); }
+.route-loading-icon > span { width: 25px; height: 25px; border: 2px solid #c6d7cc; border-block-start-color: var(--shop-forest, #164638); border-radius: 50%; }
+@media (prefers-reduced-motion: no-preference) {
+  .route-loading-icon > span { animation: route-loader-spin .85s linear infinite; }
+}
+@keyframes route-loader-spin { to { transform: rotate(1turn); } }
 .central-overlay-loading { position: fixed; z-index: 60; inset-block-start: max(12px, env(safe-area-inset-top)); inset-inline-start: 50%; translate: 50% 0; padding: 9px 15px; border: 1px solid var(--shop-line, #dde2d7); border-radius: 12px; background: var(--shop-paper, white); color: var(--shop-ink, #172d26); font-size: .875rem; white-space: nowrap; pointer-events: none; }
 .central-site > .workspace-switcher { --color-brand-deep: var(--shop-forest); --color-brand-soft: var(--shop-soft); --color-brand-border: var(--shop-line); }
 

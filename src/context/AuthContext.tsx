@@ -9,7 +9,7 @@ import {
   SellerSession 
 } from './storeContextTypes';
 import { authApi } from '../services/authApi';
-import { tokenStore, isMockMode } from '../services/apiClient';
+import { ApiError, tokenStore, isMockMode } from '../services/apiClient';
 import { storeApi } from '../services/storeApi';
 
 export type AuthenticatedPanel =
@@ -114,6 +114,8 @@ export interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   isSessionReady: boolean;
+  sessionCheckFailed: boolean;
+  retrySessionCheck: () => void;
   panelSessionErrors: Partial<Record<ProfilePanel, string>>;
   retryPanelSession: () => void;
   customerUser: CustomerUser;
@@ -165,18 +167,24 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [authToken, setAuthToken] = useState(tokenStore.getToken);
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [isSessionReady, setIsSessionReady] = useState<boolean>(!tokenStore.getToken());
+  const [isSessionReady, setIsSessionReady] = useState<boolean>(() => !tokenStore.getToken() || isMockMode());
+  const [sessionCheckFailed, setSessionCheckFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    let pending: AbortController | undefined;
     const restore = async () => {
       const token = tokenStore.getToken();
       if (!token || isMockMode()) return;
       const generation = authGeneration.current;
       const sequence = ++profileSequence.current;
+      pending?.abort();
+      const controller = new AbortController();
+      pending = controller;
+      setSessionCheckFailed(false);
       setIsSessionReady(false);
       try {
-        const claims = await authApi.getMe();
+        const claims = await authApi.getMe(controller.signal);
         if (cancelled || !ownsRequest(generation, token, sequence)) return;
         setAuthToken(token);
         setCurrentUser({
@@ -186,10 +194,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           role: claims.role,
           capabilities: claims.capabilities || [],
         });
-      } catch {
-        if (!cancelled && ownsRequest(generation, token, sequence)) logoutUser();
-      } finally {
-        if (!cancelled && ownsRequest(generation, token, sequence)) setIsSessionReady(true);
+        setIsSessionReady(true);
+      } catch (error) {
+        if (cancelled || !ownsRequest(generation, token, sequence)) return;
+        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) logoutUser();
+        else setSessionCheckFailed(true);
       }
     };
     restore();
@@ -205,6 +214,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     window.addEventListener('drup-session-changed', restore);
     return () => {
       cancelled = true;
+      pending?.abort();
       window.removeEventListener('storage', restoreFromAnotherTab);
       window.removeEventListener('drup-session-changed', restore);
     };
@@ -360,6 +370,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setWarehouseSession(null);
     setPanelSessionErrors({});
     setIsLoading(false);
+    setSessionCheckFailed(false);
     setIsSessionReady(true);
   }, []);
 
@@ -462,6 +473,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
     setAuthToken(token);
     setCurrentUser(user);
+    setSessionCheckFailed(false);
     localStorage.setItem('drup_auth_token', token);
     localStorage.setItem('drup_current_user', JSON.stringify(user));
     } catch (error) {
@@ -491,6 +503,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     isAuthenticated: !!authToken,
     isLoading,
     isSessionReady,
+    sessionCheckFailed,
+    retrySessionCheck: () => window.dispatchEvent(new Event('drup-session-changed')),
     panelSessionErrors,
     retryPanelSession: () => setPanelRetry((value) => value + 1),
     customerUser,

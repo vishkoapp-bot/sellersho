@@ -2,12 +2,14 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { RouteLoading } from './components/common/RouteLoading';
 import { pathForStoreDomain } from './utils/routing';
 import './index.css';
 import './utils/webVitals'; // OBS-01 (D-08): browser-local web-vitals measurement, no network send.
 
 async function bootstrap() {
   const root = ReactDOM.createRoot(document.getElementById('root')!);
+  root.render(<RouteLoading label="در حال بارگذاری فروشگاه…" screen />);
   try {
     const response = await fetch('/api/v1/domain-store', { signal: AbortSignal.timeout(8000) });
     const currentPath = window.location.pathname;

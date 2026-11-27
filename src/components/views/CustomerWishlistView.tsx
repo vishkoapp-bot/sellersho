@@ -21,7 +21,7 @@ export const resolveWishlistQuickAdd = (product: Product): PurchaseResolution | 
     : resolvePurchase(product);
 };
 
-export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
+export const CustomerWishlistView: React.FC<{ onBack: () => void; embedded?: boolean }> = ({ onBack, embedded }) => {
   const {
     products,
     wishlists,
@@ -110,7 +110,7 @@ export const CustomerWishlistView: React.FC<{ onBack: () => void }> = ({ onBack 
   };
 
   return (
-    <CustomerAccountLayout title="علاقه‌مندی‌ها" onBack={onBack} central={!scopedStoreSlug}
+    <CustomerAccountLayout title="علاقه‌مندی‌ها" onBack={onBack} central={!scopedStoreSlug} embedded={embedded} backLabel="بازگشت به منوی حساب"
       extra={entryIds.length > 0 && <span className="rounded-full bg-[var(--account-soft)] px-3 py-1.5 text-sm font-bold text-[var(--account-accent)]">{toPersianDigits(entryIds.length)} کالای ذخیره‌شده</span>}>
       <div className="space-y-4">
         {entryIds.length === 0 ? (

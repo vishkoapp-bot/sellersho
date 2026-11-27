@@ -32,18 +32,27 @@ const accountDate = (value: string) => {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString('fa-IR', { day: 'numeric', month: 'long', year: 'numeric' });
 };
 
-export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
+export const CustomerOrdersView: React.FC<{
+  onBack: () => void;
+  accountSection?: 'orders' | 'returns';
+  onAccountSectionChange?: (section: 'orders' | 'returns') => void;
+}> = ({ onBack, accountSection, onAccountSectionChange }) => {
   const { currentStore, routeStoreSlug, openCatalogCategory, setTrackingOrder, setIsTrackingModalOpen, formatPrice, toPersianDigits, confirmOrderDelivery, disputeOrderDelivery, busyOrderId } = useStore();
   const { success, error: toastError } = useToast();
   const { orders, fetchMyOrders } = useOrders();
   const central = !routeStoreSlug && currentStore?.ownerType !== 'dropshipper';
-  const [showReturns, setShowReturns] = useState(() => typeof window !== 'undefined' && window.location.hash === '#returns');
+  const [standaloneReturns, setShowReturns] = useState(() => typeof window !== 'undefined' && window.location.hash === '#returns');
+  const showReturns = accountSection ? accountSection === 'returns' : standaloneReturns;
   const [loading, setLoading] = useState(true);
   const [returnsError, setReturnsError] = useState(false);
   const [returnsLoading, setReturnsLoading] = useState(true);
   const [returnsReload, setReturnsReload] = useState(0);
   const returnModalRef = useRef<HTMLDialogElement>(null);
   const showSection = (returns: boolean) => {
+    if (onAccountSectionChange) {
+      onAccountSectionChange(returns ? 'returns' : 'orders');
+      return;
+    }
     setShowReturns(returns);
     const url = new URL(window.location.href);
     url.hash = returns ? 'returns' : '';
@@ -268,7 +277,8 @@ export const CustomerOrdersView: React.FC<{ onBack: () => void }> = ({ onBack })
   };
 
   return (
-    <CustomerAccountLayout title="سفارش‌های من" onBack={onBack} central={central}>
+    <CustomerAccountLayout title={accountSection ? 'سفارش‌ها و مرجوعی‌ها' : 'سفارش‌های من'} onBack={onBack}
+      central={central} embedded={!!accountSection} backLabel="بازگشت به منوی حساب">
       <style>{`@media print {
         body:has([data-customer-order-print]) *:not(:has([data-customer-order-print])):not([data-customer-order-print], [data-customer-order-print] *) { display: none !important; }
         body:has([data-customer-order-print]), body *:has([data-customer-order-print]) { display: block !important; min-height: 0 !important; }

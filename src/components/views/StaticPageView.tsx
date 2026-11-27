@@ -5,6 +5,7 @@ import { ArrowRight, ShieldCheck, HelpCircle, FileText, Lock, Info, ChevronDown 
 import { apiRequest } from '../../services/apiClient';
 import { followStoreLink } from '../../utils/followStoreLink';
 import { pathForView } from '../../utils/routing';
+import { RouteLoading } from '../common/RouteLoading';
 
 // FIX 14: static pages read the SAME public CMS source live uses
 // (GET /api/v1/static-pages) instead of hardcoded texts. The old
@@ -47,7 +48,7 @@ const TAB_LABELS: Record<string, string> = {
   license: 'مجوزها',
 };
 
-export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
+export const StaticPageView: React.FC<{ onBack: () => void; embedded?: boolean }> = ({ onBack, embedded = false }) => {
   const { staticPageKey, openStaticPage, routeStoreSlug } = useStore();
   const central = !routeStoreSlug;
   const card = central
@@ -55,7 +56,7 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
     : 'rounded-2xl border border-slate-200/90 bg-white shadow-2xs';
   const [pages, setPages] = useState<CmsPage[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<string>(staticPageKey || 'about');
+  const [activeTab, setActiveTab] = useState<string>(embedded ? 'terms' : staticPageKey || 'about');
   const [openFaq, setOpenFaq] = useState<number | null>(null);
   const tabRefs = useRef<Record<string, HTMLElement | null>>({});
   const lastScrolledTab = useRef<string | null>(null);
@@ -63,7 +64,7 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
   // changes (bundle z3) and scrolls the active tab into view; the
   // candidate kept the first tab forever across /about -> /license
   // navigation inside the same view instance.
-  useEffect(() => { setActiveTab(staticPageKey || 'about'); setOpenFaq(null); }, [staticPageKey]);
+  useEffect(() => { setActiveTab(embedded ? 'terms' : staticPageKey || 'about'); setOpenFaq(null); }, [embedded, staticPageKey]);
   useEffect(() => {
     if (lastScrolledTab.current === activeTab) return;
     const el = tabRefs.current[activeTab];
@@ -84,7 +85,7 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
       .then((data) => {
         const list = (data?.pages || []).filter((p) => p.isActive);
         setPages(list);
-        if (list.length > 0 && !list.some((p) => p.key === activeTab)) {
+        if (!embedded && list.length > 0 && !list.some((p) => p.key === activeTab)) {
           setActiveTab(list[0].key);
         }
       })
@@ -133,9 +134,12 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
     );
   };
 
+  const Container = embedded ? 'section' : 'main';
   return (
-    <main id="main-content" tabIndex={-1} className={routeStoreSlug ? "flex-1 flex flex-col bg-[#f8fafc] pb-20 lg:pb-8" : "central-info-page central-wrap"}>
-      <header className="central-info-heading flex items-center justify-between">
+    <Container id={embedded ? undefined : 'main-content'} tabIndex={embedded ? undefined : -1}
+      className={embedded ? 'min-w-0' : routeStoreSlug ? "flex-1 flex flex-col bg-[#f8fafc] pb-20 lg:pb-8" : "central-info-page central-wrap"}>
+      {embedded ? <h2 className="mb-3 text-base font-extrabold sm:text-lg">شرایط خرید و مرجوعی</h2> : (
+        <header className="central-info-heading flex items-center justify-between">
         <div className="flex items-center gap-2">
           <button type="button" onClick={onBack} aria-label="بازگشت به فروشگاه" className="grid min-h-11 min-w-11 place-items-center rounded-lg hover:bg-[var(--shop-soft,#f1f5f9)] text-[var(--shop-forest,#334155)]">
             <ArrowRight className="size-5" strokeWidth={1.5} aria-hidden="true" />
@@ -144,10 +148,11 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
             {central ? activePage?.title || TAB_LABELS[activeTab] || 'راهنمای خرید' : 'راهنمای خرید'}
           </h1>
         </div>
-      </header>
+        </header>
+      )}
 
       {/* Tabs (labels from CMS titles, CMS order) */}
-      {!!pages?.length && (
+      {!embedded && !!pages?.length && (
         <nav aria-label="راهنمای خرید" className="central-info-tabs flex bg-white border-b border-slate-200 p-1.5 sm:p-2 gap-1 overflow-x-auto text-xs">
           {pages.map((p) => {
             const Icon = TAB_ICONS[p.key] || Info;
@@ -180,7 +185,7 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
         </nav>
       )}
 
-      <div className="central-info-content p-3.5 w-full lg:max-w-4xl xl:max-w-5xl lg:px-8 lg:mx-auto">
+      <div className={embedded ? 'w-full' : 'central-info-content p-3.5 w-full lg:max-w-4xl xl:max-w-5xl lg:px-8 lg:mx-auto'}>
         {loadError && (
           <div className={`${card} space-y-3 p-5 text-center text-sm`}>
             <p role="alert">{loadError}</p>
@@ -190,14 +195,12 @@ export const StaticPageView: React.FC<{ onBack: () => void }> = ({ onBack }) => 
           </div>
         )}
         {!loadError && !pages && (
-          <div role="status" className={`${card} p-5 text-center text-sm text-[var(--shop-muted,#64748b)]`}>
-            در حال بارگذاری…
-          </div>
+          <RouteLoading label="در حال بارگذاری راهنمای خرید…" />
         )}
-        {!loadError && pages?.length === 0 && <p className={`${card} p-5 text-sm`}>هنوز راهنمایی برای نمایش ثبت نشده است.</p>}
+        {!loadError && pages && !activePage && <p className={`${card} p-5 text-sm`}>هنوز راهنمایی برای نمایش ثبت نشده است.</p>}
         {!loadError && pages && activePage && activePage.key === 'faq' && renderFaq(activePage.content)}
         {!loadError && pages && activePage && activePage.key !== 'faq' && renderParagraphs(activePage.content)}
       </div>
-    </main>
+    </Container>
   );
 };

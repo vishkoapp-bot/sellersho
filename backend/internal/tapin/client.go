@@ -333,11 +333,18 @@ func (c *Client) TipaxCheckPrice(ctx context.Context, token string, req TipaxChe
 	if err != nil {
 		return nil, err
 	}
-	var out TipaxCheckPriceResult
+	var out struct {
+		TipaxCheckPriceResult
+		TotalSendPrice *int64 `json:"total_send_price"`
+	}
 	if err := json.Unmarshal(entries, &out); err != nil {
 		return nil, fmt.Errorf("tapin: decode check-price entries: %w", err)
 	}
-	return &out, nil
+	if out.TotalSendPrice == nil || *out.TotalSendPrice < 0 {
+		return nil, errors.New("tapin: check-price response has no valid total_send_price")
+	}
+	out.TipaxCheckPriceResult.TotalSendPrice = *out.TotalSendPrice
+	return &out.TipaxCheckPriceResult, nil
 }
 
 // TipaxRegisterRequest is the order-registration payload (guide

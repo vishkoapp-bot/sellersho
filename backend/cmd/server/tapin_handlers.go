@@ -242,12 +242,10 @@ func submitShippingViaTapin(
 	tapinRepo *repository.TapinRepository,
 ) tapinSubmitOutcome {
 	if service == "post" {
-		// Explicit stub, not a guess: the Post (irpost) contract is
-		// not published in Tapin's official guide; it lives in the
-		// panel's یکپارچه‌سازی ← وب سرویس section (owner-ask list).
+		// Postal registration uses a separate Tapin API contract.
 		return tapinOutcome(http.StatusNotImplemented, map[string]interface{}{
 			"error":  "not_implemented",
-			"detail": "ثبت مرسوله با پست تاپین هنوز فعال نیست؛ قرارداد وب‌سرویس پست در راهنمای رسمی تاپین منتشر نشده و در پنل تاپین (یکپارچه‌سازی ← وب سرویس) قرار دارد.",
+			"detail": "ثبت مرسوله با پست تاپین در سلرشو فعلاً فعال نیست. سرویس موجود برای ثبت با تاپین، تیپاکس است.",
 		})
 	}
 	if service != "tipax" {
@@ -447,7 +445,8 @@ func submitShippingViaTapin(
 		})
 	}
 	carrier := "tapin-tipax"
-	if err := shipmentRepo.SubmitShipping(ctx, supplierID, orderID, carrier, res.ContractCode, actorUserID); err != nil {
+	registration := repository.TapinRegistration{Service: service, BoxID: boxID, Status: res.Status}
+	if err := shipmentRepo.SubmitTapinShipping(ctx, supplierID, state.ID, res.ContractCode, actorUserID, registration); err != nil {
 		// The Tapin order EXISTS upstream but the local state machine
 		// refused the transition. Surface the barcode so nothing is
 		// lost; the guard stays stamped for manual reconciliation.
@@ -458,7 +457,6 @@ func submitShippingViaTapin(
 			},
 		})
 	}
-	_ = tapinRepo.RecordTapinRegistration(ctx, state.ID, service, boxID, res.Status)
 	return tapinOutcome(http.StatusOK, map[string]interface{}{
 		"success":        true,
 		"message":        "مرسوله در تاپین ثبت شد و کد رهگیری صادر شد.",

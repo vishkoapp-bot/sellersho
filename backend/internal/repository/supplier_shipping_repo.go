@@ -18,6 +18,20 @@ var ErrTrackingNumberInUse = errors.New("tracking number is already used by anot
 // SubmitShipping updates only the caller's shipment, and advances the whole
 // order only when every direct shipment is sent and there are no warehouse items.
 func (r *SupplierShipmentRepository) SubmitShipping(ctx context.Context, supplierID, id, carrier, tracking, actor string) error {
+	return r.submitShipping(ctx, supplierID, id, carrier, tracking, actor, nil)
+}
+
+type TapinRegistration struct {
+	Service string
+	BoxID   string
+	Status  int
+}
+
+func (r *SupplierShipmentRepository) SubmitTapinShipping(ctx context.Context, supplierID, shipmentID, tracking, actor string, registration TapinRegistration) error {
+	return r.submitShipping(ctx, supplierID, shipmentID, "tapin-"+registration.Service, tracking, actor, &registration)
+}
+
+func (r *SupplierShipmentRepository) submitShipping(ctx context.Context, supplierID, id, carrier, tracking, actor string, tapinRegistration *TapinRegistration) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -50,6 +64,11 @@ func (r *SupplierShipmentRepository) SubmitShipping(ctx context.Context, supplie
 			return ErrTrackingNumberInUse
 		}
 		return err
+	}
+	if tapinRegistration != nil {
+		if err := recordTapinRegistration(ctx, tx, shipmentID, tapinRegistration.Service, tapinRegistration.BoxID, tapinRegistration.Status); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO supplier_shipment_audit_logs (id, shipment_id, actor_user_id, action, timestamp) VALUES ($1, $2, $3, 'marked_shipped', NOW())`, uuid.NewString(), shipmentID, actor); err != nil {
 		return err

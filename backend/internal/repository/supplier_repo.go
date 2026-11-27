@@ -4781,69 +4781,34 @@ func (r *SupplierRepository) DecideSupplierShippingMethod(ctx context.Context, s
 	return nil
 }
 
-// UpdateTapinShopID stores only the supplier's Tapin shop id (D11).
-// The Tapin token is stored separately by UpdateTapinToken (Fix61);
-// neither method ever returns a token, and no handler emits one.
 func (r *SupplierRepository) UpdateTapinShopID(ctx context.Context, supplierID, shopID string) error {
-	if strings.TrimSpace(shopID) == "" {
-		res, err := r.db.ExecContext(ctx, `UPDATE suppliers SET tapin_shop_id = NULL WHERE id = $1`, supplierID)
-		if err != nil {
-			return err
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return sql.ErrNoRows
-		}
-		return nil
-	}
-	res, err := r.db.ExecContext(ctx, `UPDATE suppliers SET tapin_shop_id = $2 WHERE id = $1`, supplierID, shopID)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return r.UpdateTapinCredentials(ctx, supplierID, &shopID, nil)
 }
 
-// UpdateTapinToken stores the supplier's Tapin token (Fix61), mirroring
-// UpdateTapinShopID. An empty token clears the stored value (NULL).
-// The token is internal only: it is selected solely for the server-side
-// connectivity test and is never emitted in any API response.
-//
-// SEC-01: the token is stored AES-256-GCM encrypted ("enc:v1:") under
-// the attached cipher. Without a cipher this fails closed — it never
-// silently stores plaintext.
 func (r *SupplierRepository) UpdateTapinToken(ctx context.Context, supplierID, token string) error {
-	if strings.TrimSpace(token) == "" {
-		res, err := r.db.ExecContext(ctx, `UPDATE suppliers SET tapin_token = NULL WHERE id = $1`, supplierID)
+	return r.UpdateTapinCredentials(ctx, supplierID, nil, &token)
+}
+
+// UpdateTapinCredentials applies the shop and encrypted token in one write.
+// A nil input preserves the column; a supplied empty value clears it.
+func (r *SupplierRepository) UpdateTapinCredentials(ctx context.Context, supplierID string, shopID, token *string) error {
+	var storedToken string
+	if token != nil && strings.TrimSpace(*token) != "" {
+		if r.tokenCipher == nil {
+			return tapin.ErrTokenCipherNotConfigured
+		}
+		var err error
+		storedToken, err = r.tokenCipher.EncryptToken(strings.TrimSpace(*token))
 		if err != nil {
-			return err
+			return fmt.Errorf("encrypt supplier tapin token: %w", err)
 		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return sql.ErrNoRows
-		}
-		return nil
 	}
-	if r.tokenCipher == nil {
-		return tapin.ErrTokenCipherNotConfigured
-	}
-	enc, err := r.tokenCipher.EncryptToken(strings.TrimSpace(token))
-	if err != nil {
-		return fmt.Errorf("encrypt supplier tapin token: %w", err)
-	}
-	res, err := r.db.ExecContext(ctx, `UPDATE suppliers SET tapin_token = $2 WHERE id = $1`, supplierID, enc)
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE suppliers SET
+		    tapin_shop_id = CASE WHEN $4 THEN NULLIF(btrim($2), '') ELSE tapin_shop_id END,
+		    tapin_token = CASE WHEN $5 THEN NULLIF($3, '') ELSE tapin_token END
+		WHERE id = $1
+	`, supplierID, shopID, storedToken, shopID != nil, token != nil)
 	if err != nil {
 		return err
 	}

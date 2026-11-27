@@ -26,6 +26,7 @@ import (
 
 	"github.com/drup/platform/internal/auth"
 	"github.com/drup/platform/internal/repository"
+	"github.com/drup/platform/internal/tapin"
 
 	_ "github.com/lib/pq"
 )
@@ -87,6 +88,11 @@ func newTapinMock(t *testing.T) *tapinMock {
 			fmt.Fprint(w, tapinBodyRegisterOK)
 		case strings.HasSuffix(r.URL.Path, "/options/"):
 			fmt.Fprint(w, tapinBodyOptionsOK)
+		case strings.HasSuffix(r.URL.Path, "/filter/"):
+			fmt.Fprint(w, `{"returns":{"status":20},"entries":{"list":[{"hash_raw":"sample-label"}]}}`)
+		case strings.HasSuffix(r.URL.Path, "/parcel/label/sample-label"):
+			w.Header().Set("Content-Type", "application/pdf")
+			fmt.Fprint(w, "%PDF-1.7\n")
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -808,6 +814,17 @@ func TestTapinRegistrationSuccess(t *testing.T) {
 	if out2.Status != http.StatusConflict {
 		t.Fatalf("second submit status = %d, want 409 (%v)", out2.Status, out2.Body)
 	}
+	labelRequest := httptest.NewRequest(http.MethodGet, "/api/v1/supplier/shipments/ship-ord-t1/tapin-label", nil)
+	labelContext := context.WithValue(labelRequest.Context(), supplierIDKey, "sup-tapin")
+	label := httptest.NewRecorder()
+	handleSupplierTapinLabel(label, labelRequest.WithContext(labelContext), labelContext, "ship-ord-t1", rp.supplierRepo, rp.tapinRepo)
+	if label.Code != http.StatusOK || label.Header().Get("Content-Type") != "application/pdf" || !strings.HasPrefix(label.Body.String(), "%PDF-") {
+		t.Fatalf("label status=%d content type=%q body=%q", label.Code, label.Header().Get("Content-Type"), label.Body.String())
+	}
+	filter := mock.calls("/filter/")
+	if len(filter) != 1 || filter[0]["contract_code"] != "ba219299518ir" {
+		t.Fatalf("label lookup did not use shipment tracking: %v", filter)
+	}
 }
 
 func TestTapinRegistrationSubKgPadding(t *testing.T) {
@@ -969,6 +986,58 @@ func TestTapinConnectionTestTaxonomy(t *testing.T) {
 	}
 	if msg, _ := out["message"].(string); !strings.Contains(msg, "توکن مورد نظر یافت نشد.") {
 		t.Fatalf("332 message = %q, want upstream verbatim", msg)
+	}
+}
+
+func TestTapinSettingsUseBothCredentialsAndStoreTogether(t *testing.T) {
+	rp := tapinTestSetup(t)
+	h, ctx := tapinTestHandler(t, rp)
+	handle := func(method, body string, handler http.HandlerFunc) (int, map[string]any) {
+		t.Helper()
+		req := httptest.NewRequest(method, "/api/v1/supplier/tapin/settings", strings.NewReader(body)).WithContext(ctx)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		var result map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &result)
+		if _, leaked := result["token"]; leaked {
+			t.Fatal("settings response exposed the token")
+		}
+		return rec.Code, result
+	}
+	if code, _ := handle(http.MethodDelete, "", h.HandleDeleteTapinSettings); code != 200 {
+		t.Fatalf("disconnect status=%d", code)
+	}
+	code, settings := handle(http.MethodPut, `{"shopId":" old-shop "}`, h.HandleUpdateTapinSettings)
+	if code != 200 || settings["tapinShopId"] != "old-shop" || settings["tapinConnected"] != false {
+		t.Fatalf("shop-only settings: status=%d settings=%v", code, settings)
+	}
+	if code, _ := handle(http.MethodPut, `{"shopId":"new-shop","token":"test-token"}`, h.HandleUpdateTapinSettings); code != 500 {
+		t.Fatalf("write without cipher: status=%d", code)
+	}
+	code, settings = handle(http.MethodGet, "", h.HandleGetTapinSettings)
+	if code != 200 || settings["tapinShopId"] != "old-shop" || settings["tapinConnected"] != false {
+		t.Fatalf("failed token write changed the shop: status=%d settings=%v", code, settings)
+	}
+	cipher, err := tapin.NewTokenCipher("test-settings-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp.supplierRepo.WithTapinCipher(cipher)
+	code, settings = handle(http.MethodPut, `{"shopId":"new-shop","token":"test-token"}`, h.HandleUpdateTapinSettings)
+	if code != 200 || settings["tapinShopId"] != "new-shop" || settings["tapinConnected"] != true {
+		t.Fatalf("save both: status=%d settings=%v", code, settings)
+	}
+	code, settings = handle(http.MethodPut, `{"shopId":"another-shop","token":""}`, h.HandleUpdateTapinSettings)
+	if code != 200 || settings["tapinConnected"] != true {
+		t.Fatalf("empty token did not preserve settings: status=%d settings=%v", code, settings)
+	}
+	code, settings = handle(http.MethodDelete, "", h.HandleDeleteTapinSettings)
+	if code != 200 || settings["tapinConnected"] != false {
+		t.Fatalf("disconnect: status=%d settings=%v", code, settings)
+	}
+	credentials, err := rp.tapinRepo.GetSupplierCredentials(ctx, "sup-tapin")
+	if err != nil || credentials.Token != "" || credentials.ShopID != "" {
+		t.Fatal("disconnect did not clear both credentials")
 	}
 }
 

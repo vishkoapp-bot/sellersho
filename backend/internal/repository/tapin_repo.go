@@ -592,7 +592,13 @@ func (r *TapinRepository) ClearTapinRegisterAttempted(ctx context.Context, shipm
 // RecordTapinRegistration persists a successful registration's
 // metadata and clears the unknown-outcome guard.
 func (r *TapinRepository) RecordTapinRegistration(ctx context.Context, shipmentID, service, boxID string, upstreamStatus int) error {
-	_, err := r.db.ExecContext(ctx, `
+	return recordTapinRegistration(ctx, r.db, shipmentID, service, boxID, upstreamStatus)
+}
+
+func recordTapinRegistration(ctx context.Context, writer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, shipmentID, service, boxID string, upstreamStatus int) error {
+	_, err := writer.ExecContext(ctx, `
 		UPDATE supplier_shipments
 		SET tapin_service = $2, tapin_box_id = $3, tapin_registered_at = NOW(),
 		    tapin_last_status = $4, tapin_register_attempted_at = NULL, updated_at = NOW()

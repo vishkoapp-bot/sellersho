@@ -119,6 +119,31 @@ func TestCheckPriceParsesGuideExample(t *testing.T) {
 	}
 }
 
+func TestTipaxCheckPriceRequiresFareButAcceptsExplicitZero(t *testing.T) {
+	for _, tc := range []struct {
+		entries string
+		valid   bool
+	}{
+		{`null`, false},
+		{`{"send_price":50000}`, false},
+		{`{"total_send_price":null}`, false},
+		{`{"total_send_price":-1}`, false},
+		{`{"total_send_price":0}`, true},
+	} {
+		t.Run(tc.entries, func(t *testing.T) {
+			srv := fixedServer(t, `{"returns":{"status":20},"entries":`+tc.entries+`}`)
+			result, err := NewClient(srv.URL).TipaxCheckPrice(context.Background(), "test-token", TipaxCheckPriceRequest{})
+			if tc.valid {
+				if err != nil || result == nil || result.TotalSendPrice != 0 {
+					t.Fatalf("explicit zero rejected: result=%v err=%v", result, err)
+				}
+			} else if err == nil || result != nil {
+				t.Fatalf("invalid price accepted: result=%v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestCallSendsShopAndAuthHeader(t *testing.T) {
 	var gotAuth, gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -129,7 +129,7 @@ func (h *SupplierHandlers) HandleGetTapinSettings(w http.ResponseWriter, r *http
 		http.Error(w, `{"error":"Supplier profile not found"}`, http.StatusNotFound)
 		return
 	}
-	connected := sup.TapinShopID != nil && strings.TrimSpace(*sup.TapinShopID) != ""
+	connected := sup.TapinShopID != nil && strings.TrimSpace(*sup.TapinShopID) != "" && strings.TrimSpace(sup.TapinToken) != ""
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"supplierId":     supplierID,
 		"tapinShopId":    sup.TapinShopID,
@@ -164,20 +164,16 @@ func (h *SupplierHandlers) HandleUpdateTapinSettings(w http.ResponseWriter, r *h
 		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
 		return
 	}
-	if req.ShopID != nil || req.TapinShopID != nil {
-		shopID := ""
-		if req.ShopID != nil {
-			shopID = strings.TrimSpace(*req.ShopID)
-		} else {
-			shopID = strings.TrimSpace(*req.TapinShopID)
-		}
-		if err := h.supplierRepo.UpdateTapinShopID(r.Context(), supplierID, shopID); err != nil {
-			writeInternalError(w, err)
-			return
-		}
+	shopID := req.ShopID
+	if shopID == nil {
+		shopID = req.TapinShopID
 	}
-	if req.Token != nil && strings.TrimSpace(*req.Token) != "" {
-		if err := h.supplierRepo.UpdateTapinToken(r.Context(), supplierID, strings.TrimSpace(*req.Token)); err != nil {
+	token := req.Token
+	if token != nil && strings.TrimSpace(*token) == "" {
+		token = nil
+	}
+	if shopID != nil || token != nil {
+		if err := h.supplierRepo.UpdateTapinCredentials(r.Context(), supplierID, shopID, token); err != nil {
 			writeInternalError(w, err)
 			return
 		}
@@ -191,7 +187,7 @@ func (h *SupplierHandlers) HandleUpdateTapinSettings(w http.ResponseWriter, r *h
 		http.Error(w, `{"error":"Supplier profile not found"}`, http.StatusNotFound)
 		return
 	}
-	connected := sup.TapinShopID != nil && strings.TrimSpace(*sup.TapinShopID) != ""
+	connected := sup.TapinShopID != nil && strings.TrimSpace(*sup.TapinShopID) != "" && strings.TrimSpace(sup.TapinToken) != ""
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"supplierId":     supplierID,
 		"tapinShopId":    sup.TapinShopID,
@@ -208,11 +204,8 @@ func (h *SupplierHandlers) HandleDeleteTapinSettings(w http.ResponseWriter, r *h
 	if !ok {
 		return
 	}
-	if err := h.supplierRepo.UpdateTapinShopID(r.Context(), supplierID, ""); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if err := h.supplierRepo.UpdateTapinToken(r.Context(), supplierID, ""); err != nil {
+	empty := ""
+	if err := h.supplierRepo.UpdateTapinCredentials(r.Context(), supplierID, &empty, &empty); err != nil {
 		writeInternalError(w, err)
 		return
 	}

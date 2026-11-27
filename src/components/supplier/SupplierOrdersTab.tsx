@@ -162,7 +162,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
   const [tapinService, setTapinService] = useState<'post' | 'tipax'>('tipax');
   const [tapinBoxId, setTapinBoxId] = useState('');
   const [tapinTracking, setTapinTracking] = useState('');
-  const [printingLabel, setPrintingLabel] = useState(false);
+  const [labelShipmentId, setLabelShipmentId] = useState<string | null>(null);
 
   // Each modal open starts in manual mode with no stale Tapin result,
   // and refreshes the connection + box catalogue for the mode toggle.
@@ -184,18 +184,24 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedOrder?.orderId]);
 
-  const handlePrintTapinLabel = async () => {
-    if (!selectedOrder || printingLabel) return;
-    setPrintingLabel(true);
+  const downloadTapinLabel = async (shipmentId: string) => {
+    if (labelShipmentId) return;
+    setLabelShipmentId(shipmentId);
     try {
-      const blob = await supplierApi.getTapinLabel(selectedOrder.id);
+      const blob = await supplierApi.getTapinLabel(shipmentId);
       const url = URL.createObjectURL(blob);
-      window.open(url, '_blank', 'noopener');
+      const link = document.createElement('a');
+      link.href = url;
+      const extension = blob.type.includes('pdf') ? '.pdf' : blob.type.includes('html') ? '.html' : '';
+      link.download = `tapin-label${extension}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 60000);
     } catch (err: any) {
       error(err?.message || 'دریافت برچسب از تاپین انجام نشد.');
     } finally {
-      setPrintingLabel(false);
+      setLabelShipmentId(null);
     }
   };
 
@@ -510,6 +516,12 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
                   <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-brand-soft px-3 py-2 text-xs text-brand-deep">
                     <span>شرکت حمل: {ord.carrier || 'پست پیشتاز'}</span>
                     <span>کد رهگیری: <bdi dir="ltr" className="break-all font-bold">{ord.trackingNumber}</bdi></span>
+                    {ord.carrier === 'tapin-tipax' && (
+                      <button type="button" disabled={!!labelShipmentId} onClick={() => void downloadTapinLabel(ord.id)}
+                        className="min-h-11 rounded-lg border border-brand-border bg-white px-3 font-bold disabled:opacity-50">
+                        {labelShipmentId === ord.id ? 'در حال دریافت…' : 'دانلود برچسب تاپین'}
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -650,7 +662,7 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
                       onChange={(e) => setTapinService(e.target.value as 'post' | 'tipax')}
                       className={shippingFieldClass}
                     >
-                      <option value="post" disabled>پست (به‌زودی)</option>
+                      <option value="post" disabled>پست (غیرفعال در سلرشو)</option>
                       <option value="tipax">تیپاکس</option>
                     </select>
                     <p className="mt-1 text-xs leading-6 text-slate-600">
@@ -684,12 +696,12 @@ export const SupplierOrdersTab: React.FC<{ initialFilter?: 'all' | 'ready' | 'ov
                       </p>
                       <button
                         type="button"
-                        onClick={() => void handlePrintTapinLabel()}
-                        disabled={printingLabel}
+                        onClick={() => void downloadTapinLabel(selectedOrder.id)}
+                        disabled={!!labelShipmentId}
                         className="flex min-h-11 items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-2 text-sm font-bold text-white focus-visible:ring-2 focus-visible:ring-emerald-800 disabled:opacity-50"
                       >
                         <Printer className="w-3.5 h-3.5" strokeWidth={1.5} />
-                        {printingLabel ? 'در حال دریافت…' : 'چاپ برچسب'}
+                        {labelShipmentId === selectedOrder.id ? 'در حال دریافت…' : 'دانلود برچسب'}
                       </button>
                     </div>
                   ) : (

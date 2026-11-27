@@ -676,7 +676,8 @@ export const SupplierTapinCard: React.FC = () => {
       setShopId(res.tapinShopId || "");
       setInputToken("");
       setTestResult(null);
-      success("اتصال تاپین ذخیره شد.");
+      setLastTestedAt(null);
+      success("تنظیمات ذخیره شد. برای بررسی دسترسی تیپاکس، تست اتصال را بزن.");
     } catch (err: any) {
       error(err?.message || "ذخیره اتصال تاپین انجام نشد.");
     } finally {
@@ -735,6 +736,7 @@ export const SupplierTapinCard: React.FC = () => {
       setInputShopId("");
       setInputToken("");
       setTestResult(null);
+      setLastTestedAt(null);
       success("اتصال تاپین قطع شد.");
     } catch (err: any) {
       error(err?.message || "قطع اتصال تاپین انجام نشد.");
@@ -758,20 +760,25 @@ export const SupplierTapinCard: React.FC = () => {
           </div>
         </div>
         {connected && (
-          testResult?.kind === "inactive" ? (
+          testResult?.kind === "active" ? (
+            <span className="flex shrink-0 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-700">
+              <CheckCircle2 className="h-3 w-3" />
+              تیپاکس فعال
+            </span>
+          ) : testResult?.kind === "inactive" ? (
             <span className="flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold bg-amber-50 text-amber-700 border-amber-200">
               <Info className="h-3 w-3" />
               سرویس تیپاکس غیرفعال
             </span>
-          ) : testResult?.kind === "invalid" || testResult?.kind === "error" ? (
+          ) : testResult?.kind === "invalid" ? (
             <span className="flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold bg-rose-50 text-rose-600 border-rose-200">
               <Info className="h-3 w-3" />
               اتصال نامعتبر
             </span>
           ) : (
-            <span className="flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-bold bg-emerald-50 text-emerald-700 border-emerald-200">
-              <CheckCircle2 className="h-3 w-3" />
-              متصل
+            <span className="flex shrink-0 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-bold text-slate-700">
+              <Info className="h-3 w-3" />
+              {testing ? "در حال بررسی اتصال" : "تنظیم‌شده، نیاز به تست"}
             </span>
           )
         )}
@@ -786,6 +793,7 @@ export const SupplierTapinCard: React.FC = () => {
             <details className="rounded-xl bg-slate-50 px-3">
               <summary className={detailSummaryClass}>شناسه و توکن تاپین را از کجا بگیرم؟</summary>
               <p className="pb-2 text-sm leading-6 text-slate-700">در پنل تاپین به «یکپارچه‌سازی» و سپس «مدیریت توکن» برو. برای دریافت توکن به آی‌پی سرور و رمز پنل نیاز داری.</p>
+              <a href="https://docs.tapin.ir/GetToken/" target="_blank" rel="noopener noreferrer" className="mb-2 inline-flex min-h-11 items-center rounded-lg px-2 text-sm font-bold text-brand-deep underline focus-visible:ring-2 focus-visible:ring-brand">راهنمای دریافت توکن</a>
               <a href={TAPIN_SIGNUP_URL} target="_blank" rel="noopener noreferrer" className="mb-2 inline-flex min-h-11 items-center rounded-lg px-2 text-sm font-bold text-brand-deep underline focus-visible:ring-2 focus-visible:ring-brand">ثبت‌نام در تاپین (زبانهٔ جدید)</a>
             </details>
           )}

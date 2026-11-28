@@ -31,12 +31,10 @@ if ((Run-Git -GitArgs @('rev-parse',"refs/remotes/origin/$branch")).Trim() -ne $
 # secret literal before any build or upload. Only the non-Docker
 # checks run here; the 2 Docker-dependent checks are Docker-host-only
 # (see scripts/run_secret_checks_nodocker.py).
-$pythonExe = $null
-$pythonCmd = Get-Command python3 -ErrorAction SilentlyContinue
-if ($pythonCmd) { $pythonExe = $pythonCmd.Source } else {
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCmd) { $pythonExe = $pythonCmd.Source }
-}
+# Windows exposes a Store installation launcher even when Python is not installed.
+$pythonExe = Get-Command python3, python -CommandType Application -All -ErrorAction SilentlyContinue |
+    Where-Object { $_.Source -notlike '*\Microsoft\WindowsApps\*' } |
+    Select-Object -First 1 -ExpandProperty Source
 if (-not $pythonExe) { throw 'SEC-01 secret checks need python3 (or python) on PATH; refusing to deploy.' }
 & $pythonExe scripts/run_secret_checks_nodocker.py $root
 if ($LASTEXITCODE -ne 0) { throw 'SEC-01 production-secret checks failed; refusing to deploy.' }

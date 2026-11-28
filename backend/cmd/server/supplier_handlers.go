@@ -519,11 +519,7 @@ func (h *SupplierHandlers) HandleApproveProposal(w http.ResponseWriter, r *http.
 
 	productID, err := h.supplierRepo.ApproveProposal(r.Context(), proposalID, req.Notes)
 	if err != nil {
-		if errors.Is(err, repository.ErrProposalNotPending) {
-			http.Error(w, `{"error":"Proposal is not pending"}`, http.StatusConflict)
-			return
-		}
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		writeProposalPublicationError(w, err)
 		return
 	}
 

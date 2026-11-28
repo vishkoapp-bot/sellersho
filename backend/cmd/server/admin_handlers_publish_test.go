@@ -127,8 +127,8 @@ func TestHandleReviewApproval_PublishSurfacesCategoryCauseNotApprovalNotFound(t 
 		t.Fatalf("category still exists: %t, error: %v", exists, err)
 	}
 	res := postReviewPublication(t, db, id, user)
-	if res.Code != http.StatusInternalServerError || !strings.Contains(res.Body.String(), "invalid product category") {
-		t.Fatalf("publish = %d %s, want 500 with category cause", res.Code, res.Body.String())
+	if res.Code != http.StatusUnprocessableEntity || !strings.Contains(res.Body.String(), "invalid_publication_category") || strings.Contains(res.Body.String(), "sql:") {
+		t.Fatalf("publish = %d %s, want 422 with a public category cause", res.Code, res.Body.String())
 	}
 	assertReviewPublicationState(t, db, id, title, "pending", false)
 }
@@ -158,8 +158,8 @@ func TestHandleReviewApproval_PublishSurfacesWarehouseCauseNotApprovalNotFound(t
 		"supplierWarehouseId": warehouse,
 	})
 	res := postReviewPublication(t, db, id, owner.user)
-	if res.Code != http.StatusInternalServerError || !strings.Contains(res.Body.String(), "publication requires an active owned supplier origin") {
-		t.Fatalf("publish = %d %s, want 500 with supplier origin cause", res.Code, res.Body.String())
+	if res.Code != http.StatusConflict || !strings.Contains(res.Body.String(), "publication_warehouse_unavailable") || strings.Contains(res.Body.String(), "sql:") {
+		t.Fatalf("publish = %d %s, want 409 with a public supplier origin cause", res.Code, res.Body.String())
 	}
 	assertReviewPublicationState(t, db, id, title, "pending", false)
 }

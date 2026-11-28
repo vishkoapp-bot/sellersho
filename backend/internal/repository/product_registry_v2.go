@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/drup/platform/internal/pricing"
 	"github.com/lib/pq"
 )
+
+var ErrInvalidPublicationCategory = errors.New("invalid product category")
 
 type productRegistryQuery interface {
 	QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
@@ -168,7 +171,10 @@ func ValidateProductProposalTx(ctx context.Context, tx *sql.Tx, data map[string]
 	}
 	var category, categorySlug string
 	if err = tx.QueryRowContext(ctx, `SELECT id, slug FROM categories WHERE slug=$1 OR id=$1 LIMIT 1 FOR SHARE`, slug).Scan(&category, &categorySlug); err != nil {
-		return fmt.Errorf("invalid product category: %w", err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrInvalidPublicationCategory
+		}
+		return fmt.Errorf("load publication category: %w", err)
 	}
 	definitions, err := loadCategoryProductAttributes(ctx, tx, category)
 	if err != nil {
@@ -420,7 +426,10 @@ func publishProductModelV2Tx(ctx context.Context, tx *sql.Tx, productID, categor
 	}
 	var category string
 	if err = tx.QueryRowContext(ctx, `SELECT id FROM categories WHERE slug=$1 OR id=$1 LIMIT 1`, categorySlug).Scan(&category); err != nil {
-		return fmt.Errorf("invalid product category: %w", err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrInvalidPublicationCategory
+		}
+		return fmt.Errorf("load publication category: %w", err)
 	}
 	for _, a := range schema.Attributes {
 		if a.Source != "requested" {

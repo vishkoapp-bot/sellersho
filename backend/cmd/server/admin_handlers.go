@@ -99,11 +99,7 @@ func handleReviewApproval(w http.ResponseWriter, r *http.Request, ctx context.Co
 		case "approved":
 			productID, err := supplierRepo.ApproveProposal(ctx, id, "")
 			if err != nil {
-				if errors.Is(err, repository.ErrProposalNotPending) {
-					http.Error(w, `{"error":"Proposal is not pending"}`, http.StatusConflict)
-					return
-				}
-				writeInternalError(w, err)
+				writeProposalPublicationError(w, err)
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]interface{}{
@@ -150,6 +146,23 @@ func handleReviewApproval(w http.ResponseWriter, r *http.Request, ctx context.Co
 		"id":      id,
 		"status":  req.Status,
 	})
+}
+
+func writeProposalPublicationError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, repository.ErrProposalNotPending):
+		t01WriteJSON(w, http.StatusConflict, map[string]string{"error": "Proposal is not pending"})
+	case errors.Is(err, repository.ErrInvalidPublicationCategory):
+		t01WriteJSON(w, http.StatusUnprocessableEntity, map[string]string{
+			"code": "invalid_publication_category", "error": "دسته‌بندی این کالا دیگر معتبر نیست. دسته‌بندی را اصلاح کنید.",
+		})
+	case errors.Is(err, repository.ErrPublicationWarehouseUnavailable):
+		t01WriteJSON(w, http.StatusConflict, map[string]string{
+			"code": "publication_warehouse_unavailable", "error": "انبار مبدأ این کالا در دسترس نیست. یک انبار فعالِ تأمین‌کننده انتخاب کنید.",
+		})
+	default:
+		writeInternalError(w, err)
+	}
 }
 
 func handleGetAuditLogs(w http.ResponseWriter, r *http.Request, ctx context.Context, adminRepo *repository.AdminRepository) {
@@ -275,10 +288,6 @@ func handleReviewStore(w http.ResponseWriter, r *http.Request, ctx context.Conte
 		"reason":  req.Reason,
 	})
 }
-
-
-
-
 
 func handleLockStoreMargin(w http.ResponseWriter, r *http.Request, ctx context.Context, storeID string, adminRepo *repository.AdminRepository) {
 	w.Header().Set("Content-Type", "application/json")

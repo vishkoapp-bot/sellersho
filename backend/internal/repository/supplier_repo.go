@@ -1592,12 +1592,15 @@ func (r *SupplierRepository) ApproveProposal(ctx context.Context, proposalID, no
 		if rawSource, exists := data["supplierWarehouseId"]; exists && rawSource != nil {
 			source, ok := rawSource.(string)
 			if !ok {
-				return "", fmt.Errorf("invalid supplier publication origin")
+				return "", ErrPublicationWarehouseUnavailable
 			}
 			if source = strings.TrimSpace(source); source != "" {
 				var ownedSource string
 				if err := tx.QueryRowContext(ctx, `SELECT id FROM supplier_warehouses WHERE id=$1 AND supplier_id=$2 AND is_active FOR SHARE`, source, requestedBy).Scan(&ownedSource); err != nil {
-					return "", fmt.Errorf("publication requires an active owned supplier origin: %w", err)
+					if errors.Is(err, sql.ErrNoRows) {
+						return "", ErrPublicationWarehouseUnavailable
+					}
+					return "", fmt.Errorf("load publication warehouse: %w", err)
 				}
 				if _, err := tx.ExecContext(ctx, `UPDATE products SET origin_supplier_warehouse_id=$1 WHERE id=$2`, ownedSource, productID); err != nil {
 					return "", err
@@ -2227,6 +2230,8 @@ var ErrSupplierReturnNotFound = errors.New("مرجوعی تأمین‌کننده
 // ErrProposalNotPending is returned by ApproveProposal when its atomic
 // backstop UPDATE touches zero rows because the proposal was already reviewed.
 var ErrProposalNotPending = errors.New("proposal is not pending")
+
+var ErrPublicationWarehouseUnavailable = errors.New("publication requires an active owned supplier origin")
 
 func (r *SupplierRepository) HandoverReturn(ctx context.Context, returnID, actorUserID, idempotencyKey string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)

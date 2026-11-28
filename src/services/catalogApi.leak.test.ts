@@ -163,7 +163,7 @@ test('real customer components and PDP variant selection keep unit data out of t
       assert.doesNotMatch(tracking, unitPattern);
     });
     await t.test('PDP treats a unit code like an unknown variant parameter', async () => {
-      const selectedVariant = async (spnc: string, expected: string | null) => {
+      const selectedVariant = async (spnc: string, expected: string) => {
         await visit('/product/spn-3724980?spnc=' + encodeURIComponent(spnc));
         await page.waitForFunction(text =>
           !!document.querySelector('[data-testid="variant-selector"]')
@@ -174,7 +174,8 @@ test('real customer components and PDP variant selection keep unit data out of t
         assert.doesNotMatch(html, unitPattern);
       };
       await selectedVariant(red.spnc, red.name);
-      await selectedVariant(serverUnits[0].code, null);
+      await selectedVariant('unknown-variant', blue.name);
+      await selectedVariant(serverUnits[0].code, blue.name);
       assert.deepEqual(unitRequests, []);
     });
   } finally {

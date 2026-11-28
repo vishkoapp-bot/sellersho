@@ -209,8 +209,8 @@ test('shipment receive submits complete scans and exposes the server receipt lin
     await page.keyboard.press('Enter');
     await fillInput(page, 'input[aria-label="اسکن کد واحد"]', ' d0f91a60-x0001 ');
     await page.keyboard.press('Enter');
-    await clickText(page, 'تأیید اسکن و QC این قلم');
     await waitText(page, '1 از 1 واحد اسکن شد');
+    await page.locator('button[data-carton-confirm]').click();
     await clickText(page, 'تأیید دریافت محموله (1 قلم تأییدشده)');
     await clickText(page, 'چاپ برچسب واحد');
     await page.waitForFunction(code => document.querySelector('output')?.textContent === code, {}, code);

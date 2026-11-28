@@ -70,6 +70,7 @@ test('supplier sections, navigation history and daily workflows work on mobile a
     response.setHeader('Content-Type', 'application/json');
     const font = path.endsWith('.woff2') ? assets.find(asset => `/${asset.fileName}` === path) : undefined;
     if (font) { response.setHeader('Content-Type', 'font/woff2'); response.end(font.source); }
+    else if (path === '/favicon.ico') { response.writeHead(204); response.end(); }
     else if (path === '/supplier-test.css') { response.setHeader('Content-Type', 'text/css'); response.end(css.source); }
     else if (path === '/api/v1/platform/contracts') response.end(JSON.stringify({ supplierContractVersion: 3, supplierContractText: 'متن قرارداد به‌روزشده' }));
     else if (path === '/api/v1/supplier/contract/accept' && request.method === 'POST') {
@@ -429,7 +430,10 @@ test('supplier sections, navigation history and daily workflows work on mobile a
           await openSection(id, Boolean(viewport.isMobile));
           await page.waitForFunction(expected => document.querySelector('header h1')?.textContent === expected, { timeout: 4000 }, label)
             .catch(cause => { throw new Error(`Unable to open ${id} at ${viewport.width}px (${pageErrors.join(', ')})`, { cause }); });
-          await page.waitForNetworkIdle({ idleTime: 60 });
+          // Measure the rendered section after fonts and layout settle.
+          // Pending requests from a section we left are unrelated to geometry.
+          await page.waitForFunction(() => document.fonts.status === 'loaded', { timeout: 4000 });
+          await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
           assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${id} overflows at ${viewport.width}px`);
         }
       }

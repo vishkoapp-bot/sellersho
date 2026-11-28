@@ -63,7 +63,17 @@ jobs:
           command -v pdfinfo
           command -v pdftotext
       - run: npm run build
-      - run: npm test
+      - name: run frontend tests
+        run: |
+          set -o pipefail
+          log_file="$RUNNER_TEMP/frontend-tests.log"
+          if npm test 2>&1 | tee "$log_file"; then
+            exit 0
+          fi
+          grep -m 20 -E '^not ok [0-9]+ - ' "$log_file" | while IFS= read -r failure; do
+            printf '::error title=Frontend test failure::%s\n' "${failure//%/%25}"
+          done
+          exit 1
         env:
           # Ubuntu's AppArmor policy covers installed Chrome, not the
           # Chrome-for-Testing executable downloaded into Puppeteer's cache.
@@ -141,8 +151,17 @@ jobs:
           TEST_PACKAGE: ${{ matrix.package }}
         run: |
           run_isolated() {
-            python scripts/test-isolated.py -- go test "$TEST_PACKAGE" -count=1 -timeout 9m -v "$@"
+            local log_file
+            log_file="$(mktemp "$RUNNER_TEMP/go-tests.XXXXXX")"
+            if python scripts/test-isolated.py -- go test "$TEST_PACKAGE" -count=1 -timeout 9m -v "$@" 2>&1 | tee "$log_file"; then
+              return 0
+            fi
+            grep -m 20 -E '^--- FAIL: |^panic: test timed out|^FAIL[[:space:]]' "$log_file" | while IFS= read -r failure; do
+              printf '::error title=Go test failure::%s\n' "${failure//%/%25}"
+            done
+            return 1
           }
+          set -o pipefail
           if [[ "$TEST_PACKAGE" == ./internal/database/seeder ]]; then
             # Exercise SeedDev against empty migrated schema.
             python scripts/test-isolated.py --schema-only -- go test "$TEST_PACKAGE" -count=1 -timeout 9m -v

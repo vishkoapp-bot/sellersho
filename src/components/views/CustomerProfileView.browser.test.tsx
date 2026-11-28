@@ -11,9 +11,14 @@ test('returns are directly accessible from a central customer account even when 
     await clickText(page, 'مرجوعی‌های من', '#main-content nav button span.text-sm');
     await page.waitForSelector('#customer-returns-heading', { visible: true });
     await waitText(page, 'درخواستی برای مرجوعی ثبت نکرده‌اید.');
-    assert.equal(new URL(page.url()).pathname, '/account/orders');
-    assert.equal(new URL(page.url()).hash, '#returns');
+    assert.equal(new URL(page.url()).pathname, '/account');
+    assert.equal(new URL(page.url()).searchParams.get('section'), 'returns');
     await clickText(page, 'مشاهدهٔ سفارش‌های تحویل‌شده');
     await page.waitForSelector('#customer-returns-heading', { hidden: true });
-    assert.equal(new URL(page.url()).hash, '');
+    assert.equal(new URL(page.url()).pathname, '/account');
+    assert.equal(new URL(page.url()).searchParams.get('section'), 'orders');
+    await page.locator('button[aria-label="بازگشت به منوی حساب"]').click();
+    await page.waitForSelector('#main-content nav[aria-label="امکانات حساب"]', { visible: true });
+    assert.equal(new URL(page.url()).pathname, '/account');
+    assert.equal(new URL(page.url()).searchParams.has('section'), false);
   }));

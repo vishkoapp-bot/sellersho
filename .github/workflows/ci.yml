@@ -153,6 +153,15 @@ jobs:
           if [[ "$TEST_PACKAGE" == ./cmd/capacity-fixture ]]; then
             export CAPACITY_FINANCE_HISTORY=1
           fi
+          if [[ "$TEST_PACKAGE" == ./cmd/server ]]; then
+            # Older supplier HTTP fixtures replace UUID owner and member columns
+            # with varchar. Check operational tracking on the migrated schema.
+            tracking='^TestSupplierOperationalTrackingRequiresActiveBusiness$'
+            result=0
+            run_isolated -skip "$tracking" || result=1
+            run_isolated -run "$tracking" || result=1
+            exit "$result"
+          fi
           if [[ "$TEST_PACKAGE" != ./internal/repository ]]; then
             run_isolated
             exit

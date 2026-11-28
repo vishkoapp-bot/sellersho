@@ -7,8 +7,7 @@ const visit = batch8Browser();
 test('mobile tracking uses the shop palette, fits at 320px, and closes back to its trigger', async () => {
   await visit('/', 320, async page => {
     const trigger = '.central-track-mobile';
-    await page.waitForSelector(trigger, { visible: true });
-    await page.click(trigger);
+    await page.locator(trigger).click();
     await page.waitForSelector('dialog.tracking-dialog[open]');
     await waitText(page, 'سفارشی برای نمایش در دسترس نیست');
     const dialog = await page.$eval('dialog.tracking-dialog', node => ({
@@ -29,8 +28,8 @@ test('mobile tracking uses the shop palette, fits at 320px, and closes back to i
 
 test('opening tracking loads account orders, keeps the current store, and shows pending payment honestly', async () => {
   await visit('/?access-fixture-role=customer&access-fixture-caps=customer&tracking-orders', 1280, async page => {
-    await page.waitForSelector('.central-track', { visible: true });
-    await page.click('.central-track');
+    await page.waitForFunction(() => (window as any).batch8Fixture?.state().isSessionReady);
+    await page.locator('.central-track').click();
     await waitText(page, 'DEMO-125');
     await waitText(page, 'در انتظار پرداخت');
     assert.equal(await page.$eval('dialog.tracking-dialog', node => node.textContent?.includes('OTHER-900')), false);

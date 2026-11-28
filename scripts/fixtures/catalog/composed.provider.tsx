@@ -11,6 +11,7 @@ import { WarehouseProvider } from '../../../src/context/WarehouseContext';
 import { StoreProvider, useStore } from '../../../src/context/StoreContext';
 import { ToastProvider, useToast } from '../../../src/context/ToastContext';
 import { CartOrderSuccess } from '../../../src/components/CartOrderSuccess';
+import { HelpExplainer } from '../../../src/components/common/HelpExplainer';
 import { OrderDetailModal } from '../../../src/components/common/OrderDetailModal';
 import { shippingApi } from '../../../src/services/shippingApi';
 import type { Order, Store } from '../../../src/types';
@@ -191,7 +192,6 @@ const fixture = {
   rejectRegistration: false,
   pending: false,
   shipping: 0,
-  staticTabScrolls: 0,
   effectiveMarginReads: 0,
   variantOverrideClears: 0,
   finish: (outcome: 'success' | 'error' = 'success') => release?.(outcome),
@@ -278,11 +278,6 @@ if (drp3132 !== null) {
   };
 }
 Object.assign(window, { batch8Fixture: fixture });
-const nativeScrollIntoView = HTMLElement.prototype.scrollIntoView;
-HTMLElement.prototype.scrollIntoView = function (options) {
-  if (this.parentElement?.className.includes('mask-image')) fixture.staticTabScrolls += 1;
-  nativeScrollIntoView.call(this, options);
-};
 
 storeApi.getAllStores = async () => [central] as Awaited<ReturnType<typeof storeApi.getAllStores>>;
 storeApi.getOwnedStores = async () => hasSeller
@@ -636,8 +631,10 @@ function FixtureControls() {
   const toast = useToast();
   const [order, setOrder] = React.useState<Order | null>(null);
   const [showDetails, setShowDetails] = React.useState(false);
+  const [helpText, showHelp] = React.useState('');
   Object.assign(fixture, {
     toast: toast.showToast,
+    showHelp,
     openWorkspace: (view: ActiveView) => store.setActiveView(view),
     state: () => ({ view: store.activeView, catalogTotal: store.catalogTotal, productCount: store.products.length,
       userId: currentUser?.id, isSessionReady, storeSlug: store.currentStore.slug,
@@ -655,11 +652,15 @@ function FixtureControls() {
     },
     showCheckoutError: () => toast.error('خطای آزمایشی ثبت سفارش'),
   });
-  if (!order) return null;
-  return <section id="fixture-order">
-    {showDetails ? <OrderDetailModal order={order} isOpen onClose={() => setOrder(null)} />
-      : <CartOrderSuccess order={order} onClose={() => setOrder(null)} />}
-  </section>;
+  return <>
+    {helpText && <section id="fixture-help" className="fixed start-12 top-40 z-[9999]">
+      <HelpExplainer text={helpText} />
+    </section>}
+    {order && <section id="fixture-order">
+      {showDetails ? <OrderDetailModal order={order} isOpen onClose={() => setOrder(null)} />
+        : <CartOrderSuccess order={order} onClose={() => setOrder(null)} />}
+    </section>}
+  </>;
 }
 
 createRoot(document.getElementById('root')!).render(

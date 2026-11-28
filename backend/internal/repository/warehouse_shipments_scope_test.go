@@ -23,12 +23,15 @@ func TestQUAL01WarehouseShipmentSiteScope(t *testing.T) {
 		`CREATE TEMP TABLE products(id text PRIMARY KEY, title text)`,
 		`CREATE TEMP TABLE product_variants(id text PRIMARY KEY, product_id text, variant_name text, spnc text)`,
 		`CREATE TEMP TABLE shipment_items(shipment_id text, variant_id text, expected_qty int, received_qty int, inventory_received_qty int, qc_status text)`,
-		`CREATE TEMP TABLE inbound_inventory_lines(shipment_id text, warehouse_id text)`,
+		`CREATE TEMP TABLE inbound_inventory_lines(
+			id text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+			shipment_id text, warehouse_id text, supplier_id text, product_id text, variant_id text,
+			quantity int, dispatched_quantity int, received_quantity int, cancelled_quantity int)`,
 		`INSERT INTO users VALUES ('staff','City A',TRUE,TRUE), ('blank',' ',TRUE,TRUE), ('unassigned',NULL,TRUE,TRUE), ('unconfirmed','City A',FALSE,TRUE), ('inactive','City A',TRUE,FALSE)`,
 		`INSERT INTO warehouses VALUES ('a1','City A'), ('a2','City A'), ('b1','City B')`,
 		`INSERT INTO order_shipping_legs VALUES ('0-outside','b1',NULL,NULL,'City A'), ('1-a','a1',NULL,NULL,'Wrong label'), ('2-a','a2',NULL,NULL,'City A'), ('3-legacy',NULL,NULL,NULL,'City A'), ('4-supplier','a1','supplier',NULL,'City A'), ('5-supplier-site','a1',NULL,'supplier-site','City A'), ('6-orphan','missing',NULL,NULL,'City A')`,
 		`INSERT INTO shipments VALUES ('a','A','a1','supplier','received'), ('a2','A2','a2','supplier','received'), ('b','B','b1','supplier','received'), ('legacy','LEGACY',NULL,'supplier','received'), ('orphan','ORPHAN','missing','supplier','received'), ('conflict','CONFLICT','a1','supplier','received')`,
-		`INSERT INTO inbound_inventory_lines VALUES ('conflict','b1')`,
+		`INSERT INTO inbound_inventory_lines (shipment_id,warehouse_id) VALUES ('conflict','b1')`,
 		`INSERT INTO suppliers VALUES ('supplier','Supplier')`,
 		`INSERT INTO products VALUES ('p','Product')`,
 		`INSERT INTO product_variants VALUES ('v','p','Variant','SPNC')`,
@@ -94,7 +97,7 @@ func TestQUAL01WarehouseShipmentSiteScope(t *testing.T) {
 	if err := lockScopedCartonReceipt(staff, tx, "a", "staff", "a", &status); err != nil {
 		t.Fatalf("final guard rejects authorized site: %v", err)
 	}
-	if _, err := tx.Exec(`INSERT INTO inbound_inventory_lines VALUES ('a','b1')`); err != nil {
+	if _, err := tx.Exec(`INSERT INTO inbound_inventory_lines (shipment_id,warehouse_id) VALUES ('a','b1')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := lockScopedCartonReceipt(staff, tx, "a", "staff", "a", &status); !errors.Is(err, sql.ErrNoRows) {

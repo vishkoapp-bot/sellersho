@@ -7,7 +7,7 @@ import { batch8Browser } from '../../../scripts/fixtures/catalog/batch8-browser'
 // Live-DOM counterpart of HelpExplainer.test.tsx. Run in CI/live acceptance;
 // a fixture launch failure is not evidence that any interaction passed.
 const visit = batch8Browser();
-const product = '#products-section h2 button[aria-haspopup="dialog"]';
+const product = '#fixture-help button[aria-haspopup="dialog"]';
 const order = '#fixture-order button[aria-haspopup="dialog"]';
 const dialog = '[role="dialog"][aria-label="توضیح ساده"]';
 const productText = 'کالاها پیش از ارسال کنترل کیفیت می‌شوند؛ ارسال به سراسر کشور';
@@ -22,11 +22,16 @@ async function closed(page: Page) {
 async function focused(page: Page, selector: string) {
   await page.waitForFunction(query => document.activeElement === document.querySelector(query), {}, selector);
 }
-async function ready(page: Page, selector = product) {
+async function ready(page: Page, selector: string) {
   await page.waitForSelector(selector, { visible: true });
   // Finish scrolling before opening, since page scroll intentionally closes help.
   await page.$eval(selector, node => node.scrollIntoView({ block: 'center', behavior: 'instant' }));
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+}
+async function showPopover(page: Page) {
+  await page.waitForFunction(() => typeof (window as any).batch8Fixture?.showHelp === 'function');
+  await page.evaluate(text => (window as any).batch8Fixture.showHelp(text), productText);
+  await ready(page, product);
 }
 async function showOrder(page: Page) {
   await page.waitForFunction(() => typeof (window as any).batch8Fixture?.showOrder === 'function');
@@ -34,9 +39,9 @@ async function showOrder(page: Page) {
   await ready(page, order);
 }
 
-test('cases 2–5, 7: real homepage help toggles, closes outside/Esc, and supports keyboard without focus-open', async () => {
+test('cases 2–5, 7: the help popover toggles, closes outside/Esc, and supports keyboard without focus-open', async () => {
   await visit('/', 390, async page => {
-    await ready(page);
+    await showPopover(page);
     await page.focus(product);
     await expanded(page, product, false);
     assert.equal(await page.$(dialog), null);
@@ -69,7 +74,7 @@ test('cases 2–5, 7: real homepage help toggles, closes outside/Esc, and suppor
 test('case 6 and 390px adjacent hit areas: two real anchors remain independent and only one opens', async () => {
   await visit('/', 390, async page => {
     await showOrder(page);
-    await ready(page);
+    await showPopover(page);
     // Controlled adjacency of REAL mounted anchors: no cloned buttons or fake click handlers.
     // This tests the shared hit-area contract, not the natural homepage spacing.
     await page.evaluate((a, b) => {
@@ -127,7 +132,6 @@ test('case 8-open: title is the heading and accessible-label suffix', async () =
     define: { 'process.env.NODE_ENV': '"production"' },
   });
   await visit('/', 390, async page => {
-    await ready(page);
     await page.addScriptTag({ content: bundle.outputFiles[0].text });
     const trigger = '#help-title-probe button';
     await ready(page, trigger);
@@ -190,6 +194,7 @@ test('case 9-open: real F-C-04 sheet has two clean bullets, named close, backdro
 
 test('P1-5: replacing a sheet with a popover does not steal focus back to the closed sheet trigger', async () => {
   await visit('/', 390, async page => {
+    await showPopover(page);
     await showOrder(page);
     await page.click(order);
     await expanded(page, order, true);
@@ -216,7 +221,7 @@ test('P1-5: replacing a sheet with a popover does not steal focus back to the cl
 
 test('scroll inside help stays open; ancestor scroll closes; 390px edge geometry stays in bounds and flips', async () => {
   await visit('/', 390, async page => {
-    await ready(page);
+    await showPopover(page);
     // Controlled edge placements exercise measured DOM geometry on a real anchor.
     for (const [left, top] of [[0, 80], [366, 80], [100, 720]]) {
       await page.$eval(product, (node, position) => {
@@ -246,7 +251,7 @@ test('scroll inside help stays open; ancestor scroll closes; 390px edge geometry
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     await expanded(page, product, true);
     // Scroll events do not bubble: capture on document must catch this ancestor.
-    await page.$eval('#products-section', node => node.dispatchEvent(new Event('scroll')));
+    await page.$eval('#fixture-help', node => node.dispatchEvent(new Event('scroll')));
     await closed(page);
     await expanded(page, product, false);
   });

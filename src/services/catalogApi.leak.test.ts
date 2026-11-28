@@ -24,7 +24,7 @@ const red = {
 const blue = { ...red, id: 'blue', name: 'تنوع آبی', variantName: 'تنوع آبی', spnc: '85D123B1', isDefault: true };
 const serverUnits = [{ variant_id: red.id, code: 'D0F91A60-X0001' }];
 const publicProduct = {
-  id: 'catalog-fixture', spnNumber: 3724980, slug: 'serialized-fixture',
+  id: 'catalog-fixture', spnNumber: 3724980, slug: 'serialized-fixture', productType: 'variable',
   title: 'کالای نمونه سریال‌دار', category: 'digital', warehouse: 'fixture', platformFeeF: 0,
   description: 'کالای آزمایشی', price: 100, originalPrice: 100, stock: 2,
   image: '', isOriginal: true, isActive: true, variants: [red, blue],
@@ -87,6 +87,7 @@ test('real customer components and PDP variant selection keep unit data out of t
       });`,
     OrderContext: `export const useOrders = () => ({ orders: [${JSON.stringify(order)}], fetchMyOrders: async () => {} });`,
     AuthContext: `export const adminRolesForCapabilities = () => [];
+      export const panelsForCapabilities = () => ['customer'];
       export const useAuth = () => ({ currentUser: { role: 'customer' }, isSessionReady: true });`,
   };
   const bundle = await build({
@@ -162,17 +163,18 @@ test('real customer components and PDP variant selection keep unit data out of t
       assert.doesNotMatch(tracking, unitPattern);
     });
     await t.test('PDP treats a unit code like an unknown variant parameter', async () => {
-      const selectedVariant = async (spnc: string, expected: string) => {
+      const selectedVariant = async (spnc: string, expected: string | null) => {
         await visit('/product/spn-3724980?spnc=' + encodeURIComponent(spnc));
         await page.waitForFunction(text =>
-          document.querySelector('[data-testid="variant-selector"] button[aria-pressed="true"]')?.textContent?.trim() === text,
+          !!document.querySelector('[data-testid="variant-selector"]')
+            && (document.querySelector('[data-testid="variant-selector"] button[aria-pressed="true"]')?.textContent?.trim() ?? null) === text,
         {}, expected);
         const html = await page.$eval('#root', node => node.innerHTML);
         assert.match(html, /کالای نمونه سریال‌دار/);
         assert.doesNotMatch(html, unitPattern);
       };
       await selectedVariant(red.spnc, red.name);
-      await selectedVariant(serverUnits[0].code, blue.name);
+      await selectedVariant(serverUnits[0].code, null);
       assert.deepEqual(unitRequests, []);
     });
   } finally {

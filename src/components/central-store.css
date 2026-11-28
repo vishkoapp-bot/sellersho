@@ -311,6 +311,20 @@
 .central-info-page .central-info-tabs { border: 1px solid #e0e5da; border-radius: 14px; }
 .central-info-page .central-info-tabs :is([aria-pressed="true"], [aria-current="page"]) { background: var(--shop-forest); color: white; }
 .central-info-tabs :is(a, button):focus-visible { outline-offset: -3px; }
+@media (480px <= width < 640px) {
+  .central-info-page .central-info-tabs:has(> :nth-child(5):last-child) {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .central-info-page .central-info-tabs:has(> :nth-child(5):last-child) > :is(a, button) {
+    min-width: 0;
+    justify-content: center;
+    padding-inline: 4px;
+    text-align: center;
+    line-height: 1.5;
+  }
+  .central-info-page .central-info-tabs svg { flex: none; }
+}
 .central-info-page .central-info-content { padding: 14px 0 0; }
 .central-info-page .central-info-content p { font-size: 14px; line-height: 1.9; }
 .central-info-page .central-info-content h2 { font-size: 18px; margin-bottom: 7px; }

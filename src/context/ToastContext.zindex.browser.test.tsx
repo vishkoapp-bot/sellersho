@@ -3,18 +3,17 @@ import { test } from 'node:test';
 import { batch8Browser, waitText } from '../../scripts/fixtures/catalog/batch8-browser';
 
 const visit = batch8Browser();
-const containerSelector = 'div.fixed.top-4.pointer-events-none';
-const toastSelector = `${containerSelector} > .pointer-events-auto`;
+const containerSelector = '[data-toast-stack]';
+const toastSelector = `${containerSelector} > .toast-message`;
 
 test('error toast paints above the auth modal at 390px', async () => {
   await visit('/', 390, async page => {
     await page.waitForSelector(containerSelector);
     assert.equal(await page.$eval(containerSelector, element => getComputedStyle(element).zIndex), '10000');
 
-    const loginSelector = 'header button[aria-label="ورود به حساب کاربری"]';
-    await page.waitForSelector(loginSelector, { visible: true });
-    await page.click(loginSelector);
-    await waitText(page, 'ورود به حساب کاربری خریدار');
+    const loginSelector = 'nav[aria-label="منوی پایین فروشگاه"] a[href="/account"]';
+    await page.locator(loginSelector).click();
+    await waitText(page, 'ورود به حساب کاربری');
     await page.waitForSelector('button[aria-label="بستن"]', { visible: true });
 
     const stacking = await page.evaluate(selector => {
@@ -43,14 +42,16 @@ test('error toast paints above the auth modal at 390px', async () => {
 
     const visible = await page.$eval(toastSelector, toast => {
       const rect = toast.getBoundingClientRect();
-      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      const dismiss = toast.querySelector('button[aria-label="بستن پیام"]');
+      const buttonRect = dismiss?.getBoundingClientRect();
+      const hit = buttonRect ? document.elementFromPoint(buttonRect.left + buttonRect.width / 2, buttonRect.top + buttonRect.height / 2) : null;
       return {
-        hitToast: hit !== null && toast.contains(hit),
+        dismissReachable: hit !== null && Boolean(dismiss?.contains(hit)),
         withinViewport: rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0
           && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
       };
     });
-    assert.equal(visible.hitToast, true, 'the modal overlay must not cover the toast centre');
+    assert.equal(visible.dismissReachable, true, 'the modal overlay must not cover the toast dismiss button');
     assert.equal(visible.withinViewport, true, 'the toast must stay inside the viewport');
   });
 });

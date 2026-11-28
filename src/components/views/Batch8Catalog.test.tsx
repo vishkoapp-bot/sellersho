@@ -2,18 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { batch8Browser, clickText, fillInput, waitText } from '../../../scripts/fixtures/catalog/batch8-browser';
 
-const visit = batch8Browser();
+const visit = batch8Browser({ inlineVazirmatn: true });
 const rows = '[data-testid="product-item"]';
-const searchInput = 'header input[type="text"]';
-const digital = '[data-testid="category-item"]';
+const searchInput = 'header [role="search"] input[name="q"]';
+const digital = '#category a[data-testid="category-item"][href="/?category=digital"]';
+const catalogStatus = '#main-content header [role="status"]';
 
 async function chooseDigital(page: Parameters<typeof clickText>[0]) {
-  await page.waitForFunction(selector => {
-    const tile = [...document.querySelectorAll(selector)].find(node => node.textContent?.includes('کالای دیجیتال'));
-    return tile?.textContent?.includes('۲ کالا');
-  }, {}, digital);
-  await page.$$eval(digital, tiles =>
-    (tiles.find(node => node.textContent?.includes('کالای دیجیتال')) as HTMLElement).click());
+  await page.locator(digital).click();
 }
 
 for (const width of [390, 1280]) {
@@ -43,21 +39,22 @@ test('opening a homepage tile clears stale products and count, then restores on 
     const pending = await page.evaluate(() => (window as any).batch8Fixture.state());
     assert.equal(pending.catalogTotal, 0);
     assert.equal(pending.productCount, 0);
-    assert.doesNotMatch(await page.$eval('body', el => el.innerText), /\(۴۱\)|\(۰\)|کالای عمومی نمونه/);
+    await page.waitForSelector(catalogStatus);
+    assert.equal(await page.$eval(catalogStatus, node => node.textContent), 'در حال بارگذاری کاتالوگ…');
+    assert.doesNotMatch(await page.$eval('#main-content', el => el.textContent ?? ''), /کالای عمومی نمونه/);
     await page.evaluate(() => (window as any).batch8Fixture.finish());
-    await waitText(page, '(۲)');
+    await waitText(page, '۲ کالا');
     assert.equal(await page.$$eval(rows, elements => elements.length), 2);
 
-    const mobileSearch = 'header .lg\\:hidden input[type="text"]';
-    await fillInput(page, mobileSearch, 'missing');
-    const search = await page.$(mobileSearch);
+    await fillInput(page, searchInput, 'missing');
+    const search = await page.$(searchInput);
     assert.ok(search);
     await waitText(page, 'کالای دیجیتال نمونه 0');
     await search.press('Enter');
     await page.waitForFunction(() => new URLSearchParams(location.search).get('q') === 'missing' && (window as any).batch8Fixture?.pending);
     assert.equal(await page.$$eval(rows, elements => elements.length), 0);
     await page.evaluate(() => (window as any).batch8Fixture.finish('error'));
-    await waitText(page, 'Fixture catalog unavailable');
+    await waitText(page, 'بارگذاری نتایج تازه انجام نشد. نتایج قبلی نمایش داده می‌شود.');
     assert.equal(await page.$$eval(rows, elements => elements.length), 2);
     const restored = await page.evaluate(() => (window as any).batch8Fixture.state());
     assert.equal(restored.catalogTotal, 2);
@@ -73,7 +70,7 @@ test('an aborted category request cannot restore the preceding homepage results'
       history.pushState(null, '', '/?q=missing');
       dispatchEvent(new PopStateEvent('popstate'));
     });
-    await waitText(page, 'جستجو: «missing»');
+    await waitText(page, 'نتایج جستجوی «missing»');
     assert.equal(await page.$$eval(rows, elements => elements.length), 0);
     assert.equal(await page.evaluate(() => (window as any).batch8Fixture.state().catalogTotal), 0);
     await page.evaluate(() => (window as any).batch8Fixture.finish());
@@ -81,23 +78,20 @@ test('an aborted category request cannot restore the preceding homepage results'
   });
 });
 
-test('zero-result search hides sidebar controls and preserves the desktop content column', async () => {
+test('zero-result search leaves desktop filters available and lets shoppers reset the search', async () => {
   await visit('/?q=missing', 1280, async page => {
     await page.waitForFunction(() => (window as any).batch8Fixture?.pending);
-    await page.waitForSelector('aside input[aria-label="حداقل قیمت (تومان)"]', { visible: true });
-    assert.equal(await page.$eval('aside', element => Boolean(element.firstElementChild?.getClientRects().length)), true);
+    const filters = 'aside[aria-label="فیلترهای کاتالوگ"]';
+    await page.waitForSelector(filters, { visible: true });
     await page.evaluate(() => (window as any).batch8Fixture.finish());
     await waitText(page, 'کالایی یافت نشد');
-    assert.equal(await page.$eval('aside', element => Boolean(element.firstElementChild?.getClientRects().length)), false);
-    assert.ok(await page.$eval('aside + div', element => element.getBoundingClientRect().width > 240));
-    assert.equal(await page.$eval('aside input[aria-label="حداقل قیمت (تومان)"]', element => element.getClientRects().length), 0);
-    assert.ok(await page.$eval('aside', aside => [...aside.querySelectorAll('button')]
-      .filter(button => ['همه', 'کالای دیجیتال'].includes(button.textContent?.trim() ?? ''))
-      .every(button => button.getClientRects().length === 0)));
-    await waitText(page, '(۰)');
+    await page.waitForSelector(`${filters} input[type="checkbox"]`, { visible: true });
+    assert.ok(await page.$eval('section[aria-label="نتایج کاتالوگ"]', element => element.getBoundingClientRect().width > 240));
+    assert.equal(await page.$$eval(rows, elements => elements.length), 0);
+    assert.equal(await page.$eval(catalogStatus, node => node.textContent), '۰ کالا');
     await clickText(page, 'حذف فیلترها');
     await page.waitForFunction(selector => document.querySelectorAll(selector).length > 2, {}, rows);
-    assert.equal(await page.$eval('aside', element => Boolean(element.firstElementChild?.getClientRects().length)), true);
+    assert.equal(new URL(page.url()).searchParams.get('q'), null);
   });
 });
 
@@ -126,41 +120,43 @@ for (const [route, heading] of [
   });
 }
 
-test('the terms strip overflows with an RTL affordance and scrolls after a tab change', async () => {
+const infoTabs = 'main nav[aria-label="راهنمای خرید"]';
+
+test('the RTL terms strip scrolls its selected tab into view', async () => {
   await visit('/terms', 360, async page => {
-    await waitText(page, 'مجوزها');
-    const tabs = 'div[class*="mask-image"]';
-    const initial = await page.$eval(tabs, row => ({
+    const license = `${infoTabs} a[href="/license"]`;
+    await page.waitForSelector(license);
+    const initial = await page.$eval(infoTabs, row => ({
       overflows: row.scrollWidth > row.clientWidth,
-      left: row.scrollLeft,
-      mask: getComputedStyle(row).maskImage,
+      direction: getComputedStyle(row).direction,
     }));
-    assert.equal(initial.overflows, true);
-    assert.equal(initial.left, 0);
-    assert.equal(await page.evaluate(() => (window as any).batch8Fixture.staticTabScrolls), 0);
-    assert.match(initial.mask, /gradient/);
-    await clickText(page, 'مجوزها');
+    assert.deepEqual(initial, { overflows: true, direction: 'rtl' });
+    assert.equal(await page.$eval(`${infoTabs} [aria-current="page"]`, node => node.getAttribute('href')), '/terms');
+    // Let the application scroll the link. A Puppeteer click would scroll it first.
+    await page.$eval(license, (node: HTMLAnchorElement) => node.click());
     await page.waitForFunction(selector => {
-      const row = document.querySelector(selector);
-      const button = row?.lastElementChild;
-      if (!row || !button) return false;
-      return button.getBoundingClientRect().left >= row.getBoundingClientRect().left;
-    }, {}, tabs);
-    assert.ok(await page.evaluate(() => (window as any).batch8Fixture.staticTabScrolls > 0));
+      const tab = document.querySelector(selector);
+      if (tab?.getAttribute('aria-current') !== 'page') return false;
+      const rect = tab.getBoundingClientRect();
+      const row = tab.parentElement!.getBoundingClientRect();
+      return rect.left >= row.left && rect.right <= row.right;
+    }, {}, license);
+    assert.equal(new URL(page.url()).pathname, '/license');
   });
 });
 
 for (const route of ['/terms', '/license']) {
   test(`all five tabs fit on ${route} at 500px`, async () => {
     await visit(route, 500, async page => {
-      await waitText(page, 'مجوزها');
+      await page.waitForSelector(`${infoTabs} a[href="/license"]`);
       assert.equal(new URL(page.url()).pathname, route);
-      const row = await page.$eval('div[class*="mask-image"]', element => {
+      const row = await page.$eval(infoTabs, element => {
         const bounds = element.getBoundingClientRect();
         return {
           scrollWidth: element.scrollWidth,
           clientWidth: element.clientWidth,
-          labels: [...element.querySelectorAll('button span')].map(label => {
+          targetHeights: [...element.querySelectorAll('a')].map(link => link.getBoundingClientRect().height),
+          labels: [...element.querySelectorAll('a span')].map(label => {
             const rect = label.getBoundingClientRect();
             return {
               text: label.textContent,
@@ -170,6 +166,7 @@ for (const route of ['/terms', '/license']) {
         };
       });
       assert.ok(row.scrollWidth <= row.clientWidth, `tab strip is ${row.scrollWidth}px in ${row.clientWidth}px`);
+      assert.ok(row.targetHeights.every(height => height >= 44));
       assert.deepEqual(row.labels, ['درباره ما', 'قوانین و ضمانت', 'حریم خصوصی', 'پرسش‌های متداول', 'مجوزها']
         .map(text => ({ text, visible: true })));
     });
@@ -190,31 +187,31 @@ for (const [route, width] of [
         await page.evaluate(() => (window as any).batch8Fixture.finish());
         await waitText(page, 'کالایی یافت نشد');
       }
-      await page.waitForSelector('nav.fixed', { visible: true });
+      const nav = route.startsWith('/store/') ? 'nav[aria-label="منوی پایین ویترین"]' : 'nav[aria-label="منوی پایین فروشگاه"]';
+      await page.waitForSelector(nav, { visible: true });
       await page.waitForSelector('footer', { visible: true });
-      const bounds = await page.evaluate(async () => {
+      const bounds = await page.evaluate(async navSelector => {
         const footer = document.querySelector('footer')!;
-        const nav = [...document.querySelectorAll('nav.fixed')].find(node => node.getClientRects().length)!;
-        const shell = document.querySelector('#root .pb-24')!;
-        const clearButtons = [...document.querySelectorAll('button')].filter(node => node.textContent?.trim() === 'حذف فیلترها');
+        const nav = document.querySelector(navSelector)!;
+        const reset = [...document.querySelectorAll('main button')].find(node => node.textContent?.trim() === 'مشاهده همه محصولات');
         window.scrollTo(0, document.documentElement.scrollHeight);
         await new Promise(resolve => requestAnimationFrame(resolve));
-        const navTop = nav.getBoundingClientRect().top;
-        const emptyButton = clearButtons[1]?.getBoundingClientRect();
+        const navBounds = nav.getBoundingClientRect();
+        const footerControls = [...footer.querySelectorAll('a, button, input')].filter(node => node.getClientRects().length > 0);
         return {
-          footerBottom: footer.getBoundingClientRect().bottom,
-          navTop,
-          navHeight: nav.getBoundingClientRect().height,
-          shellPadding: parseFloat(getComputedStyle(shell).paddingBottom),
-          emptyButtonBottom: emptyButton?.bottom,
-          resetCount: clearButtons.length,
+          footerControlCount: footerControls.length,
+          footerLastControlBottom: Math.max(...footerControls.map(node => node.getBoundingClientRect().bottom)),
+          navTop: navBounds.top,
+          navBottomOffset: innerHeight - navBounds.bottom,
+          navHeight: navBounds.height,
+          emptyButtonBottom: reset?.getBoundingClientRect().bottom,
         };
-      });
-      assert.equal(bounds.navHeight, 64);
-      assert.ok(bounds.shellPadding >= bounds.navHeight + 16);
-      assert.ok(bounds.footerBottom <= bounds.navTop);
+      }, nav);
+      assert.ok(bounds.navHeight >= 64);
+      assert.ok(Math.abs(bounds.navBottomOffset) < 1);
+      assert.ok(bounds.footerControlCount > 0);
+      assert.ok(bounds.footerLastControlBottom <= bounds.navTop);
       if (route.includes('missing')) {
-        assert.equal(bounds.resetCount, 2);
         assert.ok(bounds.emptyButtonBottom != null && bounds.emptyButtonBottom < bounds.navTop);
       }
     });

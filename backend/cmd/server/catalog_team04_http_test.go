@@ -92,8 +92,9 @@ func team04HTTPRepos(t *testing.T) (*repository.CatalogRepository, *repository.S
 	seed := []string{
 		`INSERT INTO products (id,title,slug,category_slug,supplier_id,original_price,supplier_base_cost,platform_margin,is_original,stock,image_url,specs,description,warehouse_name,preparation_days,supplier_warranty,is_featured,is_special_deal,fulfillment_method,supply_option,is_active,brand,spn_number,length_mm,width_mm,height_mm,weight_grams) VALUES ('prod-active-1','دستبند طلا','gold-bracelet','gold-silver','sup-1',72500000,58000000,0,TRUE,5,'img','{"power":"1450 وات"}','desc','انبار مرکزی تهران',1,'۱۸ ماه گارانتی شرکتی',FALSE,FALSE,'warehouse','1day',TRUE,'نشر دمو',10000002,120,80,40,500)`,
 		`INSERT INTO products (id,title,slug,category_slug,supplier_id,original_price,supplier_base_cost,platform_margin,is_original,stock,image_url,description,warehouse_name,preparation_days,supplier_warranty,is_featured,is_special_deal,fulfillment_method,supply_option,is_active,brand,spn_number) VALUES ('prod-inactive-1','گوشی تست','test-phone','mobile','sup-1',1000000,800000,0,TRUE,0,'img','desc','انبار مرکزی تهران',1,'گارانتی',FALSE,FALSE,'warehouse','1day',FALSE,'نشر دمو',10000004)`,
-		`INSERT INTO product_variants (id,product_id,spnc,spnc_number,variant_name,attributes,is_default,stock,supplier_base_cost,created_at) VALUES ('11111111-1111-1111-1111-111111111111','prod-active-1','FE16A2E1',20000001,'پیش‌فرض','{}',TRUE,5,NULL,NOW())`,
+		`INSERT INTO product_variants (id,product_id,spnc,spnc_number,variant_name,attributes,is_default,stock,supplier_base_cost,created_at) VALUES ('11111111-1111-1111-1111-111111111111','prod-active-1','FE16A2E1',20000001,'ساده','{"style":"ساده"}',TRUE,5,NULL,NOW())`,
 		`INSERT INTO product_variants (id,product_id,spnc,spnc_number,variant_name,attributes,is_default,stock,supplier_base_cost,created_at) VALUES ('22222222-2222-2222-2222-222222222222','prod-active-1','55F08797',20000002,'نگین‌دار','{"style":"نگین‌دار"}',FALSE,2,64000000,NOW())`,
+		`INSERT INTO product_variants (id,product_id,spnc,spnc_number,variant_name,attributes,is_default,stock,supplier_base_cost,created_at) VALUES ('44444444-4444-4444-4444-444444444444','prod-active-1','AA712345',20000003,'پیش‌فرض','{}',FALSE,8,30000000,NOW())`,
 		`INSERT INTO product_images VALUES ('33333333-3333-3333-3333-333333333333','prod-active-1','img1',0,NOW())`,
 		`INSERT INTO store_products VALUES ('store-a','prod-active-1',0)`,
 	}
@@ -151,6 +152,9 @@ func TestTeam04HTTPListAndDetail(t *testing.T) {
 	var vp map[string]map[string]int64
 	if err := json.Unmarshal(list[0]["variantPrices"], &vp); err != nil {
 		t.Fatalf("variantPrices decode: %v", err)
+	}
+	if _, ok := vp["44444444-4444-4444-4444-444444444444"]; ok {
+		t.Fatal("parent placeholder must not contribute a public variant price")
 	}
 	// FIX 4: live keys variantPrices by variant ID (UUID), not spnc.
 	if vp["11111111-1111-1111-1111-111111111111"]["price"] != 63800000 || vp["22222222-2222-2222-2222-222222222222"]["price"] != 70400000 {
@@ -240,6 +244,17 @@ func TestTeam04HTTPListAndDetail(t *testing.T) {
 	_ = json.Unmarshal(spnDetail["title"], &spnTitle)
 	if spnTitle != "دستبند طلا" {
 		t.Fatalf("spn detail title = %q", spnTitle)
+	}
+	var detailVariants []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(spnDetail["variants"], &detailVariants); err != nil || len(detailVariants) != 2 {
+		t.Fatalf("detail variants = %+v (error %v), want exactly two selectable variants", detailVariants, err)
+	}
+	for _, variant := range detailVariants {
+		if variant.ID == "44444444-4444-4444-4444-444444444444" {
+			t.Fatal("parent placeholder must not appear among selectable variants")
+		}
 	}
 	// The current public DTO deliberately omits specs/images (FIX 12 in
 	// assembleProductDetail), while the repository keeps dossier data intact.

@@ -7,10 +7,10 @@ import (
 )
 
 func TestBatch9VariantRenameMigration(t *testing.T) {
-	db := fin014FixtureDB(t)
+	db, schema := priorMigrationFixture(t, "batch9_", "202611250001_")
 	// Rewind migrations 202611240001, 202611230004, and 202611230002 on this disposable,
-	// empty serialization schema before replaying the CLI. Deleting only
-	// Batch 9 history fails the ordering guard.
+	// empty serialization schema before replaying the CLI. The scratch history
+	// ends at 202611240001 regardless of newer migrations or other tests.
 	var units int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM product_units`).Scan(&units); err != nil || units != 0 {
 		t.Fatalf("migration rehearsal requires empty units: count=%d err=%v", units, err)
@@ -84,12 +84,11 @@ func TestBatch9VariantRenameMigration(t *testing.T) {
 		}
 	})
 
-	// The disposable provisioner already migrated the empty database. Replay
-	// the data-only migration with the same CLI after seeding historical rows.
-	// This migration test also runs in source archives without VCS metadata.
+	// Replay the complete migration set via the release CLI. Keep public on the
+	// search path for extension functions and operators.
 	cmd := exec.Command("go", "run", "-buildvcs=false", "./cmd/migrate", "-dir", "migrations")
 	cmd.Dir = "../.."
-	cmd.Env = append(os.Environ(), "DATABASE_URL="+os.Getenv("OPERATIONS_TEST_DATABASE_URL"))
+	cmd.Env = append(os.Environ(), "DATABASE_URL="+migrationFixtureURL(t, schema+",public"))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("replay Batch 9 with migration CLI: %v\n%s", err, output)
 	}

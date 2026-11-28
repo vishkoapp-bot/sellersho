@@ -20,13 +20,14 @@ test('mobile homepage offers a short product preview and sends full browsing to 
 test('mobile home has keyboard-accessible product links and does not overflow a narrow viewport', async () => {
   await visit('/', 320, async page => {
     await page.waitForSelector('#products-section .product-title-link');
-    await page.waitForSelector('.central-trust small');
+    await page.waitForSelector('.central-trust summary');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 320);
-    const service = await page.$eval('.central-trust > div', item => {
-      const text = item.querySelector('small')!;
-      return { direction: getComputedStyle(item).flexDirection, font: getComputedStyle(text).fontSize };
-    });
-    assert.deepEqual(service, { direction: 'column', font: '13px' });
+    assert.equal(await page.$$eval('.central-trust > ul > li', items => items.length), 4);
+    assert.equal(await page.$('.central-trust details[open]'), null);
+    await page.focus('.central-trust summary');
+    await page.keyboard.press('Enter');
+    await page.waitForSelector('.central-trust details[open] dd', { visible: true });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 320);
     const selector = '#products-section .product-title-link';
     const href = await page.$eval(selector, link => link.getAttribute('href'));
     assert.match(href || '', /^\/product\//);

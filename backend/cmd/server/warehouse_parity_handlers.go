@@ -68,7 +68,7 @@ func handleT01WarehouseOrdersReady(w http.ResponseWriter, r *http.Request, ctx c
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if orders == nil {
@@ -167,7 +167,7 @@ func handleT01WarehousePutaway(w http.ResponseWriter, r *http.Request, ctx conte
 	}
 	queue, err := repo.GetPutawayQueue(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if queue == nil {

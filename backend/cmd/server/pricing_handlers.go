@@ -78,7 +78,7 @@ func handleAdminPricingSettings(w http.ResponseWriter, r *http.Request, pricingR
 	case http.MethodGet:
 		s, err := pricingRepo.GetPlatformPricingSettings(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		history, _ := pricingRepo.GetFeeOverridesHistory(r.Context())
@@ -114,7 +114,7 @@ func handleAdminPricingSettings(w http.ResponseWriter, r *http.Request, pricingR
 			return
 		}
 		if err := pricingRepo.UpdatePlatformPricingSettings(r.Context(), &req); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		writePricingJSON(w, map[string]interface{}{"ok": true})
@@ -137,7 +137,7 @@ func handleAdminMargins(w http.ResponseWriter, r *http.Request, pricingRepo *rep
 	}
 	s, err := pricingRepo.GetPlatformPricingSettings(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	writePricingJSON(w, map[string]interface{}{
@@ -163,7 +163,7 @@ func handleAdminPlatformPct(w http.ResponseWriter, r *http.Request, pricingRepo 
 	case http.MethodGet:
 		lists, err := pricingRepo.ListPlatformPcts(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		writePricingJSON(w, lists)
@@ -192,7 +192,7 @@ func handleAdminPlatformPct(w http.ResponseWriter, r *http.Request, pricingRepo 
 			return
 		}
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		writePricingJSON(w, map[string]interface{}{"ok": true})
@@ -210,7 +210,7 @@ func handleAdminPlatformPct(w http.ResponseWriter, r *http.Request, pricingRepo 
 			return
 		}
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		writePricingJSON(w, map[string]interface{}{"ok": true})
@@ -236,7 +236,7 @@ func handleAdminFeeOverridesHistory(w http.ResponseWriter, r *http.Request, pric
 	}
 	history, err := pricingRepo.GetFeeOverridesHistory(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	writePricingJSON(w, history)
@@ -262,7 +262,7 @@ func handleAdminMarginLocks(w http.ResponseWriter, r *http.Request, pricingRepo 
 		}
 		locks, err := pricingRepo.ListStoreMarginLocks(r.Context(), storeID)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		if locks == nil {
@@ -295,7 +295,7 @@ func handleAdminMarginLocks(w http.ResponseWriter, r *http.Request, pricingRepo 
 			return
 		}
 		if err := pricingRepo.DeleteStoreMarginLock(r.Context(), storeID, scope, scopeID); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		writePricingJSON(w, map[string]interface{}{"ok": true})
@@ -374,7 +374,7 @@ func handleSellerVariantOverrides(w http.ResponseWriter, r *http.Request, pricin
 		}
 		overrides, err := pricingRepo.ListStoreVariantOverrides(r.Context(), storeID)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		if overrides == nil {
@@ -409,7 +409,7 @@ func handleSellerVariantOverrides(w http.ResponseWriter, r *http.Request, pricin
 			return
 		}
 		if err := pricingRepo.DeleteStoreVariantOverride(r.Context(), storeID, productID, variantID); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		writePricingJSON(w, map[string]interface{}{"ok": true})

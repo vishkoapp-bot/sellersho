@@ -16,14 +16,17 @@ test('fashion shoppers can search, sort, add a page and open a scoped product at
     await page.click('header a[aria-label="جست‌وجو در ویترین"]');
     assert.equal(await page.evaluate(() => document.activeElement?.id), 'fashion-search');
     await fillInput(page, '#fashion-search', 'ديجيتال');
+    await page.keyboard.press('Enter');
     await page.waitForFunction(selector => document.querySelectorAll(selector).length === 2, {}, products);
     await page.select('.fashion-sort-field select', 'expensive');
+    await page.waitForSelector(products, { visible: true });
     assert.match(await page.$eval(products, card => card.getAttribute('href') || ''), /batch8-product-1$/);
-    await page.click('button[aria-label="پاک کردن جست‌وجو"]');
+    await clickText(page, 'نمایش همه کالاها', '#products button');
     await clickText(page, 'نمایش کالاهای بیشتر');
     await page.waitForFunction(selector => document.querySelectorAll(selector).length === 16, {}, products);
 
     await page.select('.fashion-sort-field select', 'cheapest');
+    await page.waitForSelector(products, { visible: true });
     const link = await page.$eval(products, card => card.getAttribute('href'));
     assert.equal(link, storefront + '/product/batch8-product-0');
     await page.click(products);

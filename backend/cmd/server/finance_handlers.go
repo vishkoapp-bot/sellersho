@@ -45,7 +45,7 @@ func handleGetFilteredLedger(w http.ResponseWriter, r *http.Request, ctx context
 			http.Error(w, `{"error":"Invalid date range: expected YYYY-MM-DD dates within 366 days"}`, http.StatusBadRequest)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	entries := page.Items
@@ -63,7 +63,7 @@ func handleGetStoreBalance(w http.ResponseWriter, r *http.Request, ctx context.C
 	}
 	balance, err := finRepo.GetStoreBalance(ctx, storeID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(balance)
@@ -164,7 +164,7 @@ func handleGetPendingSettlements(w http.ResponseWriter, r *http.Request, ctx con
 			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	list := page.Items
@@ -188,7 +188,7 @@ func handleGetSettlementDetails(w http.ResponseWriter, r *http.Request, ctx cont
 	}
 	settlement, err := finRepo.GetSettlementDetails(ctx, id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if settlement == nil {
@@ -220,7 +220,7 @@ func handleReviewSettlement(w http.ResponseWriter, r *http.Request, ctx context.
 			http.Error(w, `{"error":"Settlement is already reviewed"}`, http.StatusConflict)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -261,7 +261,7 @@ func handleConfirmManualTransfer(w http.ResponseWriter, r *http.Request, ctx con
 			http.Error(w, `{"error":"Payout is not approved"}`, http.StatusConflict)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -338,7 +338,7 @@ func handleCreateManualDispute(w http.ResponseWriter, r *http.Request, ctx conte
 			http.Error(w, fmt.Sprintf(`{"error":%q}`, msg), http.StatusBadRequest)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 

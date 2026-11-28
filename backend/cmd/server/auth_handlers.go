@@ -319,7 +319,7 @@ func handleVerifyOTP(
 
 	existingUser, err := userRepo.FindByMobile(ctx, mobile)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if supplierRepo != nil {
@@ -388,7 +388,7 @@ func handleVerifyOTP(
 		user, err = userRepo.UpsertUser(ctx, mobile, "", role)
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -400,19 +400,19 @@ func handleVerifyOTP(
 	// only selects an existing active capability; it never grants one.
 	if req.Role == "" {
 		if err := capabilityRepo.GrantCustomerAfterOTP(ctx, user.ID); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 	}
 	if accesspolicy.IsSuperAdminMobile(mobile) {
 		if err := capabilityRepo.GrantSuperAdminAfterOTP(ctx, user.ID, mobile); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 	}
 	capabilities, err := capabilityRepo.ListActive(ctx, user.ID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	selectedRole := sessionRole(user.Role, capabilities)
@@ -462,7 +462,7 @@ func writeAuthenticatedSession(w http.ResponseWriter, jwtService *auth.JWTServic
 	capabilities = append([]string{}, capabilities...)
 	token, err := jwtService.GenerateTokenWithCapabilities(user.ID, user.Mobile, user.FullName, role, capabilities, 7*24*time.Hour)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 

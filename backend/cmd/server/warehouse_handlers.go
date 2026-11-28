@@ -30,7 +30,7 @@ func handleGetPendingInbounds(w http.ResponseWriter, r *http.Request, ctx contex
 	}
 	inbounds, err := repo.GetPendingInbounds(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if inbounds == nil {
@@ -122,7 +122,7 @@ func handleGetQCQueue(w http.ResponseWriter, r *http.Request, ctx context.Contex
 	}
 	queue, err := repo.GetQCQueue(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if queue == nil {
@@ -165,7 +165,7 @@ func handlePassQCItem(w http.ResponseWriter, r *http.Request, ctx context.Contex
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -193,7 +193,7 @@ func handleFailQCItem(w http.ResponseWriter, r *http.Request, ctx context.Contex
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -255,7 +255,7 @@ func handleCreateQCDiscrepancy(w http.ResponseWriter, r *http.Request, ctx conte
 	}
 	dispID, err := repo.CreateQCDiscrepancy(ctx, req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
@@ -273,7 +273,7 @@ func handleGetPutawayQueue(w http.ResponseWriter, r *http.Request, ctx context.C
 	}
 	queue, err := repo.GetPutawayQueue(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if queue == nil {
@@ -413,7 +413,7 @@ func handleAssignPutaway(w http.ResponseWriter, r *http.Request, ctx context.Con
 	staffID := getCallerUserID(ctx)
 	taskID, err := repo.AssignPutaway(ctx, productID, req.BinLocation, req.Quantity, staffID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -432,7 +432,7 @@ func handleConfirmPutaway(w http.ResponseWriter, r *http.Request, ctx context.Co
 		return
 	}
 	if err := repo.ConfirmPutaway(ctx, taskID, getCallerUserID(ctx)); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -493,7 +493,7 @@ func handleGetSupplierReturns(w http.ResponseWriter, r *http.Request, ctx contex
 	}
 	items, err := repo.GetReturnRequests(ctx, "all")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if items == nil {
@@ -507,7 +507,7 @@ func handleGetSupplierInventory(w http.ResponseWriter, r *http.Request, ctx cont
 	supplierID := getSupplierIDFromContext(r, repo)
 	items, err := repo.GetSupplierInventory(ctx, supplierID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if items == nil {
@@ -520,7 +520,7 @@ func handleGetReturnParcels(w http.ResponseWriter, r *http.Request, ctx context.
 	w.Header().Set("Content-Type", "application/json")
 	items, err := repo.GetReturnParcels(ctx, returnID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if items == nil {
@@ -533,7 +533,7 @@ func handleGetReturnFinancialEvents(w http.ResponseWriter, r *http.Request, ctx 
 	w.Header().Set("Content-Type", "application/json")
 	items, err := repo.GetReturnFinancialEvents(ctx, returnID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if items == nil {
@@ -546,7 +546,7 @@ func handleGetCarrierOptions(w http.ResponseWriter, r *http.Request, ctx context
 	w.Header().Set("Content-Type", "application/json")
 	items, err := repo.GetCarrierOptions(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if items == nil {
@@ -721,7 +721,7 @@ func handleGetOrdersReadyToPick(w http.ResponseWriter, r *http.Request, ctx cont
 	}
 	orders, err := repo.GetOrdersReadyToPick(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if orders == nil {
@@ -738,7 +738,7 @@ func writeWarehouseOrderMutationError(w http.ResponseWriter, err error) {
 		http.Error(w, `{"error":"Order not found"}`, http.StatusNotFound)
 		return
 	}
-	http.Error(w, err.Error(), http.StatusInternalServerError)
+	writeInternalError(w, err)
 }
 
 func handleStartPickingOrder(w http.ResponseWriter, r *http.Request, ctx context.Context, orderID string, repo *repository.WarehouseRepository) {
@@ -872,7 +872,7 @@ func handleGetWarehouseShipment(w http.ResponseWriter, r *http.Request, ctx cont
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"shipment": shipment})

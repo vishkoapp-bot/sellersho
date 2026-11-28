@@ -22,7 +22,7 @@ func handleGetApprovals(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	status := r.URL.Query().Get("status")
 	list, err := adminRepo.GetPendingApprovals(ctx, status)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -50,7 +50,7 @@ func handleCreateApproval(w http.ResponseWriter, r *http.Request, ctx context.Co
 	}
 
 	if err := adminRepo.CreatePendingApproval(ctx, req); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -87,7 +87,7 @@ func handleReviewApproval(w http.ResponseWriter, r *http.Request, ctx context.Co
 			http.Error(w, `{"error":"Approval not found"}`, http.StatusNotFound)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if entityType == "proposed_product" {
@@ -103,7 +103,7 @@ func handleReviewApproval(w http.ResponseWriter, r *http.Request, ctx context.Co
 					http.Error(w, `{"error":"Proposal is not pending"}`, http.StatusConflict)
 					return
 				}
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				writeInternalError(w, err)
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]interface{}{
@@ -119,7 +119,7 @@ func handleReviewApproval(w http.ResponseWriter, r *http.Request, ctx context.Co
 					http.Error(w, `{"error":"Proposal is not pending"}`, http.StatusConflict)
 					return
 				}
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				writeInternalError(w, err)
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]interface{}{
@@ -162,7 +162,7 @@ func handleGetAuditLogs(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	category := r.URL.Query().Get("category")
 	logs, err := adminRepo.GetAuditLogs(ctx, category)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -187,7 +187,7 @@ func handleCreateAuditLog(w http.ResponseWriter, r *http.Request, ctx context.Co
 	}
 
 	if err := adminRepo.InsertAuditLog(ctx, req); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -205,7 +205,7 @@ func handleGetAdminUsers(w http.ResponseWriter, r *http.Request, ctx context.Con
 	status := r.URL.Query().Get("status")
 	users, err := adminRepo.GetUsers(ctx, role, status)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if users == nil {
@@ -224,7 +224,7 @@ func handleSetUserActiveStatus(w http.ResponseWriter, r *http.Request, ctx conte
 		return
 	}
 	if err := adminRepo.SetUserActiveStatus(ctx, userID, isActive); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -242,7 +242,7 @@ func handleGetPendingStores(w http.ResponseWriter, r *http.Request, ctx context.
 	}
 	stores, err := adminRepo.GetPendingStores(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if stores == nil {
@@ -265,7 +265,7 @@ func handleReviewStore(w http.ResponseWriter, r *http.Request, ctx context.Conte
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if err := adminRepo.ReviewStore(ctx, storeID, status, req.Reason); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -300,7 +300,7 @@ func handleLockStoreMargin(w http.ResponseWriter, r *http.Request, ctx context.C
 		margin = req.MaxMargin
 	}
 	if err := adminRepo.LockStoreMargin(ctx, storeID, margin); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{

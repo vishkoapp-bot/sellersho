@@ -1100,7 +1100,7 @@ func handleConfirmDelivery(w http.ResponseWriter, r *http.Request, ctx context.C
 			http.Error(w, `{"error":"Order not found or not owned by user"}`, http.StatusNotFound)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -1135,7 +1135,7 @@ func handleListOrders(w http.ResponseWriter, r *http.Request, ctx context.Contex
 			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -1194,7 +1194,7 @@ func handleOrderCancel(w http.ResponseWriter, r *http.Request, ctx context.Conte
 			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(result)
@@ -1335,7 +1335,7 @@ func handleOrderReturnQuote(w http.ResponseWriter, r *http.Request, ctx context.
 			}
 			ok, err := orderRepo.CanReadOperationalTracking(ctx, order.ID, claims.UserID, capability)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				writeInternalError(w, err)
 				return
 			}
 			if ok {
@@ -1569,7 +1569,7 @@ func handleOrderShipping(w http.ResponseWriter, r *http.Request, ctx context.Con
 			}
 			ok, err := orderRepo.CanReadOperationalTracking(ctx, order.ID, claims.UserID, capability)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				writeInternalError(w, err)
 				return
 			}
 			if ok {
@@ -1684,7 +1684,7 @@ func handleListCustomerReturns(w http.ResponseWriter, r *http.Request, ctx conte
 			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	returns := page.Items
@@ -1827,7 +1827,7 @@ func handleCustomerReturnAction(w http.ResponseWriter, r *http.Request, ctx cont
 			return
 		}
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 	case "receive":
@@ -1934,7 +1934,7 @@ func handleCustomerReturnAction(w http.ResponseWriter, r *http.Request, ctx cont
 				http.Error(w, `{"error":"Return not found or not shippable"}`, http.StatusNotFound)
 				return
 			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 	case "cancel":
@@ -1952,7 +1952,7 @@ func handleCustomerReturnAction(w http.ResponseWriter, r *http.Request, ctx cont
 				http.Error(w, `{"error":"Return not found or not cancellable"}`, http.StatusNotFound)
 				return
 			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 	default:
@@ -1986,7 +1986,7 @@ func handleStoreReturns(w http.ResponseWriter, r *http.Request, ctx context.Cont
 			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	returns := page.Items
@@ -2026,7 +2026,7 @@ func handleWarehousesReturns(w http.ResponseWriter, r *http.Request, ctx context
 			http.Error(w, `{"error":"cursor is invalid"}`, http.StatusBadRequest)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	returns := page.Items

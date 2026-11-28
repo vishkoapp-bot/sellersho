@@ -72,6 +72,10 @@ const products = Array.from({ length: 24 }, (_, index) => ({
   image: '/templates/fashion/knitwear.webp',
 } as ProductDto));
 if (routeParams.has('modern-stock-filter')) products[1].stock = 0;
+if (routeParams.has('storefront-catalog')) {
+  Object.assign(products[10], { title: 'دوربین کمیاب ویترین', category: 'camera' });
+  products[11].category = 'camera';
+}
 if (routeParams.has('modern-support-order')) {
   products.slice(3, 8).forEach((product, index) => {
     product.category = ['پوشاک', 'زیبایی', 'خانه', 'ورزش', 'کتاب'][index];
@@ -354,10 +358,23 @@ catalogApi.getCategories = async () => [
   { id: 'mobile', title: 'موبایل', slug: 'mobile', parentId: 'digital' },
 ];
 catalogApi.getNiches = async () => [];
+catalogApi.getStoreCategorySlugs = async () => [...new Set(products.slice(0, 16).map(product => product.category))];
 catalogApi.getPriceBounds = async () => ({ minPrice: 100000, maxPrice: 600000, count: 41 });
 catalogApi.getProductById = async () => products[0];
 catalogApi.getProductsPage = async (filter = {}, options = {}) => {
   if (filter.storeSlug) {
+    const catalogue = products.slice(0, 16);
+    if (filter.search || filter.category || filter.inStockOnly || filter.brands?.length || (filter.sort && filter.sort !== 'featured')) {
+      const search = filter.search?.replaceAll('ي', 'ی').replaceAll('ك', 'ک');
+      const matches = catalogue.filter(product =>
+        (!search || [product.title, product.description, product.brand].some(text => text?.includes(search)))
+        && (!filter.category || product.category === filter.category)
+        && (!filter.inStockOnly || product.stock > 0)
+        && (!filter.brands?.length || filter.brands.includes(product.brand ?? '')));
+      if (filter.sort === 'cheapest') matches.sort((a, b) => a.price - b.price);
+      if (filter.sort === 'expensive') matches.sort((a, b) => b.price - a.price);
+      return { items: matches, nextCursor: null, total: matches.length, hasMore: false };
+    }
     if (routeParams.has('fashion') || routeParams.has('template')) {
       const items = options.cursor ? products.slice(8, 16) : products.slice(0, 8);
       return { items, nextCursor: options.cursor ? null : 'fashion-page-2', total: 16, hasMore: !options.cursor };

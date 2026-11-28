@@ -248,7 +248,9 @@ func priceFilterParts(scope catalogpage.Scope, filter catalogpage.Filter, withIn
 	if filter.IsOriginal != nil {
 		where = append(where, `p.is_original=`+arg(*filter.IsOriginal))
 	}
-	if filter.InStockOnly {
+	if filter.VisibleStockOnly {
+		where = append(where, storefrontStockPredicate)
+	} else if filter.InStockOnly {
 		where = append(where, `p.stock>0`)
 	}
 	if filter.Search != "" {

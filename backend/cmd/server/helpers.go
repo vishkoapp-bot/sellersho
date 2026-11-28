@@ -2,20 +2,24 @@ package main
 
 import (
 	"crypto/rand"
-	"log"
+	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
 )
 
-// writeInternalError logs detailed internal server errors on the server side
-// while returning an opaque sanitized error response to the client (fail-closed, no leak).
+// writeInternalError reports a correlation ID while keeping internal details
+// out of the response and the general application log.
 func writeInternalError(w http.ResponseWriter, err error) {
+	requestID := w.Header().Get("X-Request-ID")
 	if err != nil {
-		log.Printf("[ERROR] Internal Server Error: %v", err)
+		slog.Error("internal request error", "request_id", requestID, "error_type", fmt.Sprintf("%T", err))
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusInternalServerError)
-	_, _ = w.Write([]byte(`{"error":"خطای داخلی سرور"}`))
+	payload := map[string]string{"error": "خطای داخلی سرور", "code": "internal_error"}
+	if requestID != "" {
+		payload["requestId"] = requestID
+	}
+	t01WriteJSON(w, http.StatusInternalServerError, payload)
 }
 
 // secureRandomInt64 generates a cryptographically secure pseudo-random int64 in [min, max]
@@ -30,4 +34,3 @@ func secureRandomInt64(min, max int64) int64 {
 	}
 	return nBig.Int64() + min
 }
-

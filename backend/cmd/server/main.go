@@ -308,7 +308,7 @@ func run(signalCtx context.Context) (result error) {
 		}
 		rows, err := db.DB.QueryContext(r.Context(), `SELECT id,mobile_masked,message_type,provider_message_id,status,error,created_at FROM sms_logs ORDER BY created_at DESC LIMIT 100`)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		defer rows.Close()
@@ -390,7 +390,7 @@ func run(signalCtx context.Context) (result error) {
 
 		categories, err := catalogRepo.GetCategories(ctx)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 
@@ -422,7 +422,7 @@ func run(signalCtx context.Context) (result error) {
 
 		niches, err := catalogRepo.GetNiches(ctx, categorySlug)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 

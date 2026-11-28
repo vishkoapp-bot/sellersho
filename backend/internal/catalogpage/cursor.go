@@ -75,17 +75,20 @@ type Scope struct {
 // Filter contains public, SQL-applied filters. StorePosition is derived from the
 // resolved store and sort, not an independently authorized client parameter.
 type Filter struct {
-	Category      string
-	Niche         string
-	Search        string
-	Sort          string
-	Brands        []string
-	IsOriginal    *bool
-	InStockOnly   bool
-	MinPrice      *int64
-	MaxPrice      *int64
-	Attributes    map[int][]int
-	StorePosition bool
+	Category    string
+	Niche       string
+	Search      string
+	Sort        string
+	Brands      []string
+	IsOriginal  *bool
+	InStockOnly bool
+	// VisibleStockOnly applies the stricter storefront stock filter to
+	// selectable variants. It is derived only for a public storefront.
+	VisibleStockOnly bool
+	MinPrice         *int64
+	MaxPrice         *int64
+	Attributes       map[int][]int
+	StorePosition    bool
 	// IncludeInactive is the B1(a) carve-out: the public list never
 	// sets it. handleProductsList sets it only for an authenticated
 	// caller who owns the requested dropshipper store, so seller
@@ -131,6 +134,7 @@ type canonical struct {
 	Attributes                    []attribute
 	StorePosition                 bool
 	IncludeInactive               bool
+	VisibleStockOnly              bool `json:",omitempty"`
 }
 
 func validText(value string, max int) bool {
@@ -196,7 +200,10 @@ func bind(scope Scope, filter Filter) (string, Filter, error) {
 	if filter.StorePosition && filter.Sort != "featured" {
 		return "", filter, ErrInvalid
 	}
-	data, err := json.Marshal(canonical{scope, filter.Category, filter.Niche, filter.Search, filter.Sort, brands, filter.IsOriginal, filter.InStockOnly, filter.MinPrice, filter.MaxPrice, attrs, filter.StorePosition, filter.IncludeInactive})
+	if filter.VisibleStockOnly && (!filter.InStockOnly || scope.OwnerType != "dropshipper") {
+		return "", filter, ErrInvalid
+	}
+	data, err := json.Marshal(canonical{scope, filter.Category, filter.Niche, filter.Search, filter.Sort, brands, filter.IsOriginal, filter.InStockOnly, filter.MinPrice, filter.MaxPrice, attrs, filter.StorePosition, filter.IncludeInactive, filter.VisibleStockOnly})
 	if err != nil {
 		return "", filter, ErrInvalid
 	}

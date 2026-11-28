@@ -33,6 +33,7 @@ export const AuthModal: React.FC<Props> = ({
   const { currentStore, setActiveView, setCurrentStore } = useStore();
   const titleId = useId();
   const fieldId = useId();
+  const otpValidityId = useId();
   const [step, setStep] = useState<'phone' | 'otp'>('phone');
   const [mobile, setMobile] = useState('');
   const [otp, setOtp] = useState('');
@@ -211,7 +212,7 @@ export const AuthModal: React.FC<Props> = ({
             </div>
             <div>
               <h3 id={titleId} className="auth-dialog-heading text-xs font-bold text-slate-900">{roleTitle}</h3>
-              <span className="auth-dialog-caption text-[10px] text-slate-400 block">{step === 'phone' ? 'ورود با کد پیامکی' : 'کد پیامک‌شده را وارد کنید.'}</span>
+              <span className="auth-dialog-caption text-xs text-slate-600 block">{step === 'phone' ? 'ورود با کد پیامکی' : 'کد پیامک‌شده را وارد کنید.'}</span>
             </div>
           </div>
           <button onClick={onClose} aria-label="بستن" className="w-11 h-11 rounded-lg text-slate-400 hover:bg-slate-100 flex items-center justify-center">
@@ -222,7 +223,7 @@ export const AuthModal: React.FC<Props> = ({
         {step === 'phone' ? (
           <form onSubmit={handleSendOtp} className="space-y-3">
             <div>
-              <label htmlFor={fieldId} className="text-[11px] font-bold text-slate-700 block mb-1">شماره موبایل</label>
+              <label htmlFor={fieldId} className="text-xs font-bold text-slate-700 block mb-1">شماره موبایل</label>
               <input
                 id={fieldId}
                 name="mobile"
@@ -249,7 +250,7 @@ export const AuthModal: React.FC<Props> = ({
         ) : (
           <form onSubmit={handleVerifyOtp} className="space-y-3">
             <div>
-              <div className="flex justify-between items-center mb-1 text-[11px]">
+              <div className="flex justify-between items-center mb-1 text-xs">
                 <label htmlFor={fieldId} className="font-bold text-slate-700">کد ۴ رقمی</label>
                 <button
                   type="button"
@@ -265,6 +266,7 @@ export const AuthModal: React.FC<Props> = ({
                 name="one-time-code"
                 inputMode="numeric"
                 autoComplete="one-time-code"
+                aria-describedby={otpValidityId}
                 maxLength={4}
                 placeholder="• • • •"
                 value={otp}
@@ -275,13 +277,16 @@ export const AuthModal: React.FC<Props> = ({
                 disabled={isLoading}
               />
               {timer > 0 ? (
-                <span className="text-[10px] text-slate-400 block text-left mt-1">
-                  زمان: {toPersianDigits(Math.floor(timer / 60))}:{toPersianDigits(String(timer % 60).padStart(2, '0'))}
-                </span>
+                <p id={otpValidityId} role="timer" className="mt-2 flex justify-end gap-2 text-xs text-slate-600">
+                  <span>اعتبار کد</span>
+                  <bdi dir="ltr" className="font-bold tabular-nums">
+                    {toPersianDigits(Math.floor(timer / 60))}:{toPersianDigits(String(timer % 60).padStart(2, '0'))}
+                  </bdi>
+                </p>
               ) : (
-                <div className="flex items-center justify-between mt-1.5">
-                  <span className="text-[10px] text-rose-500 font-bold">کد منقضی شد.</span>
-                  <button type="button" onClick={handleResendOtp} disabled={isLoading} className="min-h-11 text-[11px] text-brand-deep font-bold hover:underline disabled:opacity-50">
+                <div className="flex flex-wrap items-center justify-between gap-x-2 mt-1.5">
+                  <span id={otpValidityId} role="status" className="text-xs text-rose-700 font-bold">کد منقضی شد.</span>
+                  <button type="button" onClick={handleResendOtp} disabled={isLoading} className="min-h-11 text-xs text-brand-deep font-bold hover:underline focus-visible:outline-2 focus-visible:outline-brand disabled:opacity-50">
                     ارسال مجدد کد
                   </button>
                 </div>

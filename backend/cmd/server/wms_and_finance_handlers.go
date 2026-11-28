@@ -24,7 +24,7 @@ func handleGetBins(w http.ResponseWriter, r *http.Request, ctx context.Context, 
 	}
 	bins, err := wmsRepo.GetBins(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(bins)
@@ -38,7 +38,7 @@ func handleGetWarehouseOverview(w http.ResponseWriter, r *http.Request, ctx cont
 	}
 	overview, err := wmsRepo.GetOverview(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(overview)
@@ -78,7 +78,7 @@ func handleGetInbounds(w http.ResponseWriter, r *http.Request, ctx context.Conte
 	}
 	inbounds, err := wmsRepo.GetInboundShipments(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(inbounds)
@@ -92,7 +92,7 @@ func handleGetManifests(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	}
 	manifests, err := wmsRepo.GetManifests(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(manifests)
@@ -105,7 +105,7 @@ func handleDispatchManifest(w http.ResponseWriter, r *http.Request, ctx context.
 		return
 	}
 	if err := wmsRepo.DispatchManifest(ctx, id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "manifestId": id, "status": "handed_over"})
@@ -119,7 +119,7 @@ func handleGetLedger(w http.ResponseWriter, r *http.Request, ctx context.Context
 	}
 	entries, err := finRepo.GetLedgerEntries(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(entries)
@@ -133,7 +133,7 @@ func handleGetDisputes(w http.ResponseWriter, r *http.Request, ctx context.Conte
 	}
 	disputes, err := finRepo.GetDisputes(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if disputes == nil {
@@ -185,7 +185,7 @@ func handleCreateDispute(w http.ResponseWriter, r *http.Request, ctx context.Con
 			http.Error(w, fmt.Sprintf(`{"error":%q}`, msg), http.StatusBadRequest)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 

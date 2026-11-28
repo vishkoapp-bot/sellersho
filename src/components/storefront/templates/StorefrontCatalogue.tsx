@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { Search, SlidersHorizontal, X } from 'lucide-react';
 import type { Product } from '../../../types';
 import { useStore } from '../../../context/StoreContext';
@@ -8,12 +8,13 @@ import { cardPriceOf } from '../../../utils/cardPrice';
 import { activeProductVariants, resolvePurchase } from '../../../utils/productPurchase';
 import { RouteLoading } from '../../common/RouteLoading';
 import { FashionProductCard } from '../FashionProductCard';
-import type { StorefrontTemplateProps } from './templateTypes';
+import { storefrontProducts, type StorefrontTemplateProps } from './templateTypes';
 import { TemplateProductGrid } from './TemplateProductGrid';
 import type { CategoryGroup } from './StoreSections';
+import { useStorefrontProducts } from '../useStorefrontProducts';
 
 const SORT_OPTIONS = {
-  featured: 'محبوب‌ترین',
+  featured: 'پیشنهادی فروشگاه',
   cheapest: 'کمترین قیمت',
   expensive: 'بیشترین قیمت',
   discount: 'بیشترین تخفیف',
@@ -31,52 +32,74 @@ export function StorefrontCatalogue({ items, categoryGroups, productsTitle, prod
   productsTitle: string;
   productFeed?: StorefrontTemplateProps['productFeed'];
 }) {
-  const { openProductDetail, selectedCategory, setSelectedCategory,
+  const { openProductDetail, selectedCategory, setSelectedCategory, categories = [],
     catalogBrandRequest, clearCatalogBrand, searchQuery, setSearchQuery } = useStore();
   const [floorSort, setFloorSort] = useState<keyof typeof SORT_OPTIONS>('featured');
   const [availableOnly, setAvailableOnly] = useState(false);
+  const [searchDraft, setSearchDraft] = useState(searchQuery);
+  useEffect(() => setSearchDraft(searchQuery), [catalogBrandRequest, searchQuery, selectedCategory]);
   const catalogueHeadingId = useId();
-  const selectedGroup = categoryGroups.find((g) => g.slug === selectedCategory);
-  const brandFilter =
-    catalogBrandRequest && items.some((p) => (p.brand || '').trim() === catalogBrandRequest.brand)
-      ? catalogBrandRequest.brand
-      : null;
-  const categoryItems = useMemo(() => items.filter((product) =>
-    (!selectedGroup || product.category === selectedGroup.slug) &&
-    (!brandFilter || (product.brand || '').trim() === brandFilter)), [items, selectedGroup, brandFilter]);
-  const query = normalizeSearch(searchQuery);
-  const searching = query.length > 0;
-  const floorItems = useMemo(() => categoryItems.filter(product => {
-    const matchesQuery = !searching || normalizeSearch([product.title, product.brand, product.description].filter(Boolean).join(' ')).includes(query);
-    if (!matchesQuery || !availableOnly) return matchesQuery;
-    return product.variants?.length
-      ? activeProductVariants(product).some(variant => Boolean(resolvePurchase(product, variant.id)))
-      : Boolean(resolvePurchase(product));
-  }), [availableOnly, categoryItems, query, searching]);
-  const sortedFloorItems = useMemo(() => [...floorItems].sort((a, b) => {
-    if (floorSort === 'cheapest') return cardPriceOf(a).price - cardPriceOf(b).price;
-    if (floorSort === 'expensive') return cardPriceOf(b).price - cardPriceOf(a).price;
-    if (floorSort === 'discount') return cardPriceOf(b).discountPercent - cardPriceOf(a).discountPercent;
-    return (b.salesCount || 0) - (a.salesCount || 0);
-  }), [floorItems, floorSort]);
+  const categoryChoices = useMemo(() => {
+    const choices = new Map(categoryGroups.map(({ slug, title }) => [slug, title]));
+    for (const slug of productFeed?.categorySlugs ?? []) {
+      if (!choices.has(slug)) choices.set(slug, productFeed?.categoryLabels?.[slug] ?? categories.find(category => category.slug === slug)?.title ?? slug);
+    }
+    return [...choices].map(([slug, title]) => ({ slug, title }));
+  }, [categories, categoryGroups, productFeed?.categoryLabels, productFeed?.categorySlugs]);
+  const selectedGroup = categoryChoices.find(group => group.slug === selectedCategory);
+  const category = selectedCategory !== 'all' && (productFeed || selectedGroup) ? selectedCategory : undefined;
+  const brandFilter = catalogBrandRequest?.brand;
+  const term = searchQuery.trim();
+  const searching = term.length > 0;
+  const filtered = Boolean(brandFilter || category || searching || availableOnly || floorSort !== 'featured');
+  const filteredStore = filtered ? productFeed?.store : undefined;
+  const filters = useMemo(() => ({
+    category, search: term, sort: floorSort, inStockOnly: availableOnly, brands: brandFilter ? [brandFilter] : undefined,
+  }), [availableOnly, brandFilter, category, floorSort, term]);
+  const filteredFeed = useStorefrontProducts(filteredStore?.slug, filters);
+  const feed = filteredStore ? filteredFeed : productFeed;
+  const floorItems = useMemo(() => {
+    if (filteredStore) return storefrontProducts(filteredStore, filteredFeed.items);
+    if (productFeed) return items;
+    const query = normalizeSearch(term);
+    const preview = items.filter(product => {
+      if (category && product.category !== category) return false;
+      if (brandFilter && (product.brand || '').trim() !== brandFilter) return false;
+      if (query && !normalizeSearch([product.title, product.brand, product.description].filter(Boolean).join(' ')).includes(query)) return false;
+      if (!availableOnly) return true;
+      return product.variants?.length
+        ? activeProductVariants(product).some(variant => Boolean(resolvePurchase(product, variant.id)))
+        : Boolean(resolvePurchase(product));
+    });
+    if (floorSort === 'featured') return preview;
+    return preview.sort((a, b) => {
+      if (floorSort === 'discount') return cardPriceOf(b).discountPercent - cardPriceOf(a).discountPercent;
+      const difference = cardPriceOf(a).price - cardPriceOf(b).price;
+      return floorSort === 'cheapest' ? difference : -difference;
+    });
+  }, [availableOnly, brandFilter, category, filteredFeed.items, filteredStore, floorSort, items, productFeed, term]);
   const floorTitle = searching ? `جستجو: «${searchQuery}»` : brandFilter || (selectedGroup ? selectedGroup.title : productsTitle);
   const selectCategory = (slug: string): void => {
     clearCatalogBrand();
     setSelectedCategory(slug);
   };
-  const clearFloorFilter = (): void => {
-    if (brandFilter) clearCatalogBrand();
-    if (selectedGroup) setSelectedCategory('all');
-    if (searching) setSearchQuery('');
+  const clearSearch = () => {
+    setSearchDraft('');
+    setSearchQuery('');
+  };
+  const clearFloorFilter = () => {
+    clearCatalogBrand();
+    setSelectedCategory('all');
+    clearSearch();
+    setFloorSort('featured');
     setAvailableOnly(false);
   };
-  const filtered = Boolean(brandFilter || selectedGroup || searching || availableOnly);
 
   return (
     <section id="products" data-testid="store-products" aria-labelledby={catalogueHeadingId} className="fashion-catalogue">
       <div className="fashion-catalogue-heading">
         <div className="fashion-catalogue-title"><h2 id={catalogueHeadingId}>{floorTitle}</h2>
-          {!productFeed?.loading && <span className="fashion-result-count" role="status">{toPersianDigits(floorItems.length)} کالا{productFeed?.hasMore ? ' تا اینجا' : ''}</span>}
+          {!feed?.loading && !feed?.error && <span className="fashion-result-count" role="status">{toPersianDigits(feed?.total ?? floorItems.length)} کالا</span>}
         </div>
         {filtered ? (
           <button
@@ -89,12 +112,15 @@ export function StorefrontCatalogue({ items, categoryGroups, productsTitle, prod
         ) : null}
       </div>
       <div className="fashion-catalogue-tools">
-        <div className="fashion-search-field">
-          <Search size={18} aria-hidden="true" />
-          <input id="fashion-search" type="search" name="q" autoComplete="off" aria-label="جست‌وجو در ویترین" placeholder="نام کالا یا برند…" value={searchQuery}
-            onChange={event => setSearchQuery(event.target.value)} />
-          {searchQuery && <button type="button" aria-label="پاک کردن جست‌وجو" onClick={() => setSearchQuery('')}><X size={17} aria-hidden="true" /></button>}
-        </div>
+        <form role="search" className="fashion-search-field" onSubmit={event => { event.preventDefault(); setSearchQuery(searchDraft.trim()); }}>
+          <button type="submit" aria-label="نمایش نتایج جست‌وجو"><Search size={18} aria-hidden="true" /></button>
+          <input id="fashion-search" type="search" name="q" maxLength={256} autoComplete="off" enterKeyHint="search" aria-label="جست‌وجو در ویترین" placeholder="نام کالا یا برند…" value={searchDraft}
+            onChange={event => {
+              setSearchDraft(event.target.value);
+              if (event.target.value === '') setSearchQuery('');
+            }} />
+          {searchDraft && <button type="button" aria-label="پاک کردن جست‌وجو" onClick={clearSearch}><X size={17} aria-hidden="true" /></button>}
+        </form>
         <label className="fashion-sort-field">
           <SlidersHorizontal size={16} aria-hidden="true" />
           <span className="sr-only">مرتب‌سازی محصولات</span>
@@ -107,30 +133,30 @@ export function StorefrontCatalogue({ items, categoryGroups, productsTitle, prod
           فقط کالاهای موجود
         </label>}
       </div>
-      {categoryGroups.length > 1 && <nav className="fashion-catalogue-filters" aria-label="فیلتر دسته‌بندی محصولات">
-        <button type="button" aria-pressed={!selectedGroup && !brandFilter} onClick={() => selectCategory('all')}>همه</button>
-        {categoryGroups.map(group => <button key={group.slug} type="button" aria-pressed={selectedGroup?.slug === group.slug && !brandFilter}
+      {categoryChoices.length > 1 && <nav className="fashion-catalogue-filters" aria-label="فیلتر دسته‌بندی محصولات">
+        <button type="button" aria-pressed={!category && !brandFilter} onClick={() => selectCategory('all')}>همه</button>
+        {categoryChoices.map(group => <button key={group.slug} data-category={group.slug} type="button" aria-pressed={category === group.slug && !brandFilter}
           onClick={() => selectCategory(group.slug)}>{group.title}</button>)}
       </nav>}
-      {productFeed?.loading ? <RouteLoading label="در حال دریافت کالاها…" /> : floorItems.length === 0 ? (
-        !productFeed?.error && <div className="fashion-empty">
-          <p>{productFeed?.hasMore ? 'در کالاهای نمایش‌داده‌شده نتیجه‌ای پیدا نشد.' : filtered
+      {feed?.loading ? <RouteLoading label="در حال دریافت کالاها…" /> : floorItems.length === 0 ? (
+        !feed?.error && <div className="fashion-empty">
+          <p>{filtered
             ? 'کالایی با این مشخصات یافت نشد.' : 'هنوز کالایی در این ویترین ثبت نشده است.'}</p>
           {filtered && <button type="button" className="fashion-text-action" onClick={clearFloorFilter}>پاک کردن فیلترها</button>}
         </div>
       ) : editorial ? (
           <div className="fashion-product-grid">
-            {sortedFloorItems.map((p) => (
+            {floorItems.map((p) => (
               <FashionProductCard key={p.id} product={p} onOpen={openProductDetail} />
             ))}
           </div>
-      ) : <TemplateProductGrid products={sortedFloorItems} columnsClass="fashion-product-grid" />}
-      {productFeed?.error && <div className="fashion-empty" role="status">
-        <p>{productFeed.error}</p>
-        <button type="button" className="fashion-text-action" onClick={productFeed.retry}>تلاش مجدد</button>
+      ) : <TemplateProductGrid products={floorItems} columnsClass="fashion-product-grid" />}
+      {feed?.error && <div className="fashion-empty" role="status">
+        <p>{feed.error}</p>
+        <button type="button" className="fashion-text-action" onClick={feed.retry}>تلاش مجدد</button>
       </div>}
-      {productFeed?.hasMore && !productFeed.error && <button type="button" className="fashion-button fashion-load-more" disabled={productFeed.loadingMore} onClick={productFeed.loadMore}>
-        {productFeed.loadingMore ? 'در حال دریافت…' : 'نمایش کالاهای بیشتر'}
+      {feed?.hasMore && !feed.error && <button type="button" className="fashion-button fashion-load-more" disabled={feed.loadingMore} onClick={feed.loadMore}>
+        {feed.loadingMore ? 'در حال دریافت…' : 'نمایش کالاهای بیشتر'}
       </button>}
     </section>
   );

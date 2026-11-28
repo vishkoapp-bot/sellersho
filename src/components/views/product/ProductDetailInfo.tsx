@@ -132,7 +132,7 @@ const ReviewsTab: React.FC<{ productId: string; fashion?: boolean }> = ({ produc
       {state.items.map((r: any, i: number) => (
         <div key={r.id || i} className={fashion ? 'p-2.5 bg-white border border-[#e5e0d8] rounded-none text-xs lg:text-sm space-y-1' : 'p-2.5 bg-slate-50 rounded-xl text-xs lg:text-sm space-y-1'}>
           {(r.rating || r.score) && <p className="font-bold text-amber-500">★ {r.rating || r.score}</p>}
-          <p className={`${fashion ? 'text-[#737373]' : 'text-slate-600'} text-[11px] lg:text-sm leading-relaxed`}>{r.text || r.comment || r.content || ''}</p>
+          <p className={`${fashion ? 'text-[#737373]' : 'text-slate-600'} text-[11px] lg:text-sm leading-relaxed`}>{r.body || r.text || r.comment || r.content || ''}</p>
           {(r.isVerifiedBuyer || r.verified) && <p className="text-emerald-600 text-[10px] font-bold">خریدار تأییدشده</p>}
         </div>
       ))}

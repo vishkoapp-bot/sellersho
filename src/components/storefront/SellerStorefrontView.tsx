@@ -1,6 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { mapBackendProduct } from '../../context/ProductContext';
 import { SellerStorefrontHeader } from './SellerStorefrontHeader';
 import { SellerStorefrontHero } from './SellerStorefrontHero';
 import { SellerStorefrontCategories } from './SellerStorefrontCategories';
@@ -14,8 +13,9 @@ import { Search, Home, Info, PhoneCall, PackageSearch, X } from 'lucide-react';
 import { storeApi } from '../../services/storeApi';
 import { catalogApi } from '../../services/catalogApi';
 import { StorefrontTemplate, TemplateFallback, isKnownTemplateId, resolveTemplateAccent } from './templates/TemplateRegistry';
-import { storefrontProducts } from './templates/templateTypes';
+import { storefrontProducts, templateCustom } from './templates/templateTypes';
 import type { TemplateConfig } from './templates/templateTypes';
+import { useStorefrontProducts } from './useStorefrontProducts';
 
 interface Props {
   onBackToCustomerSite?: () => void;
@@ -32,84 +32,20 @@ const newUuid = (): string => {
 export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) => {
   const { currentStore, products: centralProducts, categories, searchQuery, setSearchQuery, setIsTrackingModalOpen, sellerSession } = useStore();
 
-  // Fix74: storefront grid must show STORE prices, not central prices.
-  // ProductContext's catalogue is unscoped (central margin), while the PDP
-  // and the order path resolve store-scoped prices — grid 2,178,000 vs PDP
-  // 2,277,000 for the same speaker. For a dropshipper storefront, fetch the
-  // store-scoped list (same products, priced at the store's margin) and use
-  // it for every grid/template/widget in this view. Central storefronts keep
-  // the context list. Priced surfaces never fall back to the central list:
-  // while the scoped fetch is in flight or after it fails they receive an
-  // empty list instead (see templateProducts / fallbackProducts below).
-  const [scopedProducts, setScopedProducts] = useState<ReturnType<typeof mapBackendProduct>[] | null>(null);
-  const [scopedCursor, setScopedCursor] = useState<string | null>(null);
-  const [hasMoreScoped, setHasMoreScoped] = useState(false);
-  const [scopedLoadingMore, setScopedLoadingMore] = useState(false);
-  const [loadedStoreSlug, setLoadedStoreSlug] = useState<string | null>(null);
-  const [scopedError, setScopedError] = useState('');
-  const [scopedReload, setScopedReload] = useState(0);
-  const feedGeneration = useRef(0);
-  const liveStoreSlug = useRef(currentStore?.slug);
-  liveStoreSlug.current = currentStore?.slug;
-  // PERF-01: the storefront loads page 1 of its own assortment (store
-  // prices) and pages on demand from the floor grid below; template
-  // sections render from the loaded pages (same documented limitation
-  // as the central catalog's facets).
+  // Editorial sections use the unfiltered assortment and its store prices.
+  // The catalogue switches to a separate paged feed when a filter is active.
+  const storeSlug = currentStore.ownerType === 'dropshipper' ? currentStore.slug : undefined;
+  const productsFeed = useStorefrontProducts(storeSlug);
+  const [categoryFeed, setCategoryFeed] = useState<{ slug: string; slugs: string[] } | null>(null);
   useEffect(() => {
-    const generation = ++feedGeneration.current;
-    setScopedError('');
-    setLoadedStoreSlug(null);
-    setScopedLoadingMore(false);
-    if (currentStore?.ownerType !== 'dropshipper' || !currentStore.slug) {
-      setScopedProducts(null);
-      setScopedCursor(null);
-      setHasMoreScoped(false);
-      return;
-    }
-    const slug = currentStore.slug;
-    const currentFeed = () => feedGeneration.current === generation && liveStoreSlug.current === slug;
-    catalogApi.getProductsPage({ storeSlug: slug })
-      .then(page => {
-        if (!currentFeed()) return;
-        setScopedProducts(page.items.map(mapBackendProduct));
-        setScopedCursor(page.nextCursor);
-        setHasMoreScoped(page.hasMore);
-        setLoadedStoreSlug(slug);
-      })
-      .catch(() => {
-        if (!currentFeed()) return;
-        setScopedProducts(null);
-        setHasMoreScoped(false);
-        setScopedError('دریافت کالاهای ویترین انجام نشد.');
-        setLoadedStoreSlug(slug);
-      });
-    return () => { feedGeneration.current += 1; };
-  }, [currentStore?.ownerType, currentStore?.slug, scopedReload]);
-  const loadMoreScoped = async () => {
-    if (!currentStore?.slug || loadedStoreSlug !== currentStore.slug || !hasMoreScoped || !scopedCursor || scopedLoadingMore) return;
-    const slug = currentStore.slug;
-    const generation = feedGeneration.current;
-    const currentFeed = () => generation === feedGeneration.current && liveStoreSlug.current === slug;
-    setScopedError('');
-    setScopedLoadingMore(true);
-    try {
-      const page = await catalogApi.getProductsPage({ storeSlug: slug }, { cursor: scopedCursor });
-      if (!currentFeed()) return;
-      setScopedProducts((prev) => {
-        const base = prev ?? [];
-        const seen = new Set(base.map((p) => p.id));
-        const fresh = page.items.map(mapBackendProduct).filter((p) => !seen.has(p.id));
-        return [...base, ...fresh];
-      });
-      setScopedCursor(page.nextCursor);
-      setHasMoreScoped(page.hasMore);
-    } catch {
-      if (currentFeed()) setScopedError('دریافت کالاهای بیشتر انجام نشد.');
-    } finally {
-      if (currentFeed()) setScopedLoadingMore(false);
-    }
-  };
-  const products = scopedProducts ?? centralProducts;
+    if (!storeSlug) return;
+    const controller = new AbortController();
+    catalogApi.getStoreCategorySlugs(storeSlug, { publicStorefront: true, signal: controller.signal })
+      .then(slugs => { if (!controller.signal.aborted) setCategoryFeed({ slug: storeSlug, slugs }); })
+      .catch(() => { if (!controller.signal.aborted) setCategoryFeed(null); });
+    return () => controller.abort();
+  }, [storeSlug]);
+  const products = currentStore.ownerType === 'dropshipper' ? productsFeed.items : centralProducts;
   const [templateId, setTemplateId] = useState<string | null>(null);
   // ISO-E: the store this templateId was resolved FOR. A plain
   // templateId state survives SPA navigation, so store B's first
@@ -217,20 +153,6 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
     );
   }
 
-  // Fix74 (completed): the template renderer and the fallback
-  // public-widget section are as strict as the fallback grid/slider
-  // below: on a dropshipper storefront they receive the store-scoped
-  // list only - empty while it loads or after it failed - never the
-  // central-priced context catalogue, whose prices checkout would
-  // contradict. Central storefronts keep `products` (their context
-  // catalogue) unchanged. With an empty list the template branch
-  // takes its designed empty state (Fix81: template chrome plus the
-  // coming-soon block), not an error page.
-  const templateProducts =
-    currentStore.ownerType === 'dropshipper'
-      ? loadedStoreSlug === currentStore.slug ? scopedProducts ?? [] : []
-      : products;
-
   // FIX3: when a template is resolved, the template component
   // renders the storefront (with the existing about/contact/footer
   // sections below it, placement unchanged). An unknown templateId
@@ -245,36 +167,23 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
     return (
       <div className="flex-1 flex flex-col bg-white">
         <SellerStorefrontHeader onOpenSearch={() => setIsSearchOpen(true)}
-          variant={known ? 'themed' : 'modern'} navigationProducts={templateProducts} />
+          variant={known ? 'themed' : 'modern'} navigationProducts={products} />
         {known ? (
           <StorefrontTemplate key={currentStore.id} templateId={resolvedTemplateId} store={currentStore}
-            products={templateProducts} categories={categories}
+            products={products} categories={categories}
             accentColor={resolveTemplateAccent(resolvedTemplateId, templateConfig.accentColor)}
             config={templateConfig}
-            productFeed={currentStore.ownerType === 'dropshipper' ? {
-              loading: loadedStoreSlug !== currentStore.slug,
-              error: loadedStoreSlug === currentStore.slug ? scopedError : '',
-              hasMore: loadedStoreSlug === currentStore.slug && hasMoreScoped,
-              loadingMore: scopedLoadingMore,
-              loadMore: () => void loadMoreScoped(),
-              retry: () => { if (hasMoreScoped) void loadMoreScoped(); else setScopedReload(n => n + 1); },
+            productFeed={storeSlug ? {
+              ...productsFeed, store: currentStore,
+              categorySlugs: categoryFeed?.slug === storeSlug ? categoryFeed.slugs : undefined,
+              categoryLabels: Object.fromEntries((templateCustom(templateConfig).categoryOverrides ?? [])
+                .flatMap(category => category.label || category.name ? [[category.slug, (category.label || category.name)!]] : [])),
             } : undefined} />
         ) : <TemplateFallback templateId={resolvedTemplateId} />}
-        <SellerStorefrontFooter variant={known ? 'themed' : 'modern'} storeProducts={templateProducts} />
+        <SellerStorefrontFooter variant={known ? 'themed' : 'modern'} storeProducts={products} />
       </div>
     );
   }
-
-  // Fallback (builder) layout surfaces: the deals slider and the
-  // legacy grid used to read the unscoped context catalogue directly,
-  // showing central prices while the order path charges store
-  // prices. On a dropshipper storefront they now receive the
-  // store-scoped list; while that fetch is in flight (or has failed)
-  // they receive an empty list - their existing empty states - and
-  // never central-priced cards. Central storefronts keep the view's
-  // list, which for them is the context catalogue, unchanged.
-  const fallbackProducts =
-    currentStore.ownerType === 'dropshipper' ? scopedProducts ?? [] : products;
 
   return (
     <div className="flex-1 flex flex-col bg-white">
@@ -354,7 +263,7 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
           <>
             {builderWidgets.heroBanner && <SellerStorefrontHero />}
             {builderWidgets.categoriesGrid && <SellerStorefrontCategories />}
-            {builderWidgets.dealsSlider && <SpecialDealsSlider products={fallbackProducts} storeBrand={{ name: currentStore.name, accentColor: currentStore.builderConfig?.accentColor ?? resolveTemplateAccent(currentStore.templateId || 'tpl-modern-1', templateConfig.accentColor) }} />}
+            {builderWidgets.dealsSlider && <SpecialDealsSlider products={products} storeBrand={{ name: currentStore.name, accentColor: currentStore.builderConfig?.accentColor ?? resolveTemplateAccent(currentStore.templateId || 'tpl-modern-1', templateConfig.accentColor) }} />}
             {builderWidgets.storeDealsWidget && publicWidget && (
               <div className="mx-3.5 my-2 p-3 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl text-white flex items-center justify-between shadow-xs">
                 <div>
@@ -365,9 +274,9 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
               </div>
             )}
             {builderWidgets.storeDealsWidget && publicWidget && <section className="mx-3.5 grid grid-cols-2 gap-2" aria-label="کالاهای منتخب ویجت">
-              {storefrontProducts(currentStore, templateProducts).filter((product) => publicWidget.productIds.includes(product.id)).map((product) => <ProductCard key={product.id} product={product} />)}
+              {storefrontProducts(currentStore, products).filter((product) => publicWidget.productIds.includes(product.id)).map((product) => <ProductCard key={product.id} product={product} />)}
             </section>}
-            <SellerStorefrontProductGrid products={fallbackProducts} hasMore={hasMoreScoped} onLoadMore={loadMoreScoped} loadingMore={scopedLoadingMore} />
+            <SellerStorefrontProductGrid products={products} hasMore={productsFeed.hasMore} onLoadMore={productsFeed.loadMore} loadingMore={productsFeed.loadingMore} />
           </>
         )}
 
@@ -376,7 +285,7 @@ export const SellerStorefrontView: React.FC<Props> = ({ onBackToCustomerSite }) 
       </main>
 
       {/* 4. Branded Footer */}
-      <SellerStorefrontFooter storeProducts={fallbackProducts} />
+      <SellerStorefrontFooter storeProducts={products} />
     </div>
   );
 };

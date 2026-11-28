@@ -77,7 +77,7 @@ func handleIPPanelSettings(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 		var baseURL, key, sender, pattern string
 		err := db.QueryRowContext(r.Context(), `SELECT ippanel_enabled, ippanel_base_url, ippanel_api_key, ippanel_sender, ippanel_pattern_code FROM platform_settings WHERE id=1`).Scan(&enabled, &baseURL, &key, &sender, &pattern)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		masked := ""
@@ -112,7 +112,7 @@ func handleIPPanelSettings(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	  ippanel_api_key=COALESCE(NULLIF($3,''), ippanel_api_key), ippanel_sender=$4, ippanel_pattern_code=$5,
 	  updated_at=NOW() WHERE id=1`, req.Enabled, baseURL, strings.TrimSpace(req.APIKey), strings.TrimSpace(req.Sender), strings.TrimSpace(req.PatternCode))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{"success": true})

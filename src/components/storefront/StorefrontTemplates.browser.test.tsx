@@ -57,12 +57,14 @@ for (const [template, paper] of Object.entries(themes)) {
       await page.click('header a[aria-label="جست‌وجو در ویترین"]');
       assert.equal(await page.evaluate(() => document.activeElement?.id), 'fashion-search');
       await fillInput(page, '#fashion-search', 'ديجيتال');
+      await page.keyboard.press('Enter');
       await page.waitForFunction(selector => document.querySelectorAll(selector).length === 2, {}, items);
       await page.click('#products button[aria-label="پاک کردن جست‌وجو"]');
       await clickText(page, 'نمایش کالاهای بیشتر');
       await page.waitForFunction(selector => document.querySelectorAll(selector).length === 16, {}, items);
 
       await page.select('#products select', 'cheapest');
+      await page.waitForSelector(`${items} .product-title-link`, { visible: true });
       assert.match(await page.$eval(`${items} .product-title-link`, a => a.getAttribute('href') || ''), /\/store\/batch-eight-store\/product\/batch8-product-0$/);
       await page.click(`${items} button[aria-label^="انتخاب مدل"]`);
       await page.waitForSelector(`.fashion-pdp[data-storefront-theme="tpl-${template}-1"]`);

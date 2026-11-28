@@ -75,6 +75,19 @@ func TestCursorBindsResolvedTenantRevisionAndCanonicalFilters(t *testing.T) {
 	}
 }
 
+func TestCursorBindsStorefrontVariantAvailability(t *testing.T) {
+	scope := Scope{ID: "store-A", OwnerType: "dropshipper", Revision: 1}
+	filter := Filter{Sort: "featured", StorePosition: true, InStockOnly: true, VisibleStockOnly: true}
+	token, err := Encode(scope, filter, Key{ID: "visible-product", Position: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter.VisibleStockOnly = false
+	if _, err := Decode(token, scope, filter); !errors.Is(err, ErrRestart) {
+		t.Fatalf("reused storefront cursor with legacy stock filter: %v", err)
+	}
+}
+
 func TestDefaultAndEmptyFiltersHaveOneCursorIdentity(t *testing.T) {
 	scope := Scope{ID: "central", OwnerType: "central", Revision: 1}
 	key := Key{ID: "p-1", CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}

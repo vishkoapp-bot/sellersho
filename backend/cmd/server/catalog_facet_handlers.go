@@ -44,7 +44,7 @@ func handleBrandsList(w http.ResponseWriter, r *http.Request, catalogRepo *repos
 	}
 	brands, err := catalogRepo.GetBrands(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(brands)
@@ -76,7 +76,7 @@ func handleCategoryFacets(w http.ResponseWriter, r *http.Request, catalogRepo *r
 		}
 		results, err := catalogRepo.SearchCategories(r.Context(), q)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		json.NewEncoder(w).Encode(results)
@@ -107,14 +107,14 @@ func handleCategoryFacets(w http.ResponseWriter, r *http.Request, catalogRepo *r
 	case "brands":
 		brands, err := catalogRepo.GetCategoryBrandsBySlug(r.Context(), slug)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		json.NewEncoder(w).Encode(brands)
 	case "attributes":
 		attrs, err := catalogRepo.GetCategoryAttributesBySlug(r.Context(), slug)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		// FIX 51 — live's ql editor also reads colors, brands and the

@@ -168,6 +168,8 @@ export interface ProductFilterParams {
   search?: string;
   sort?: string;
   storeSlug?: string;
+  // Use the explicit public storefront contract instead of central fallback.
+  publicStorefront?: boolean;
   inStockOnly?: boolean;
   isOriginal?: boolean;
   // PERF-01: server-side facets (previously client-side over the full
@@ -244,6 +246,7 @@ export const catalogApi = {
     if (params.search) searchParams.set('search', params.search);
     if (params.sort) searchParams.set('sort', params.sort);
     if (params.storeSlug) searchParams.set('storeSlug', params.storeSlug);
+    if (params.publicStorefront) searchParams.set('storefront', '1');
     if (params.inStockOnly) searchParams.set('in_stock', 'true');
     if (params.isOriginal) searchParams.set('is_original', 'true');
     for (const brand of params.brands ?? []) searchParams.append('brand', brand);
@@ -266,7 +269,7 @@ export const catalogApi = {
     // Unscoped (public/central) requests stay anonymous, exactly as before.
     return apiRequest<ProductListPage>(endpoint, {
       method: 'GET',
-      ...(params.storeSlug ? { auth: true } : {}),
+      ...(params.storeSlug && !params.publicStorefront ? { auth: true } : {}),
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
   },
@@ -358,9 +361,12 @@ export const catalogApi = {
 
   // PERF-01: the DISTINCT category slugs one store actually sells, in
   // one bounded query. Replaces deriving them from the full catalog.
-  getStoreCategorySlugs: async (storeSlug?: string): Promise<string[]> => {
-    const qs = storeSlug ? `?storeSlug=${encodeURIComponent(storeSlug)}` : '';
-    const res = await apiRequest<{ slugs: string[] }>(`/products/store-categories${qs}`, { method: 'GET' });
+  getStoreCategorySlugs: async (storeSlug?: string, options?: { publicStorefront?: boolean; signal?: AbortSignal }): Promise<string[]> => {
+    const params = new URLSearchParams();
+    if (storeSlug) params.set('storeSlug', storeSlug);
+    if (options?.publicStorefront) params.set('storefront', '1');
+    const qs = params.size > 0 ? `?${params}` : '';
+    const res = await apiRequest<{ slugs: string[] }>(`/products/store-categories${qs}`, { method: 'GET', signal: options?.signal });
     return res?.slugs ?? [];
   },
 

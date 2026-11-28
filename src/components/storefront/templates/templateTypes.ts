@@ -193,6 +193,10 @@ export interface StorefrontTemplateProps {
   config: TemplateConfig;
   categories?: Category[];
   productFeed?: {
+    store: Store;
+    categorySlugs?: string[];
+    categoryLabels?: Record<string, string>;
+    total: number;
     loading: boolean;
     error: string;
     hasMore: boolean;

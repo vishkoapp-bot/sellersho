@@ -90,7 +90,7 @@ func handleShaparakToken(w http.ResponseWriter, r *http.Request, ctx context.Con
 			writePaymentError(w, http.StatusConflict, "insufficient_stock", err.Error())
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if existing != nil {
@@ -112,7 +112,7 @@ func handleShaparakToken(w http.ResponseWriter, r *http.Request, ctx context.Con
 	if err != nil || persisted == nil {
 		_ = redisClient.ReleaseOrderInventory(ctx, orderID, reservedProducts...)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 		} else {
 			http.Error(w, "payment transaction was not persisted", http.StatusInternalServerError)
 		}

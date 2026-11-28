@@ -1349,47 +1349,65 @@ func dossierShippingMode(fulfillment string) string {
 	}
 }
 
-// ProductReview is one published product review (same field shape as
-// the /reviews endpoint items, used by /products/<id>/reviews).
-type ProductReview struct {
-	ID        string    `json:"id"`
-	ProductID string    `json:"productId"`
-	UserID    string    `json:"userId"`
-	Rating    int       `json:"rating"`
-	Comment   string    `json:"comment"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"createdAt"`
+// PublicProductReview contains only data shown to buyers and suppliers.
+type PublicProductReview struct {
+	ID          string
+	DisplayName string
+	Rating      int
+	Body        string
+	CreatedAt   time.Time
 }
 
-// GetProductReviews returns published reviews for a product, newest first.
-func (r *CatalogRepository) GetProductReviews(ctx context.Context, productID string) ([]ProductReview, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, product_id, user_id, rating, comment, status, created_at
-		FROM product_reviews WHERE product_id = $1 AND status = 'published' ORDER BY created_at DESC`,
-		productID)
+// GetPublishedReviewPage keeps the page and aggregate rating in the same
+// snapshot. Resolve names after limiting the page, using the users primary key.
+func (r *CatalogRepository) GetPublishedReviewPage(ctx context.Context, productID string, limit, offset int) ([]PublicProductReview, int, float64, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		WITH stats AS (
+			SELECT COUNT(*) AS total, COALESCE(AVG(rating), 0)::double precision AS average
+			FROM product_reviews
+			WHERE product_id = $1 AND status = 'published'
+		),
+		page AS (
+			SELECT id, user_id, rating, comment, created_at
+			FROM product_reviews
+			WHERE product_id = $1 AND status = 'published'
+			ORDER BY created_at DESC, id DESC
+			LIMIT $2 OFFSET $3
+		)
+		SELECT stats.total, stats.average, p.id, NULLIF(BTRIM(u.full_name), ''), p.rating, p.comment, p.created_at
+		FROM stats
+		LEFT JOIN page p ON TRUE
+		LEFT JOIN users u ON u.id = CASE
+			WHEN p.user_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN p.user_id::uuid
+		END
+		ORDER BY p.created_at DESC, p.id DESC
+	`, productID, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	defer rows.Close()
-	out := []ProductReview{}
-	for rows.Next() {
-		var rv ProductReview
-		if err := rows.Scan(&rv.ID, &rv.ProductID, &rv.UserID, &rv.Rating, &rv.Comment, &rv.Status, &rv.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, rv)
-	}
-	return out, rows.Err()
-}
 
-// FIX 48 — display name for one review author (live rv displayName).
-func (r *CatalogRepository) GetUserDisplayName(ctx context.Context, userID string) (string, error) {
-	var name sql.NullString
-	err := r.db.QueryRowContext(ctx, `SELECT full_name FROM users WHERE id = $1`, userID).Scan(&name)
-	if err != nil {
-		return "", err
+	items := []PublicProductReview{}
+	var total int
+	var average float64
+	for rows.Next() {
+		var id, name, body sql.NullString
+		var rating sql.NullInt64
+		var createdAt sql.NullTime
+		if err := rows.Scan(&total, &average, &id, &name, &rating, &body, &createdAt); err != nil {
+			return nil, 0, 0, err
+		}
+		// A left join retains the aggregate when the requested page is empty.
+		if id.Valid {
+			items = append(items, PublicProductReview{
+				ID: id.String, DisplayName: name.String, Rating: int(rating.Int64), Body: body.String, CreatedAt: createdAt.Time,
+			})
+		}
 	}
-	return name.String, nil
+	if err := rows.Err(); err != nil {
+		return nil, 0, 0, err
+	}
+	return items, total, average, nil
 }
 
 // LoadCatalogPageRowsTx hydrates public catalog data in the same snapshot as

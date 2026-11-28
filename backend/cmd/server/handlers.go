@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -656,6 +655,7 @@ func parseCatalogPageFilter(r *http.Request) (catalogpage.Filter, error) {
 			return filter, err
 		}
 		filter.InStockOnly = b
+		filter.VisibleStockOnly = b && q.Get("storefront") == "1"
 	}
 	if v := q.Get("min_price"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
@@ -782,7 +782,16 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		return
 	}
 	storeSlug := r.URL.Query().Get("storeSlug")
-	store := resolveListStore(ctx, storeRepo, storeSlug)
+	storefront := r.URL.Query().Get("storefront") == "1"
+	var store *domain.Store
+	if storefront {
+		store = requirePublicStorefront(w, r, storeRepo)
+		if store == nil {
+			return
+		}
+	} else {
+		store = resolveListStore(ctx, storeRepo, storeSlug)
+	}
 	if store == nil {
 		// No central store row: no scope exists to page or price under.
 		http.Error(w, `{"error":"catalog store scope unavailable"}`, http.StatusInternalServerError)
@@ -798,7 +807,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	// assortment. reqStore is reused for the FIX 14 supplier fields
 	// below, which key on the same condition.
 	var reqStore *domain.Store
-	if storeSlug != "" {
+	if storeSlug != "" && !storefront {
 		reqStore, _ = storeRepo.GetStoreBySlug(ctx, storeSlug)
 	}
 	scope := catalogpage.Scope{ID: store.ID, OwnerType: store.OwnerType}
@@ -808,7 +817,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 		scope.OwnerType = "central"
 	}
 	filter.StorePosition = scope.OwnerType == "dropshipper" && filter.Sort == "featured"
-	if r.URL.Query().Get("includeInactive") == "1" && storeSlug != "" {
+	if !storefront && r.URL.Query().Get("includeInactive") == "1" && storeSlug != "" {
 		if claims, ok := ctx.Value(userClaimsKey).(*auth.UserClaims); ok && claims != nil {
 			if _, err := storeRepo.OwnedStore(ctx, claims.UserID, storeSlug); err == nil {
 				filter.IncludeInactive = true
@@ -919,7 +928,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 			http.Error(w, `{"error":"invalid catalog page request"}`, http.StatusBadRequest)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -935,7 +944,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	// Batch 3; until then no request carries the flag). The guard is
 	// at this call site ONLY: matching is unaffected, and
 	// LogSearchEvent itself stays a plain insert.
-	if filter.Search != "" {
+	if filter.Search != "" && (!storefront || r.URL.Query().Get("cursor") == "") {
 		effectiveSlug := storeSlug
 		if effectiveSlug == "" {
 			effectiveSlug = "central"
@@ -954,7 +963,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 	}
 	productsByID, err := catalogRepo.GetProductsByIDs(ctx, ids)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	byID := make(map[string]domain.Product, len(productsByID))
@@ -1099,7 +1108,7 @@ func handleProductsList(w http.ResponseWriter, r *http.Request, ctx context.Cont
 			// The keys came from this selection under this scope and
 			// filter, so encoding cannot fail; treat it as fatal
 			// rather than issuing a page with a broken cursor.
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 			return
 		}
 		nextCursor = &token
@@ -1253,13 +1262,8 @@ func handleProductDetail(w http.ResponseWriter, r *http.Request, ctx context.Con
 		handleStoreCategorySlugs(w, r, ctx, catalogRepo, storeRepo)
 		return
 	}
-	// FIX 14: live serves GET /api/v1/products/<id>/reviews with
-	// {"items":[],"rating":0,"reviewsCount":0,"total":0} for the bracelet
-	// (probed live 2026-11-03); the candidate previously returned the
-	// product detail for this path because only the first segment was
-	// read. The reviews tab in the live frontend reads this route.
 	if parts := strings.Split(trimmed, "/"); len(parts) == 2 && parts[1] == "reviews" && r.Method == http.MethodGet {
-		handleProductReviews(w, r, ctx, catalogRepo, parts[0])
+		handlePublicProductReviews(w, r, catalogRepo, parts[0])
 		return
 	}
 	// A slug segment after an spn- segment (defensive: the API path is
@@ -1327,55 +1331,6 @@ func handleProductDetail(w http.ResponseWriter, r *http.Request, ctx context.Con
 		return
 	}
 	json.NewEncoder(w).Encode(detail)
-}
-
-// handleProductReviews serves GET /api/v1/products/<id|spn->/reviews
-// (live shape, probed 2026-11-03). Non-empty rating/count semantics
-// are best-effort: rating is the 1-decimal mean of published ratings,
-// reviewsCount and total are the published count; the empty case
-// matches live exactly (items [], rating 0, reviewsCount 0, total 0).
-func handleProductReviews(w http.ResponseWriter, r *http.Request, ctx context.Context, catalogRepo *repository.CatalogRepository, key string) {
-	w.Header().Set("Content-Type", "application/json")
-	if catalogRepo == nil {
-		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
-		return
-	}
-	var p *domain.Product
-	var err error
-	if strings.HasPrefix(key, "spn-") {
-		var spn int64
-		if spn, err = parseSpnSegment(key); err == nil {
-			p, err = catalogRepo.GetProductBySpn(ctx, spn)
-		}
-	} else {
-		p, err = catalogRepo.GetProductByID(ctx, key)
-	}
-	if err != nil || p == nil {
-		http.Error(w, `{"error":"Product not found"}`, http.StatusNotFound)
-		return
-	}
-	reviews, err := catalogRepo.GetProductReviews(ctx, p.ID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if reviews == nil {
-		reviews = []repository.ProductReview{}
-	}
-	var sum int64
-	for _, rv := range reviews {
-		sum += int64(rv.Rating)
-	}
-	var rating float64
-	if len(reviews) > 0 {
-		rating = math.Round(float64(sum)/float64(len(reviews))*10) / 10
-	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"items":        reviews,
-		"rating":       rating,
-		"reviewsCount": len(reviews),
-		"total":        len(reviews),
-	})
 }
 
 // productPriceBoundsResponse is the D05 shape: minPrice/maxPrice/count
@@ -1472,7 +1427,7 @@ func handleProductPriceBounds(w http.ResponseWriter, r *http.Request, ctx contex
 		return tx.Commit()
 	}
 	if err := retryCatalogTxOnSerialization(runTx); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(productPriceBoundsResponse{MinPrice: bounds.MinPrice, MaxPrice: bounds.MaxPrice, Count: bounds.Count})
@@ -1490,14 +1445,22 @@ func handleStoreCategorySlugs(w http.ResponseWriter, r *http.Request, ctx contex
 		http.Error(w, `{"error":"Database not initialized"}`, http.StatusInternalServerError)
 		return
 	}
-	store := resolveListStore(ctx, storeRepo, r.URL.Query().Get("storeSlug"))
+	var store *domain.Store
+	if r.URL.Query().Get("storefront") == "1" {
+		store = requirePublicStorefront(w, r, storeRepo)
+		if store == nil {
+			return
+		}
+	} else {
+		store = resolveListStore(ctx, storeRepo, r.URL.Query().Get("storeSlug"))
+	}
 	if store == nil {
 		http.Error(w, `{"error":"catalog store scope unavailable"}`, http.StatusInternalServerError)
 		return
 	}
 	slugs, err := catalogRepo.ListStoreCategorySlugs(ctx, store.ID, store.OwnerType)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if slugs == nil {
@@ -1515,7 +1478,7 @@ func handleOwnedStoresList(w http.ResponseWriter, r *http.Request, ctx context.C
 	}
 	stores, err := storeRepo.GetStoresByOwner(ctx, claims.UserID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	json.NewEncoder(w).Encode(stores)
@@ -1530,7 +1493,7 @@ func handleStoresList(w http.ResponseWriter, r *http.Request, ctx context.Contex
 
 	stores, err := storeRepo.GetAllStores(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 
@@ -1763,7 +1726,7 @@ func handleStoreOverrides(w http.ResponseWriter, r *http.Request, ctx context.Co
 		} else if errors.Is(err, repository.ErrStoreInput) {
 			http.Error(w, `{"error":"Invalid pricing value"}`, http.StatusBadRequest)
 		} else {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeInternalError(w, err)
 		}
 	}
 	if req.Type == "store_margin" || (req.ProfitMarginPercent > 0 && req.Type == "") {

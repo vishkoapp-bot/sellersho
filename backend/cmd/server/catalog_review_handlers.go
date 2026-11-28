@@ -43,7 +43,7 @@ func handleCatalogReviewDossier(w http.ResponseWriter, r *http.Request, catalogR
 	}
 	dossier, err := catalogRepo.GetCatalogReviewDossier(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, err)
 		return
 	}
 	if dossier == nil {

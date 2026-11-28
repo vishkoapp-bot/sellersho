@@ -33,6 +33,7 @@ from rollback_points import append_record
 
 root = Path(sys.argv[1]).resolve()
 commit, ssl, move_xray = sys.argv[2], sys.argv[3] == '1', sys.argv[4] == '1'
+require_primary_https = len(sys.argv) > 5 and sys.argv[5] == '1'
 if root != Path('/opt/drup') or not re.fullmatch(r'[a-f0-9]{40}', commit):
     raise SystemExit('Invalid installation or commit')
 os.umask(0o077)
@@ -451,6 +452,8 @@ previous_edge = run('docker', 'ps', '--filter', 'label=com.docker.compose.projec
 # this line by dropping the `or bool(previous_edge)`: that would make
 # the assert skip the edge on a host that runs one.
 ssl = ssl or bool(previous_edge)
+if require_primary_https and not ssl:
+    raise SystemExit('Primary HTTPS requires the TLS edge')
 # OBS-01 (C-02): docker-compose.observability.yml is DELIBERATELY absent
 # here. It holds Grafana's ${GRAFANA_ADMIN_PASSWORD:?} fail-fast; this
 # list is used by every deploy and by rollback, so including it would let
@@ -546,10 +549,16 @@ if 'TAPIN_TOKEN_KEY' in runtime_env:
     os.environ['TAPIN_TOKEN_KEY'] = runtime_env['TAPIN_TOKEN_KEY']
 runtime = {'services': {'backend': {'environment': runtime_env, 'stop_grace_period': '30s'}}}
 if ssl:
-    edge_env = {'ACME_EMAIL': '', 'PLATFORM_HTTP_HOST': '46.249.98.190'}
+    edge_env = {'ACME_EMAIL': '', 'PLATFORM_HTTP_HOST': '46.249.98.190', 'PLATFORM_PRIMARY_HTTPS_ONLY': 'false'}
     if previous_edge:
         actual_edge_env = dict(v.split('=', 1) for v in inspect(previous_edge[0])['Config']['Env'])
         edge_env.update({k: actual_edge_env[k] for k in edge_env if k in actual_edge_env})
+    primary_url = 'https://' + edge_env['PLATFORM_HTTP_HOST'] + '/api/health'
+    if require_primary_https:
+        # Keep the existing entry point reachable until a trusted certificate
+        # has been provisioned and the primary site is already serving TLS.
+        run('curl', '--fail', '--silent', '--show-error', '--max-time', '12', '--output', '/dev/null', primary_url)
+        edge_env['PLATFORM_PRIMARY_HTTPS_ONLY'] = 'true'
     runtime['services']['edge'] = {'environment': edge_env}
     run('docker', 'pull', 'caddy:2-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0')
     run('docker', 'run', '--rm', '-e', 'PLATFORM_HTTP_HOST=46.249.98.190', '-v',
@@ -650,6 +659,23 @@ def health():
             pass
         time.sleep(2)
     raise RuntimeError('Backend health check failed')
+
+
+def verify_release_version(contract_path, release_manifest):
+    route_hash = release_manifest['contract']['routesHash']
+    expected = {
+        'commit': release_manifest['commit'],
+        'contractVersion': route_hash,
+        'routesHash': route_hash,
+    }
+    with urllib.request.urlopen('http://127.0.0.1:8080/api/version', timeout=5) as response:
+        backend_version = json.load(response)
+    frontend_version = json.loads(contract_path.read_text(encoding='utf-8'))
+    for component, version in (('backend', backend_version), ('frontend', frontend_version)):
+        if not isinstance(version, dict) or any(version.get(key) != value for key, value in expected.items()):
+            raise RuntimeError(f'Active {component} version differs from the release manifest')
+    print(f"Release identity verified: {expected['commit'][:12]} ({route_hash[:12]})", flush=True)
+
 
 # OBS-01 (C-04): the four Prometheus scrape jobs (prometheus.yml). The
 # deploy verifies at least one target UP per job before it may claim the
@@ -1364,9 +1390,13 @@ try:
     run('docker', 'exec', 'drup_frontend', 'nginx', '-t')
     if ssl:
         compose('up', '-d', '--no-deps', '--force-recreate', 'edge')
+        if edge_env['PLATFORM_PRIMARY_HTTPS_ONLY'] == 'true':
+            run('curl', '--fail', '--silent', '--show-error', '--retry', '8', '--retry-connrefused',
+                '--retry-delay', '2', '--max-time', '12', '--output', '/dev/null', primary_url)
     run('curl', '--fail', '--silent', '--show-error', '--retry', '8', '--retry-connrefused',
         '--retry-delay', '2', '--output', '/dev/null', 'http://46.249.98.190/')
     health()
+    verify_release_version(root / 'dist/contract.json', manifest)
     # MIG-02 step 2 — replaces the old hardcoded 202611090001
     # assertion: every manifest file must be recorded in
     # schema_migrations with a matching checksum.
@@ -1451,7 +1481,7 @@ except Exception as deploy_error:
             # Mode B — forward repair (MIG-02 step 4): do NOT restore
             # the old binary. Keep the new release: ensure it is fully
             # shipped, recreate backend/frontend from it, and verify
-            # health + the write-path probe. Accepted data is never
+            # identity, health and the write-path probe. Accepted data is never
             # erased (no DB restore). If this fails, the inner except
             # below prints ROLLBACK NEEDS ATTENTION.
             print('Mode B forward repair: keeping the new release; the old binary is not restored.', flush=True)
@@ -1485,6 +1515,7 @@ except Exception as deploy_error:
             if previous_edge:
                 compose('up', '-d', '--no-deps', '--force-recreate', 'edge')
             health()
+            verify_release_version(root / 'dist/contract.json', manifest)
             run_write_probe(release, 'current')
             rollback_point['status'] = 'forward-repaired'
             rollback_point['restoredCommit'] = None

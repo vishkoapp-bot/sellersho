@@ -3,6 +3,7 @@ param(
     [string]$Target = '/opt/drup',
     [switch]$EnableSSL,
     [switch]$MoveXray443,
+    [switch]$RequirePrimaryHTTPS,
     [switch]$BuildOnServer
 )
 $ErrorActionPreference = 'Stop'
@@ -23,6 +24,7 @@ function Remote([string]$Script) {
 }
 $commit = (Run-Git -GitArgs @('rev-parse','HEAD')).Trim()
 $branch = (Run-Git -GitArgs @('branch','--show-current')).Trim()
+$primaryHTTPSArg = if ($RequirePrimaryHTTPS) { '1' } else { '0' }
 if ((Run-Git -GitArgs @('status','--porcelain','--untracked-files=no'))) { throw 'Commit tracked changes before deployment.' }
 if ((Run-Git -GitArgs @('rev-parse',"refs/remotes/origin/$branch")).Trim() -ne $commit) { throw 'Push the current commit before deployment.' }
 # SEC-01 (supervisor F-03, gate G-15): fail fast on a reintroduced
@@ -64,8 +66,9 @@ mkdir -p "`$release"
 git -C '$Target' archive '$commit' | tar -xf - -C "`$release"
 test ! -e "`$release/docs/fa"
 test ! -e "`$release/backend/internal/networkreward"
+routes_hash=`$(python3 "`$release/scripts/release/contract_routes.py" "`$release/backend/cmd/server/main.go")
 docker run --rm -e PUPPETEER_SKIP_DOWNLOAD=true -v "`$release:/app" -v sellersho-npm-build-cache:/root/.npm -w /app node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 sh -c 'npm ci --no-audit --no-fund && npm run build && test -f /app/dist/index.html && test ! -L /app/node_modules && rm -rf -- /app/node_modules'
-docker run --rm -e CGO_ENABLED=0 -e GOMAXPROCS=1 -v "`$release/backend:/app" -v sellersho-go-mod-cache:/go/pkg/mod -w /app golang:1.23@sha256:60deed95d3888cc5e4d9ff8a10c54e5edc008c6ae3fba6187be6fb592e19e8c0 sh -c 'mkdir -p bin && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/server-linux ./cmd/server && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/migrate-linux ./cmd/migrate'
+docker run --rm -e CGO_ENABLED=0 -e GOMAXPROCS=1 -e RELEASE_COMMIT='$commit' -e RELEASE_CONTRACT="`$routes_hash" -v "`$release/backend:/app" -v sellersho-go-mod-cache:/go/pkg/mod -w /app golang:1.23@sha256:60deed95d3888cc5e4d9ff8a10c54e5edc008c6ae3fba6187be6fb592e19e8c0 sh -c 'mkdir -p bin && go build -buildvcs=false -trimpath -ldflags "-s -w -X main.ReleaseCommit=`$RELEASE_COMMIT -X main.ReleaseContract=`$RELEASE_CONTRACT" -o bin/server-linux ./cmd/server && go build -buildvcs=false -trimpath -ldflags "-s -w" -o bin/migrate-linux ./cmd/migrate'
 # MIG-02 step 2 (D-1) -- the release manifest is built by
 # make_manifest.py, not hand-written: it carries the migration file
 # set + hashes, lastCompatibleRevision (recomputed from the
@@ -79,7 +82,7 @@ python3 "`$release/scripts/release/make_manifest.py" --stage "`$release" --commi
 # builds, on the missing file (FileNotFoundError reading release.json).
 # Same fail-fast pattern as the test -f /app/dist/index.html guard above.
 test -f "`$release/release.json"
-python3 "`$release/scripts/deploy_remote.py" '$Target' '$commit' '$sslArg' '$xrayArg'
+python3 "`$release/scripts/deploy_remote.py" '$Target' '$commit' '$sslArg' '$xrayArg' '$primaryHTTPSArg'
 "@
     Write-Host "Deployed commit $commit (built on server)"
     return
@@ -93,6 +96,8 @@ $sourceTar = Join-Path $root "releases\source-$commit.tar"
 Run-Git -GitArgs @('archive','--format=tar',"--output=$sourceTar",'HEAD') | Out-Null
 & tar -xf $sourceTar -C $stage
 if ($LASTEXITCODE -ne 0) { throw 'Source extraction failed.' }
+$routesHash = & $pythonExe (Join-Path $stage 'scripts/release/contract_routes.py') (Join-Path $stage 'backend/cmd/server/main.go')
+if ($LASTEXITCODE -ne 0 -or $routesHash -cnotmatch '^[0-9a-f]{64}$') { throw 'Staged API route contract could not be computed.' }
 & npm run build
 if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed.' }
 Copy-Item -LiteralPath (Join-Path $root 'dist') -Destination (Join-Path $stage 'dist') -Recurse
@@ -101,8 +106,7 @@ $previousGoOS = $env:GOOS; $previousGoArch = $env:GOARCH; $previousCGO = $env:CG
 Push-Location (Join-Path $stage 'backend')
 try {
     $env:GOOS = 'linux'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
-    # The archive has no .git directory; release.json records its exact commit.
-    & go build -buildvcs=false -trimpath -ldflags '-s -w' -o bin/server-linux ./cmd/server
+    & go build -buildvcs=false -trimpath -ldflags "-s -w -X main.ReleaseCommit=$commit -X main.ReleaseContract=$routesHash" -o bin/server-linux ./cmd/server
     if ($LASTEXITCODE -ne 0) { throw 'Backend build failed.' }
     & go build -buildvcs=false -trimpath -ldflags '-s -w' -o bin/migrate-linux ./cmd/migrate
     if ($LASTEXITCODE -ne 0) { throw 'Migration runner build failed.' }
@@ -131,6 +135,6 @@ set -eu
 echo '$digest  $Target/incoming/$commit.tar.gz' | sha256sum -c -
 mkdir -p '$Target/releases/$commit'
 tar -xzf '$Target/incoming/$commit.tar.gz' -C '$Target/releases/$commit'
-python3 '$Target/releases/$commit/scripts/deploy_remote.py' '$Target' '$commit' '$sslArg' '$xrayArg'
+python3 '$Target/releases/$commit/scripts/deploy_remote.py' '$Target' '$commit' '$sslArg' '$xrayArg' '$primaryHTTPSArg'
 "@
 Write-Host "Deployed commit $commit"

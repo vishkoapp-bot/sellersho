@@ -11,6 +11,8 @@ REAL `docker run ... node:24-alpine` container. Start Docker Desktop before
 running this file, or those tests fail with docker API connection errors
 because the daemon is not reachable. The other tests do not need Docker.
 """
+import ast
+import io
 import json
 import os
 from pathlib import Path
@@ -20,7 +22,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,6 +183,16 @@ function global:docker { throw 'Local Docker forbidden' }
         self.assertIn('-o bin/server-linux ./cmd/server', self.go[-1])
         self.assertIn('-o bin/migrate-linux ./cmd/migrate', self.go[-1])
 
+    def test_backend_build_embeds_staged_release_identity(self):
+        hash_command = ('routes_hash=$(python3 "$release/scripts/release/contract_routes.py" '
+                        '"$release/backend/cmd/server/main.go")')
+        self.assertIn(hash_command, self.release)
+        self.assertLess(self.release.index(hash_command), self.release.index('golang:'))
+        self.assertIn(f'RELEASE_COMMIT={COMMIT}', self.go)
+        self.assertIn('RELEASE_CONTRACT=$routes_hash', self.go)
+        self.assertIn('-X main.ReleaseCommit=$RELEASE_COMMIT', self.go[-1])
+        self.assertIn('-X main.ReleaseContract=$RELEASE_CONTRACT', self.go[-1])
+
     def test_actual_puppeteer_loader_skips_download_with_emitted_flag(self):
         self.assertIn('PUPPETEER_SKIP_DOWNLOAD=true', self.node)
         with tempfile.TemporaryDirectory(prefix='sellersho-puppeteer-skip-') as folder:
@@ -256,6 +270,35 @@ fi
         for failure in ['install', 'build', 'missing-artifact']:
             with self.subTest(failure=failure):
                 self.exercise_frontend_build_phase(failure)
+
+
+class ReleaseIdentityGate(unittest.TestCase):
+    def test_release_identity_requires_both_components_to_match(self):
+        source = (ROOT / 'scripts/deploy_remote.py').read_text(encoding='utf-8')
+        check = next(node for node in ast.parse(source).body
+                     if isinstance(node, ast.FunctionDef) and node.name == 'verify_release_version')
+        request = Mock()
+        namespace = {'json': json, 'urllib': SimpleNamespace(request=request), 'print': Mock()}
+        exec(compile(ast.Module(body=[check], type_ignores=[]), 'deploy_remote.py', 'exec'), namespace)
+        route_hash = 'b' * 64
+        manifest = {'commit': COMMIT, 'contract': {'routesHash': route_hash}}
+        version = {'commit': COMMIT, 'contractVersion': route_hash, 'routesHash': route_hash}
+
+        with tempfile.TemporaryDirectory(prefix='sellersho-release-identity-') as folder:
+            path = Path(folder) / 'contract.json'
+            path.write_text(json.dumps({**version, 'routes': 320}), encoding='utf-8')
+            request.urlopen.return_value = io.StringIO(json.dumps(version))
+            namespace['verify_release_version'](path, manifest)
+            request.urlopen.assert_called_once_with('http://127.0.0.1:8080/api/version', timeout=5)
+
+            request.urlopen.return_value = io.StringIO(json.dumps({**version, 'commit': 'unknown'}))
+            with self.assertRaisesRegex(RuntimeError, 'backend version differs'):
+                namespace['verify_release_version'](path, manifest)
+
+            request.urlopen.return_value = io.StringIO(json.dumps(version))
+            path.write_text(json.dumps({**version, 'routesHash': 'unknown'}), encoding='utf-8')
+            with self.assertRaisesRegex(RuntimeError, 'frontend version differs'):
+                namespace['verify_release_version'](path, manifest)
 
 
 if __name__ == '__main__':

@@ -1,5 +1,7 @@
 {
 	metrics
+	auto_https disable_redirects
+	default_sni {$PLATFORM_HTTP_HOST:localhost}
 	# OBS-01 deploy-fix (2026-11-18): the admin endpoint binds all
 	# interfaces INSIDE the edge container (0.0.0.0:2019). Caddy's
 	# default (localhost:2019) was unreachable at the container's eth0
@@ -80,10 +82,7 @@
     }
 }
 
-:443 {
-    tls {
-        on_demand
-    }
+(frontend_tls_routes) {
     # EDGE-01 step 5 (audit §5.4/§7): edge access log. The Caddyfile
     # had no `log` directive, so the edge emitted no access log at
     # all. Default format (JSON) to stdout, i.e. the container log —
@@ -109,10 +108,32 @@
     }
 }
 
+:443 {
+    tls {
+        on_demand
+    }
+    import frontend_tls_routes
+}
+
+https://{$PLATFORM_HTTP_HOST:localhost} {
+    tls {
+        issuer acme {
+            profile shortlived
+            disable_tlsalpn_challenge
+        }
+    }
+    import frontend_tls_routes
+}
+
 :80 {
     route {
         @internal path /internal/*
         respond @internal 404
+        @primary_https_only {
+            host {$PLATFORM_HTTP_HOST:localhost}
+            expression `"{$PLATFORM_PRIMARY_HTTPS_ONLY:false}" == "true"`
+        }
+        redir @primary_https_only https://{$PLATFORM_HTTP_HOST:localhost}{uri} 308
         @legacy_ip host {$PLATFORM_HTTP_HOST:localhost}
         handle @legacy_ip {
             import frontend_budget_proxy

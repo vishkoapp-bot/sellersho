@@ -196,6 +196,12 @@ jobs:
             TestFIN003LegacyPSPRefundTableClaimIsNotSpentAgain
             TestFIN003LegacyCompletedRefundProjectionsAreNotDoubleCounted
             TestFIN006MigrationPreservesUnknownHistoryWithoutInventingDebt
+            # Recovery inspects every payable order. Verify it in a fresh
+            # database, and verify supplier money and custody on canonical
+            # tables before legacy fixtures have reshaped them.
+            TestRebuildInventoryHolds
+            TestSupplierReturnBackActiveRetryAndAtomicTransition
+            TestSupplierStatementMatchesAvailableAndScopesFinancialRows
           )
           # These reduced-schema fixtures DROP canonical storage tables CASCADE.
           # Give the fixture writers their own DB; the receipt/custody checks

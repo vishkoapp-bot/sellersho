@@ -74,6 +74,17 @@ func (r *RedisClient) SetJSON(ctx context.Context, key string, val interface{}, 
 	return r.Client.Set(ctx, key, data, ttl).Err()
 }
 
+const revokedSessionPrefix = "auth:revoked-session:"
+
+func (r *RedisClient) IsSessionRevoked(ctx context.Context, digest string) (bool, error) {
+	count, err := r.Client.Exists(ctx, revokedSessionPrefix+digest).Result()
+	return count != 0, err
+}
+
+func (r *RedisClient) RevokeSession(ctx context.Context, digest string, expiresAt time.Time) error {
+	return r.Client.SetArgs(ctx, revokedSessionPrefix+digest, 1, redis.SetArgs{ExpireAt: expiresAt}).Err()
+}
+
 // InventoryHoldRef identifies one hold pool: a product, optionally one of its
 // variants. VariantID "" addresses the legacy product-level pool, so holds
 // placed before PERF-04 keep their exact key.

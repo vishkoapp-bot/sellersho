@@ -1556,9 +1556,9 @@ func authorizeStoreRead(w http.ResponseWriter, r *http.Request, jwtService *auth
 		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
 		return false
 	}
-	claims, err := jwtService.ValidateToken(strings.TrimPrefix(authHeader, "Bearer "))
+	claims, err := jwtService.ValidateSession(r.Context(), strings.TrimPrefix(authHeader, "Bearer "))
 	if err != nil {
-		http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+		writeSessionError(w, err)
 		return false
 	}
 	// PERF-03 G1: single round trip (see AuthMiddleware). ISO-E: this

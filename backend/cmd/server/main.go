@@ -180,6 +180,7 @@ func run(signalCtx context.Context) (result error) {
 	jwtService := auth.NewJWTService(cfg.JWTSecret)
 
 	if redisClient != nil {
+		jwtService.SetSessionRevocations(redisClient)
 		otpService = auth.NewOTPService(redisClient, cfg.Environment)
 		if cfg.IPPanelEnabled {
 			smsClient = ippanel.New(cfg.IPPanelBaseURL, cfg.IPPanelAPIKey, cfg.IPPanelSender)
@@ -2071,7 +2072,7 @@ func run(signalCtx context.Context) (result error) {
 	mux.HandleFunc("/api/v1/customer/wallet/withdrawals", RequireRoles(jwtService, "customer")(func(w http.ResponseWriter, r *http.Request) { handleT01CustomerWithdrawals(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/notifications", RequireRoles(jwtService, "customer")(func(w http.ResponseWriter, r *http.Request) { handleT01Notifications(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/notifications/read", RequireRoles(jwtService, "customer")(func(w http.ResponseWriter, r *http.Request) { handleT01NotificationsRead(w, r, db.DB) }))
-	mux.HandleFunc("/api/v1/auth/logout", AuthMiddleware(jwtService, func(w http.ResponseWriter, r *http.Request) { handleT01Logout(w, r, db.DB) }))
+	mux.HandleFunc("/api/v1/auth/logout", handleSessionLogout(jwtService))
 	// Seller insight (D09) and store templates (D04).
 	mux.HandleFunc("/api/v1/seller/analytics", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) { handleT01SellerAnalytics(w, r, db.DB) }))
 	mux.HandleFunc("/api/v1/seller/product-candidates", RequireRoles(jwtService, "seller")(func(w http.ResponseWriter, r *http.Request) {

@@ -6,7 +6,7 @@ import { OrderProvider } from './context/OrderContext';
 import { FinanceProvider } from './context/FinanceContext';
 import { WarehouseProvider } from './context/WarehouseContext';
 import { StoreProvider, useStore } from './context/StoreContext';
-import { ToastProvider } from './context/ToastContext';
+import { ToastProvider, useToast } from './context/ToastContext';
 import { RoleSwitcherBar } from './components/RoleSwitcherBar';
 import { Header } from './components/Header';
 import { CategoriesBar } from './components/CategoriesBar';
@@ -84,7 +84,11 @@ function CustomerAccountSignIn({ onBack, central }: { onBack: () => void; centra
 }
 
 export const AppContent: React.FC = () => {
-  const { currentUser, isSessionReady, sessionCheckFailed, retrySessionCheck, logoutUser, supplierSession, sellerSession, adminSession, panelSessionErrors, retryPanelSession } = useAuth();
+  const { currentUser, isSessionReady, sessionCheckFailed, logoutUnconfirmed, retrySessionCheck, logoutUser, supplierSession, sellerSession, adminSession, panelSessionErrors, retryPanelSession } = useAuth();
+  const { warning } = useToast();
+  useEffect(() => {
+    if (logoutUnconfirmed) warning('از این مرورگر خارج شدید. قطع نشست در سرور تأیید نشد.');
+  }, [logoutUnconfirmed, warning]);
   const {
     activeView,
     setActiveView,

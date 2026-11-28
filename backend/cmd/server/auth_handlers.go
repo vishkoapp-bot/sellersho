@@ -99,9 +99,9 @@ func AuthMiddleware(jwtService *auth.JWTService, next http.HandlerFunc) http.Han
 		}
 
 		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-		claims, err := jwtService.ValidateToken(tokenStr)
+		claims, err := jwtService.ValidateSession(r.Context(), tokenStr)
 		if err != nil {
-			http.Error(w, `{"error":"Unauthorized"}`, http.StatusUnauthorized)
+			writeSessionError(w, err)
 			return
 		}
 		// PERF-03 G1: one round trip refreshes capabilities AND the
@@ -144,7 +144,7 @@ func OptionalAuthMiddleware(jwtService *auth.JWTService, next http.HandlerFunc) 
 			next(w, r)
 			return
 		}
-		claims, err := jwtService.ValidateToken(strings.TrimPrefix(authHeader, "Bearer "))
+		claims, err := jwtService.ValidateSession(r.Context(), strings.TrimPrefix(authHeader, "Bearer "))
 		if err != nil {
 			next(w, r)
 			return
@@ -157,6 +157,33 @@ func OptionalAuthMiddleware(jwtService *auth.JWTService, next http.HandlerFunc) 
 		}
 		ctx := context.WithValue(r.Context(), userClaimsKey, claims)
 		next(w, r.WithContext(ctx))
+	}
+}
+
+func writeSessionError(w http.ResponseWriter, err error) {
+	if errors.Is(err, auth.ErrSessionStoreUnavailable) {
+		t01WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Authorization state unavailable"})
+		return
+	}
+	t01WriteJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+}
+
+func handleSessionLogout(jwtService *auth.JWTService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if !t01MethodOnly(w, r, http.MethodPost) {
+			return
+		}
+		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok {
+			writeSessionError(w, nil)
+			return
+		}
+		if err := jwtService.RevokeSession(r.Context(), token); err != nil {
+			writeSessionError(w, err)
+			return
+		}
+		t01WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 	}
 }
 

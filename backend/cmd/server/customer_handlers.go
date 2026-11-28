@@ -1200,24 +1200,3 @@ func handleT01CustomerWithdrawals(w http.ResponseWriter, r *http.Request, db *sq
 		writeMethodNotAllowed(w)
 	}
 }
-
-// --- logout (D08) ---------------------------------------------------------------
-//
-// POST /api/v1/auth/logout with a Bearer <redacted> (live frontend contract:
-// fetch POST + Bearer, errors swallowed by the caller).
-// TODO (U52): server-side revocation semantics are UNVERIFIED. The live
-// binary contains no "blacklist" string and no session table, while
-// Redis holds jwt:revoked:* keys of unknown origin. This endpoint
-// therefore returns the confirmed contract ({success: true}) and does
-// NOT invent a blacklist, and does NOT claim the token is revoked: the
-// token remains valid until expiry unless a real revocation mechanism
-// is built and proven.
-func handleT01Logout(w http.ResponseWriter, r *http.Request, db *sql.DB) {
-	if !t01MethodOnly(w, r, http.MethodPost) {
-		return
-	}
-	// AuthMiddleware (applied in main.go) already proved the Bearer token
-	// is valid; db is unused here but kept in the signature for symmetry.
-	_ = db
-	t01WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true})
-}

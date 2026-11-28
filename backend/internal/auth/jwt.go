@@ -8,6 +8,7 @@ import (
 
 	"github.com/drup/platform/internal/accesspolicy"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 // UserClaims defines JWT payload schema
@@ -57,8 +58,9 @@ func (c *UserClaims) HasDirectCapability(capability string) bool {
 }
 
 type JWTService struct {
-	secretKey        []byte
-	capabilityReader CapabilityReader
+	secretKey          []byte
+	capabilityReader   CapabilityReader
+	sessionRevocations SessionRevocations
 }
 
 func NewJWTService(secret string) *JWTService {
@@ -164,6 +166,11 @@ func (s *JWTService) GenerateTokenWithCapabilities(userID, mobile, fullName, rol
 	if len(s.secretKey) == 0 {
 		return "", errors.New("JWT secret is not configured")
 	}
+	sessionID, err := uuid.NewRandom()
+	if err != nil {
+		return "", fmt.Errorf("create session ID: %w", err)
+	}
+	now := time.Now()
 	claims := UserClaims{
 		UserID:       userID,
 		Mobile:       mobile,
@@ -171,8 +178,9 @@ func (s *JWTService) GenerateTokenWithCapabilities(userID, mobile, fullName, rol
 		Role:         role,
 		Capabilities: append([]string{}, capabilities...),
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ID:        sessionID.String(),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+			IssuedAt:  jwt.NewNumericDate(now),
 			Issuer:    "drup-platform",
 		},
 	}
@@ -186,12 +194,9 @@ func (s *JWTService) ValidateToken(tokenString string) (*UserClaims, error) {
 	if len(s.secretKey) == 0 {
 		return nil, errors.New("JWT secret is not configured")
 	}
-	token, err := jwt.ParseWithClaims(tokenString, &UserClaims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
+	token, err := jwt.ParseWithClaims(tokenString, &UserClaims{}, func(_ *jwt.Token) (interface{}, error) {
 		return s.secretKey, nil
-	})
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired(), jwt.WithStrictDecoding())
 
 	if err != nil {
 		return nil, err

@@ -72,6 +72,16 @@ export const authApi = {
     });
   },
 
+  logout: async (token: string): Promise<void> => {
+    const response = await apiRequest<{ success: boolean }>('/auth/logout', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      keepalive: true,
+      timeout: 5000,
+    });
+    if (response?.success !== true) throw new Error('Logout was not acknowledged');
+  },
+
   updateProfileName: (fullName: string): Promise<UserClaims> =>
     apiRequest<UserClaims>('/auth/me', { method: 'PATCH', auth: true, body: JSON.stringify({ fullName }) }),
 

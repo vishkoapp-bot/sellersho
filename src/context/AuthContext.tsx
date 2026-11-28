@@ -115,6 +115,7 @@ export interface AuthContextType {
   isLoading: boolean;
   isSessionReady: boolean;
   sessionCheckFailed: boolean;
+  logoutUnconfirmed: boolean;
   retrySessionCheck: () => void;
   panelSessionErrors: Partial<Record<ProfilePanel, string>>;
   retryPanelSession: () => void;
@@ -169,6 +170,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isSessionReady, setIsSessionReady] = useState<boolean>(() => !tokenStore.getToken() || isMockMode());
   const [sessionCheckFailed, setSessionCheckFailed] = useState(false);
+  const [logoutUnconfirmed, setLogoutUnconfirmed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -197,7 +199,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setIsSessionReady(true);
       } catch (error) {
         if (cancelled || !ownsRequest(generation, token, sequence)) return;
-        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) logoutUser();
+        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) clearSession();
         else setSessionCheckFailed(true);
       }
     };
@@ -335,26 +337,19 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, [authToken, currentUser, isSessionReady, supplierSession, sellerSession, warehouseSession, adminSession, panelRetry]);
 
   useEffect(() => {
-    if (authToken) {
+    // Effects from an older render must not restore a cleared credential or
+    // overwrite profile storage belonging to a newer sign-in.
+    if (authToken !== tokenStore.getToken()) return;
+    if (currentUser && authToken) {
       localStorage.setItem('drup_auth_token', authToken);
-      if (tokenStore.getToken() !== authToken) tokenStore.setToken(authToken);
-    } else {
-      localStorage.removeItem('drup_auth_token');
-      tokenStore.clearToken();
-    }
-  }, [authToken]);
-
-  useEffect(() => {
-    if (currentUser) {
       localStorage.setItem('drup_current_user', JSON.stringify(currentUser));
     } else {
+      localStorage.removeItem('drup_auth_token');
       localStorage.removeItem('drup_current_user');
     }
-  }, [currentUser]);
+  }, [authToken, currentUser]);
 
-  // Every panel shares one credential. Logout is independent of base role
-  // and invalidates pending work before clearing any identity-bound state.
-  const logoutUser = useCallback(() => {
+  const clearSession = useCallback(() => {
     authGeneration.current += 1;
     tokenStore.clearToken();
     for (const key of ['drup_auth_token', 'drup_current_user', 'drup_customer_user',
@@ -374,18 +369,44 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setIsSessionReady(true);
   }, []);
 
-  // Logout in one tab revokes the shared browser session in every tab.
+  // Capture the departing credential before clearing every panel and tab.
+  // A late logout response must never replace a newer login or its state.
+  const logoutUser = useCallback(() => {
+    const token = tokenStore.getToken();
+    clearSession();
+    setLogoutUnconfirmed(false);
+    if (!token || isMockMode()) return;
+
+    const generation = authGeneration.current;
+    const revoke = async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await authApi.logout(token);
+          return;
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 401) return;
+          if (error instanceof ApiError && error.status > 0 && error.status < 500) break;
+        }
+      }
+      if (mounted.current && generation === authGeneration.current && !tokenStore.getToken()) {
+        setLogoutUnconfirmed(true);
+      }
+    };
+    void revoke();
+  }, [clearSession]);
+
+  // Other tabs and expired sessions only need local cleanup.
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
       if (event.storageArea === localStorage &&
           (event.key === null || event.key === tokenStore.key) && event.newValue === null && !tokenStore.getToken()) {
-        logoutUser();
+        clearSession();
       }
     };
     window.addEventListener('storage', onStorage);
-    window.addEventListener('drup-session-expired', logoutUser);
-    return () => { window.removeEventListener('storage', onStorage); window.removeEventListener('drup-session-expired', logoutUser); };
-  }, [logoutUser]);
+    window.addEventListener('drup-session-expired', clearSession);
+    return () => { window.removeEventListener('storage', onStorage); window.removeEventListener('drup-session-expired', clearSession); };
+  }, [clearSession]);
 
   const logoutCustomer = logoutUser;
   const logoutAdmin = logoutUser;
@@ -398,6 +419,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const credential = tokenStore.getToken();
     ++profileSequence.current;
     tokenStore.invalidateRequests();
+    setLogoutUnconfirmed(false);
     setIsLoading(true);
     try {
       let result: T;
@@ -504,6 +526,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     isLoading,
     isSessionReady,
     sessionCheckFailed,
+    logoutUnconfirmed,
     retrySessionCheck: () => window.dispatchEvent(new Event('drup-session-changed')),
     panelSessionErrors,
     retryPanelSession: () => setPanelRetry((value) => value + 1),

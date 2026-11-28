@@ -1,36 +1,48 @@
 import { before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
-import { createServer, type ViteDevServer } from 'vite';
+import { existsSync, readFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import { build } from 'esbuild';
 import puppeteer, { type Browser } from 'puppeteer';
 
-let server: ViteDevServer;
+let server: Server;
 let browser: Browser;
 let url: string;
 before(async () => {
-  server = await createServer({ configFile: false, logLevel: 'error',
-    cacheDir: 'releases/.vite-auth-test', esbuild: { jsx: 'automatic' },
-    define: { 'import.meta.env.VITE_USE_MOCK': '"false"' },
-    optimizeDeps: { entries: ['scripts/fixtures/auth/index.html'] },
-    plugins: [{ name: 'auth-test-endpoint', configureServer(server) {
-      server.middlewares.use('/api/v1/test-auth', (req, res) => {
-        res.setHeader('Content-Type', 'application/json');
-        if (req.url?.includes('unauthorized')) { res.statusCode = 401; res.end(JSON.stringify({ error: 'Synthetic expired session' })); return; }
-        res.end(JSON.stringify(req.headers.authorization || null));
-      });
-    } }],
-    server: { host: '127.0.0.1', port: 0 },
+  const fixture = 'scripts/fixtures/auth';
+  const { outputFiles } = await build({
+    entryPoints: [fixture + '/lifecycle.tsx'], bundle: true, write: false,
+    jsx: 'automatic', format: 'esm',
+    define: { 'import.meta.env': '{"VITE_USE_MOCK":"false"}', 'process.env.NODE_ENV': '"production"' },
   });
-  await server.listen();
-  const address = server.httpServer!.address() as { port: number };
-  url = `http://127.0.0.1:${address.port}/scripts/fixtures/auth/index.html`;
+  const html = readFileSync(fixture + '/index.html');
+  server = createServer((req, res) => {
+    const { pathname, search } = new URL(req.url || '/', 'http://127.0.0.1');
+    if (pathname === '/' + fixture + '/index.html') {
+      res.writeHead(200, { 'Content-Type': 'text/html' }).end(html);
+    } else if (pathname === '/' + fixture + '/lifecycle.tsx') {
+      res.writeHead(200, { 'Content-Type': 'text/javascript' }).end(outputFiles[0].text);
+    } else if (pathname === '/api/v1/auth/logout') {
+      const available = req.headers.authorization !== 'Bearer fixture-customer:offline';
+      res.writeHead(available ? 200 : 503, { 'Content-Type': 'application/json' }).end(JSON.stringify({ success: available }));
+    } else if (pathname === '/api/v1/test-auth') {
+      const expired = search.includes('unauthorized');
+      res.writeHead(expired ? 401 : 200, { 'Content-Type': 'application/json' })
+        .end(JSON.stringify(expired ? { error: 'Synthetic expired session' } : req.headers.authorization || null));
+    } else {
+      res.writeHead(404).end();
+    }
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as { port: number };
+  url = `http://127.0.0.1:${address.port}/${fixture}/index.html`;
   const executablePath = process.env.CHROME_PATH || [
     'C:/Program Files/Google/Chrome/Application/chrome.exe',
     'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
   ].find(existsSync);
-  browser = await puppeteer.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
+  browser = await puppeteer.launch({ headless: true, pipe: true, args: ['--no-sandbox', '--disable-dev-shm-usage'], ...(executablePath ? { executablePath } : {}) });
 });
-after(async () => { await browser?.close(); await server?.close(); });
+after(async () => { await browser?.close(); server?.close(); });
 
 for (const [role, logout] of [
   ['customer','logoutCustomer'], ['seller','logoutSeller'], ['supplier','logoutSupplier'],
@@ -47,7 +59,11 @@ for (const [role, logout] of [
       await page.waitForFunction(() => !!(window as any).authHarness?.auth);
       await page.evaluate(async (role) => { await (window as any).authHarness.auth.loginWithOTP(role, 'synthetic'); }, role);
       await page.waitForFunction(() => !!(window as any).authHarness.state().user);
+      const revocation = page.waitForRequest(request => request.url().endsWith('/api/v1/auth/logout'), { timeout: 3000 });
       await page.evaluate((logout) => (window as any).authHarness.auth[logout](), logout);
+      const request = await revocation;
+      assert.equal(request.method(), 'POST');
+      assert.equal(request.headers().authorization, 'Bearer fixture-' + role);
       await page.waitForFunction(() => !(window as any).authHarness.state().user, { timeout: 1500 });
       const state = await page.evaluate(() => (window as any).authHarness.state());
       assert.equal(state.token, null); assert.equal(state.credential, null);
@@ -61,6 +77,22 @@ for (const [role, logout] of [
     } finally { await context.close(); }
   });
 }
+
+test('the browser signs out and surfaces an unconfirmed server logout after retry', async () => {
+  const context = await browser.createBrowserContext();
+  try {
+    const page = await context.newPage();
+    await page.goto(url);
+    await page.waitForFunction(() => !!(window as any).authHarness?.auth);
+    await page.evaluate(() => (window as any).authHarness.auth.loginWithOTP('customer:offline', 'synthetic'));
+    let attempts = 0;
+    page.on('request', request => { if (request.url().endsWith('/api/v1/auth/logout')) attempts++; });
+    await page.evaluate(() => (window as any).authHarness.auth.logoutUser());
+    await page.waitForFunction(() => (window as any).authHarness.auth.logoutUnconfirmed, { timeout: 3000 });
+    assert.equal(attempts, 2);
+    assert.equal(await page.evaluate(() => (window as any).authHarness.state().credential), null);
+  } finally { await context.close(); }
+});
 
 test('logout removes the session from another open tab', async () => {
   const context = await browser.createBrowserContext();

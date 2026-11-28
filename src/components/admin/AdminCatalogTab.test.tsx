@@ -249,6 +249,7 @@ test('mobile catalog review keeps field decisions available before saving and ga
     await page.tap('button[aria-label="بازبینی کالای دوم"]');
     await page.tap('dialog button::-p-text(رد کل کالا)');
     const reject = 'dialog button::-p-text(تأیید رد کالا)';
+    await page.waitForSelector(reject, { visible: true });
     assert.equal(await page.$eval(reject, button => (button as HTMLButtonElement).disabled), true);
     await page.type('dialog textarea[aria-label="دلیل رد کالا"]', 'تصویر اصلی باید اصلاح شود');
     await page.tap(reject);

@@ -202,6 +202,7 @@ jobs:
             TestRebuildInventoryHolds
             TestSupplierReturnBackActiveRetryAndAtomicTransition
             TestSupplierStatementMatchesAvailableAndScopesFinancialRows
+            TestStorefrontStockUsesVisiblePurchasableQuantities
           )
           # These reduced-schema fixtures DROP canonical storage tables CASCADE.
           # Give the fixture writers their own DB; the receipt/custody checks

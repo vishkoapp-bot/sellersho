@@ -301,5 +301,40 @@ class ReleaseIdentityGate(unittest.TestCase):
                 namespace['verify_release_version'](path, manifest)
 
 
+class PrimaryTLSPolicy(unittest.TestCase):
+    def load_policy_helper(self, name, namespace=None):
+        source = (ROOT / 'scripts/deploy_remote.py').read_text(encoding='utf-8')
+        node = next(node for node in ast.parse(source).body
+                    if isinstance(node, ast.FunctionDef) and node.name == name)
+        scope = {} if namespace is None else namespace
+        exec(compile(ast.Module(body=[node], type_ignores=[]), 'deploy_remote.py', 'exec'), scope)
+        return scope[name]
+
+    def test_empty_sni_uses_the_dedicated_primary_certificate_policy(self):
+        change = self.load_policy_helper('route_no_sni_to_primary')
+        primary = {'subjects': ['198.51.100.8'], 'issuers': [{'module': 'acme', 'profile': 'shortlived'}]}
+        seller = {'on_demand': True}
+        config = {'apps': {'tls': {'automation': {'policies': [primary, seller]}}}}
+        change(config, '198.51.100.8')
+        self.assertEqual(primary['subjects'], ['198.51.100.8', ''])
+        self.assertEqual(seller, {'on_demand': True})
+
+    def test_cannot_switch_to_redirects_when_trusted_https_fails(self):
+        compose = Mock()
+        configure = Mock()
+        run = Mock(side_effect=RuntimeError('TLS unavailable'))
+        environment = {'PLATFORM_HTTP_HOST': '198.51.100.8', 'PLATFORM_PRIMARY_HTTPS_ONLY': 'false'}
+        deploy = self.load_policy_helper('deploy_edge', {
+            'compose': compose, 'edge_env': environment, 'require_primary_https': True,
+            'build_edge_config': configure, 'run': run,
+        })
+        with self.assertRaisesRegex(RuntimeError, 'TLS unavailable'):
+            deploy()
+        self.assertEqual(environment['PLATFORM_PRIMARY_HTTPS_ONLY'], 'false')
+        configure.assert_not_called()
+        compose.assert_called_once_with('up', '-d', '--no-deps', '--force-recreate', 'edge')
+        self.assertEqual(run.call_args.args[-1], 'https://198.51.100.8/api/health')
+
+
 if __name__ == '__main__':
     unittest.main()

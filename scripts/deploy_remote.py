@@ -547,23 +547,43 @@ os.environ.setdefault('PLATFORM_HTTP_HOST', '46.249.98.190')
 # into compose interpolation and the runtime file, as before.
 if 'TAPIN_TOKEN_KEY' in runtime_env:
     os.environ['TAPIN_TOKEN_KEY'] = runtime_env['TAPIN_TOKEN_KEY']
+EDGE_IMAGE = 'caddy:2-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0'
+
+
+def route_no_sni_to_primary(config, primary_host):
+    policies = config['apps']['tls']['automation']['policies']
+    primary = [policy for policy in policies if primary_host in policy.get('subjects', [])]
+    if len(primary) != 1 or primary[0].get('on_demand') or '' in primary[0]['subjects']:
+        raise RuntimeError('Missing dedicated primary certificate policy')
+    # Browsers omit SNI for an IP URL. Match the empty name before the
+    # on-demand policy, which would otherwise select the container's IP.
+    primary[0]['subjects'].append('')
+    return config
+
+
+def build_edge_config(edge_environment):
+    args = ['docker', 'run', '--rm']
+    for key in edge_environment:
+        args += ['-e', key]
+    args += ['-v', str(release / 'Caddyfile') + ':/etc/caddy/Caddyfile:ro', EDGE_IMAGE,
+             'caddy', 'adapt', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile']
+    config = json.loads(run(*args, capture=True, env={**os.environ, **edge_environment}))
+    route_no_sni_to_primary(config, edge_environment['PLATFORM_HTTP_HOST'])
+    path = release / 'Caddy.json'
+    path.write_text(json.dumps(config) + '\n', encoding='utf-8')
+    run('docker', 'run', '--rm', '-v', str(path) + ':/etc/caddy/Caddy.json:ro', EDGE_IMAGE,
+        'caddy', 'validate', '--config', '/etc/caddy/Caddy.json')
+
+
 runtime = {'services': {'backend': {'environment': runtime_env, 'stop_grace_period': '30s'}}}
 if ssl:
     edge_env = {'ACME_EMAIL': '', 'PLATFORM_HTTP_HOST': '46.249.98.190', 'PLATFORM_PRIMARY_HTTPS_ONLY': 'false'}
     if previous_edge:
         actual_edge_env = dict(v.split('=', 1) for v in inspect(previous_edge[0])['Config']['Env'])
         edge_env.update({k: actual_edge_env[k] for k in edge_env if k in actual_edge_env})
-    primary_url = 'https://' + edge_env['PLATFORM_HTTP_HOST'] + '/api/health'
-    if require_primary_https:
-        # Keep the existing entry point reachable until a trusted certificate
-        # has been provisioned and the primary site is already serving TLS.
-        run('curl', '--fail', '--silent', '--show-error', '--max-time', '12', '--output', '/dev/null', primary_url)
-        edge_env['PLATFORM_PRIMARY_HTTPS_ONLY'] = 'true'
     runtime['services']['edge'] = {'environment': edge_env}
-    run('docker', 'pull', 'caddy:2-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0')
-    run('docker', 'run', '--rm', '-e', 'PLATFORM_HTTP_HOST=46.249.98.190', '-v',
-        str(release / 'Caddyfile') + ':/etc/caddy/Caddyfile:ro', 'caddy:2-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0',
-        'caddy', 'validate', '--config', '/etc/caddy/Caddyfile')
+    run('docker', 'pull', EDGE_IMAGE)
+    build_edge_config(edge_env)
     compose_files.append(root / 'docker-compose.ssl.yml')
     # OBS-01 deploy-fix: the metrics-ports file MUST come after ssl.yml —
     # its frontend `!override` supersedes ssl.yml's `!reset []`. SSL-only:
@@ -578,6 +598,37 @@ def compose(*args, capture=False):
     for file in compose_files:
         cmd += ['-f', str(file)]
     return run(*cmd, *args, capture=capture)
+
+
+def deploy_edge():
+    compose('up', '-d', '--no-deps', '--force-recreate', 'edge')
+    https_only = edge_env['PLATFORM_PRIMARY_HTTPS_ONLY'] == 'true'
+    if not https_only and not require_primary_https:
+        return
+    primary = edge_env['PLATFORM_HTTP_HOST']
+    secure_health = 'https://' + primary + '/api/health'
+
+    def verify_tls():
+        run('curl', '--fail', '--silent', '--show-error', '--retry', '4', '--retry-all-errors',
+            '--retry-delay', '2', '--max-time', '8', '--output', '/dev/null', secure_health)
+
+    # Start with the existing HTTP policy. Change it only once browsers can
+    # reach the staged edge over TLS with a publicly trusted certificate.
+    verify_tls()
+    if not https_only:
+        accepted_edge_env = {**edge_env, 'PLATFORM_PRIMARY_HTTPS_ONLY': 'true'}
+        build_edge_config(accepted_edge_env)
+        shutil.copy2(release / 'Caddy.json', root / 'Caddy.json')
+        edge_env.update(accepted_edge_env)
+        runtime_file.write_text(json.dumps(runtime))
+        compose('up', '-d', '--no-deps', '--force-recreate', 'edge')
+        verify_tls()
+    redirect = run('curl', '--silent', '--show-error', '--max-time', '8',
+                   '--output', '/dev/null', '--write-out', '%{http_code} %{redirect_url}',
+                   'http://' + primary + '/api/health', capture=True)
+    if redirect != '308 ' + secure_health:
+        raise RuntimeError('Primary HTTP requests did not redirect to the trusted HTTPS endpoint')
+    print('Primary HTTPS verified; HTTP redirects enabled', flush=True)
 
 
 # BAK-01: the deploy backup is a call into the consolidated entry
@@ -599,7 +650,7 @@ def compose(*args, capture=False):
 # path inside the backup dir, so the rollback below (which reads
 # backup/<relative>) works unchanged; backend-environment.json
 # (written to a temp file, not under root) lands in extra/.
-saved_files = ['backend/bin/server-linux', 'nginx.conf', 'docker-compose.ssl.yml', 'Caddyfile', '.deployed-commit',
+saved_files = ['backend/bin/server-linux', 'nginx.conf', 'docker-compose.ssl.yml', 'Caddyfile', 'Caddy.json', '.deployed-commit',
                'scripts/publish-backup-success.sh', 'scripts/backup/backup-entrypoint.sh', 'scripts/backup/publish-backup-failure.sh',
                'scripts/backup/check-backup-health.sh', 'scripts/backup/restore-verify.sh',
                'backup-auto.sh', 'backup-daily.sh', 'docker-compose.observability.yml',
@@ -1299,6 +1350,8 @@ try:
     # re-copies them as the same no-op safety net.
     for name in ['Caddyfile', 'docker-compose.ssl.yml', 'docker-compose.observability.yml', 'docker-compose.yml', 'docker-compose.prod.yml']:
         shutil.copy2(release / name, root / name)
+    if ssl:
+        shutil.copy2(release / 'Caddy.json', root / 'Caddy.json')
     # OBS-01 (D-01/G-01): ship the collector config with the release so
     # the compose bind-mounts (./ops/observability/...) resolve on the
     # server. The previous tree is backed up for rollback below.
@@ -1389,10 +1442,7 @@ try:
     compose('up', '-d', '--no-deps', '--force-recreate', 'frontend')
     run('docker', 'exec', 'drup_frontend', 'nginx', '-t')
     if ssl:
-        compose('up', '-d', '--no-deps', '--force-recreate', 'edge')
-        if edge_env['PLATFORM_PRIMARY_HTTPS_ONLY'] == 'true':
-            run('curl', '--fail', '--silent', '--show-error', '--retry', '8', '--retry-connrefused',
-                '--retry-delay', '2', '--max-time', '12', '--output', '/dev/null', primary_url)
+        deploy_edge()
     run('curl', '--fail', '--silent', '--show-error', '--retry', '8', '--retry-connrefused',
         '--retry-delay', '2', '--output', '/dev/null', 'http://46.249.98.190/')
     health()
@@ -1506,14 +1556,16 @@ except Exception as deploy_error:
             # old pins/budgets/healthchecks under the new release.
             for name in ['Caddyfile', 'docker-compose.ssl.yml', 'docker-compose.observability.yml', 'docker-compose.yml', 'docker-compose.prod.yml']:
                 shutil.copy2(release / name, root / name)
+            if ssl:
+                shutil.copy2(release / 'Caddy.json', root / 'Caddy.json')
             for source, destination in backup_scripts:
                 if not source.is_file():
                     raise RuntimeError(f'Backup script missing from release: {source}')
                 shutil.copy2(source, destination)
                 destination.chmod(0o755)
             compose('up', '-d', '--no-deps', '--force-recreate', 'backend', 'frontend')
-            if previous_edge:
-                compose('up', '-d', '--no-deps', '--force-recreate', 'edge')
+            if ssl:
+                deploy_edge()
             health()
             verify_release_version(root / 'dist/contract.json', manifest)
             run_write_probe(release, 'current')

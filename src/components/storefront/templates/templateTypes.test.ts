@@ -45,7 +45,7 @@ test('Modern restores the shopping order and keeps saved promotional sections to
   });
   const enabled = orderedEnabledSections(resolved);
   assert.deepEqual(enabled.slice(0, 6), ['announcement', 'hero', 'categoryRail', 'allProducts', 'deals', 'featured']);
-  assert.deepEqual(enabled.slice(-5), ['trustStrip', 'about', 'testimonials', 'faq', 'newsletter']);
+  assert.deepEqual(enabled.slice(-4), ['trustStrip', 'about', 'testimonials', 'faq']);
   assert.ok(Array.isArray(resolved.sections) && resolved.sections.slice(-2).every(section => !section.orderable));
 });
 
@@ -57,7 +57,7 @@ test('Modern restores the shopping order and keeps saved promotional sections to
 // order. These lists must match the backend mirror table in
 // team05_store_handlers.go (team05TemplateBlueprintSections).
 const allBlueprints: Record<string, string[]> = {
-  'tpl-modern-1': ['announcement', 'hero', 'categoryRail', 'products', 'featured', 'banners', 'bestsellers', 'trustStrip', 'about', 'testimonials', 'faq', 'newsletter'],
+  'tpl-modern-1': ['announcement', 'hero', 'categoryRail', 'products', 'featured', 'banners', 'bestsellers', 'trustStrip', 'about', 'testimonials', 'faq'],
   'tpl-electronic-1': ['announcement', 'hero', 'categoryRail', 'deals', 'timedDeals', 'banners', 'bestsellers', 'brands', 'discounted', 'testimonials', 'faq', 'products'],
   'tpl-fashion-1': ['announcement', 'hero', 'categoryRail', 'products', 'lookbook', 'about'],
   'tpl-digikala-1': ['announcement', 'hero', 'categoryRail', 'deals', 'timedDeals', 'banners', 'brands', 'bestsellers', 'discounted', 'topRated', 'campaign', 'faq', 'products'],
@@ -69,8 +69,12 @@ test('dict-form sections resolve to blueprint order for all five templates', () 
     const dict: Record<string, boolean> = {};
     // Scrambled input: reverse blueprint order.
     for (let i = blueprint.length - 1; i >= 0; i--) dict[blueprint[i]] = true;
+    dict.newsletter = true;
     const enabled = orderedEnabledSections(resolveTemplateConfig(templateId, { sections: dict }));
     assert.deepEqual(enabled, blueprint, `${templateId} order`);
+    const legacy = { key: 'newsletter', label: 'Newsletter', enabled: true, toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true };
+    const resolved = resolveTemplateConfig(templateId, { sections: [legacy] });
+    assert.ok(Array.isArray(resolved.sections) && resolved.sections.every(section => section.key !== 'newsletter'));
   }
 });
 

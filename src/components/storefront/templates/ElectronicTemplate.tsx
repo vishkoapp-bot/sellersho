@@ -26,7 +26,6 @@ import {
   AboutSection,
   TopRatedSection,
   CampaignSection,
-  NewsletterSection,
   FaqSection,
   TestimonialsSection,
   LookbookSection,
@@ -246,12 +245,6 @@ export const ElectronicTemplate: React.FC<StorefrontTemplateProps> = ({ store, p
         return <AboutSection store={store} config={cfg} accentColor={accentColor} />;
       case 'campaign':
         return <CampaignSection store={store} products={items} config={cfg} accentColor={accentColor} />;
-      case 'newsletter':
-        return (
-          <div className="rounded-3xl bg-white p-2 shadow-sm empty:hidden lg:p-3">
-            <NewsletterSection config={cfg} accentColor={accentColor} storeSlug={store.slug} />
-          </div>
-        );
       case 'testimonials':
         return (
           <div className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm empty:hidden lg:p-5">

@@ -23,7 +23,6 @@ import { FashionProductCard } from '../FashionProductCard';
 import { apiRequest } from '../../../services/apiClient';
 import { groupProductsByCategory } from './StoreSections';
 import type { CategoryGroup } from './StoreSections';
-import { normalizePersianText } from '../../../utils/routing';
 import { StorefrontCatalogue } from './StorefrontCatalogue';
 import { FallbackImage } from '../../common/FallbackImage';
 
@@ -510,83 +509,6 @@ const FashionFaq: React.FC<{ config: TemplateConfig }> = ({ config }) => {
   );
 };
 
-const FashionNewsletter: React.FC<{ config: TemplateConfig; storeSlug?: string }> = ({ config, storeSlug }) => {
-  const [mobile, setMobile] = useState('');
-  const [done, setDone] = useState(false);
-  const [error, setError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  useEffect(() => {
-    setMobile('');
-    setDone(false);
-    setError('');
-  }, [storeSlug]);
-  if (!sectionEnabled(config, 'newsletter')) return null;
-  const title = customText(config, 'newsletterTitle', 'عضویت در اطلاع‌رسانی');
-  const subtitle = (templateCustom(config).newsletterSubtitle || '').trim();
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (submitting) return;
-    const number = normalizePersianText(mobile).trim();
-    if (!/^09\d{9}$/.test(number)) {
-      setError('شماره موبایل معتبر وارد کنید.');
-      return;
-    }
-    setError('');
-    setSubmitting(true);
-    try {
-      await apiRequest('/newsletter/subscribe', {
-        method: 'POST',
-        body: JSON.stringify(storeSlug ? { mobile: number, storeSlug } : { mobile: number }),
-      });
-      setDone(true);
-    } catch {
-      setError('ثبت انجام نشد؛ دوباره تلاش کنید.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-  return (
-    <section data-testid="store-newsletter" className="w-full bg-[#3a4441] text-white">
-      <div className="mx-auto w-full max-w-[1080px] px-4 py-14 lg:px-10 lg:py-[72px]">
-        <div className="flex flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
-          <div className="max-w-xl">
-            <h2 className="text-[30px] font-extrabold leading-[1.4] tracking-normal lg:text-[40px]">{title}</h2>
-            {subtitle ? <p className="mt-2 text-sm leading-7 text-white/70">{subtitle}</p> : null}
-          </div>
-          <div className="w-full max-w-md">
-            {done ? (
-              <p role="status" className="text-sm font-bold text-emerald-300">شماره شما ثبت شد.</p>
-            ) : (
-              <form onSubmit={submit} className="flex items-end gap-3">
-                <input
-                  type="tel"
-                  name="mobile"
-                  autoComplete="tel"
-                  aria-label="شماره موبایل برای عضویت"
-                  aria-invalid={!!error}
-                  dir="ltr"
-                  value={mobile}
-                  onChange={(e) => setMobile(e.target.value)}
-                  placeholder="مثلاً ۰۹۱۲۳۴۵۶۷۸۹…"
-                  className="h-12 min-w-0 flex-1 border-0 border-b border-white/40 bg-transparent text-left text-sm text-white outline-none transition placeholder:text-white/40 focus:border-white"
-                />
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className={`h-12 shrink-0 rounded-none bg-[#faf8f5] px-6 text-sm font-bold text-[#3a4441] transition hover:bg-white ${FOCUS_RING}`}
-                >
-                  {submitting ? 'در حال ثبت…' : 'عضویت'}
-                </button>
-              </form>
-            )}
-            {error !== '' && <p role="alert" className="mt-2 text-xs font-bold text-rose-300">{error}</p>}
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-};
-
 export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, products, accentColor, config, categories, productFeed }) => {
   const cfg = resolveTemplateConfig('tpl-fashion-1', config);
   const items = storefrontProducts(store, products);
@@ -767,8 +689,6 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
           </Wrap>
         );
       }
-      case 'newsletter':
-        return <FashionNewsletter config={cfg} storeSlug={store.slug} />;
       default:
         return null;
     }
@@ -790,11 +710,10 @@ export const FashionTemplate: React.FC<StorefrontTemplateProps> = ({ store, prod
       nodes.push(<React.Fragment key={key}>{renderSection(key)}</React.Fragment>);
     }
   }
-  const lastKey = order[order.length - 1];
 
   return (
     <main id="fashion-main"
-      className={`fashion-storefront flex-1 bg-[#faf8f5] text-[#1c1c1a] ${lastKey === 'newsletter' ? '' : 'pb-10 lg:pb-14'}`}
+      className="fashion-storefront flex-1 bg-[#faf8f5] pb-10 text-[#1c1c1a] lg:pb-14"
       style={{ ['--tpl-accent' as string]: accentColor } as React.CSSProperties}
     >
       {!order.some(key => key === 'hero' || key === 'heroSlides') && <h1 className="sr-only">{store.name}</h1>}

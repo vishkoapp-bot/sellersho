@@ -210,7 +210,7 @@ var team05PublicTemplateCustomAllowlist = map[string]bool{
 // blueprint edit is silently a no-op for dict-form stores on that
 // template until this table is edited too.
 var team05TemplateBlueprintSections = map[string][]string{
-	"tpl-modern-1":     {"announcement", "hero", "categoryRail", "products", "featured", "banners", "bestsellers", "trustStrip", "about", "testimonials", "faq", "newsletter"},
+	"tpl-modern-1":     {"announcement", "hero", "categoryRail", "products", "featured", "banners", "bestsellers", "trustStrip", "about", "testimonials", "faq"},
 	"tpl-electronic-1": {"announcement", "hero", "categoryRail", "deals", "timedDeals", "banners", "bestsellers", "brands", "discounted", "testimonials", "faq", "products"},
 	"tpl-fashion-1":    {"announcement", "hero", "categoryRail", "products", "lookbook", "about"},
 	"tpl-digikala-1":   {"announcement", "hero", "categoryRail", "deals", "timedDeals", "banners", "brands", "bestsellers", "discounted", "topRated", "campaign", "faq", "products"},

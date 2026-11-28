@@ -61,7 +61,7 @@
 .modern-showcase .product-title-link::after { content: ''; position: absolute; inset: 0; }
 .modern-showcase .cv-card:focus-within { outline: 2px solid var(--fashion-accent); outline-offset: 2px; }
 .modern-showcase .product-card-status { display: block; color: var(--fashion-muted); font-size: .75rem; }
-.modern-showcase :is(#about, [data-testid="store-newsletter"], [data-testid="store-faq"]) { border-radius: 16px; padding: clamp(12px, 2.5vw, 26px); background: var(--fashion-surface); }
+.modern-showcase :is(#about, [data-testid="store-faq"]) { border-radius: 16px; padding: clamp(12px, 2.5vw, 26px); background: var(--fashion-surface); }
 .fashion-footer[data-storefront-theme="tpl-modern-1"] { border-top-color: var(--fashion-line); background: #edf0e7; }
 
 @media (max-width: 639px) {

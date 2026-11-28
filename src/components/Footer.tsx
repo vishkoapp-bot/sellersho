@@ -1,26 +1,18 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ArrowUp, Mail, Phone, ShoppingBag } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
-import { apiRequest, ApiError } from '../services/apiClient';
-import { normalizePersianText, pathForView } from '../utils/routing';
+import { apiRequest } from '../services/apiClient';
+import { pathForView } from '../utils/routing';
 import type { StaticPageKey } from '../context/storeContextTypes';
 import { followStoreLink } from '../utils/followStoreLink';
 
 export const Footer: React.FC = () => {
   const { openStaticPage, setActiveView, toPersianDigits } = useStore();
-  const [newsMobile, setNewsMobile] = useState('');
-  const [newsEmail, setNewsEmail] = useState('');
-  const [newsDone, setNewsDone] = useState(false);
-  const [newsError, setNewsError] = useState('');
-  const [newsSubmitting, setNewsSubmitting] = useState(false);
-  const [invalidMobile, setInvalidMobile] = useState(false);
-  const mobileInput = useRef<HTMLInputElement>(null);
   const [returnWindowDays, setReturnWindowDays] = useState<number | null>(null);
   const [content, setContent] = useState<Record<string, unknown>>({});
 
   useEffect(() => {
     let cancelled = false;
-    try { if (localStorage.getItem('drup_newsletter_store-central')) setNewsDone(true); } catch { /* storage can be disabled */ }
     apiRequest<{ days?: unknown }>('/public/return-window-days').then(response => {
       const days = Number(response?.days);
       if (!cancelled && Number.isFinite(days) && days >= 1 && days <= 365) setReturnWindowDays(Math.round(days));
@@ -34,33 +26,6 @@ export const Footer: React.FC = () => {
   const text = (key: string, fallback: string) => {
     const value = content[key];
     return typeof value === 'string' && value.trim() ? value : fallback;
-  };
-
-  const subscribe = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (newsSubmitting) return;
-    const mobile = normalizePersianText(newsMobile.trim());
-    if (!/^09[0-9]{9}$/.test(mobile)) {
-      setInvalidMobile(true);
-      setNewsError('شمارهٔ موبایل را با ۰۹ و در ۱۱ رقم وارد کنید.');
-      mobileInput.current?.focus();
-      return;
-    }
-    setNewsError('');
-    setNewsSubmitting(true);
-    try {
-      await apiRequest('/newsletter/subscribe', {
-        method: 'POST', body: JSON.stringify({ storeSlug: 'central', mobile, email: newsEmail.trim() || undefined, source: 'footer' }),
-      });
-      try { localStorage.setItem('drup_newsletter_store-central', '1'); } catch { /* storage can be disabled */ }
-      setNewsDone(true);
-    } catch (error) {
-      setNewsError(error instanceof ApiError && error.status === 429
-        ? 'تعداد تلاش‌ها زیاد بود. کمی بعد دوباره امتحان کنید.'
-        : 'عضویت ثبت نشد. دوباره امتحان کنید.');
-    } finally {
-      setNewsSubmitting(false);
-    }
   };
 
   const infoLinks: [StaticPageKey, string][] = [
@@ -101,24 +66,6 @@ export const Footer: React.FC = () => {
           </div>
         </div>
 
-        <div className="central-newsletter">
-          <h2>از پیشنهادهای سلرشو باخبر شوید</h2>
-          {newsDone ? <p role="status">عضویت شما ثبت شد.</p> : (
-            <form onSubmit={subscribe}>
-              <label><span>شماره موبایل</span>
-                <input name="mobile" autoComplete="tel-national" type="tel" inputMode="tel" dir="ltr" value={newsMobile} ref={mobileInput}
-                  aria-invalid={invalidMobile || undefined} aria-describedby={invalidMobile ? 'central-newsletter-error' : undefined}
-                  onChange={event => { setNewsMobile(event.target.value); setNewsError(''); setInvalidMobile(false); }} required placeholder="09123456789" />
-              </label>
-              <label><span>ایمیل (اختیاری)</span>
-                <input name="email" autoComplete="email" type="email" dir="ltr" spellCheck={false} value={newsEmail}
-                  onChange={event => setNewsEmail(event.target.value)} placeholder="name@example.com" />
-              </label>
-              <button type="submit" disabled={newsSubmitting}>{newsSubmitting ? 'در حال ثبت…' : 'عضویت در خبرنامه'}</button>
-              {newsError && <p id="central-newsletter-error" role="alert">{newsError}</p>}
-            </form>
-          )}
-        </div>
         <div className="central-footer-bottom">
           <p>© سلرشو. کلیه حقوق محفوظ است.</p>
           <button type="button" onClick={() => window.scrollTo({ top: 0 })}>بازگشت به بالا <ArrowUp size={17} aria-hidden="true" /></button>

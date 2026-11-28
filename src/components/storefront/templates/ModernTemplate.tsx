@@ -23,7 +23,6 @@ import {
   AboutSection,
   TopRatedSection,
   CampaignSection,
-  NewsletterSection,
   FaqSection,
   TestimonialsSection,
   LookbookSection,
@@ -190,8 +189,6 @@ export const ModernTemplate: React.FC<StorefrontTemplateProps> = ({ store, produ
         );
       case 'campaign':
         return <CampaignSection store={store} products={items} config={cfg} accentColor={accentColor} />;
-      case 'newsletter':
-        return <NewsletterSection config={cfg} accentColor={accentColor} storeSlug={store.slug} />;
       case 'testimonials':
         return <TestimonialsSection config={cfg} accentColor={accentColor} />;
       case 'faq':

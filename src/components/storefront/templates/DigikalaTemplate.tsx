@@ -24,7 +24,6 @@ import {
   AboutSection,
   TopRatedSection,
   CampaignSection,
-  NewsletterSection,
   FaqSection,
   TestimonialsSection,
   LookbookSection,
@@ -322,12 +321,6 @@ export const DigikalaTemplate: React.FC<StorefrontTemplateProps> = ({ store, pro
         return (
           <Panel>
             <CampaignSection store={store} products={items} config={cfg} accentColor={accentColor} />
-          </Panel>
-        );
-      case 'newsletter':
-        return (
-          <Panel>
-            <NewsletterSection config={cfg} accentColor={accentColor} storeSlug={store.slug} />
           </Panel>
         );
       case 'testimonials':

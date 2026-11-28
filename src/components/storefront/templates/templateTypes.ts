@@ -143,8 +143,6 @@ export interface TemplateCustom {
   testimonials?: TemplateTestimonial[];
   faqItems?: TemplateFaqItem[];
   trustItems?: TemplateTrustItem[];
-  newsletterTitle?: string;
-  newsletterSubtitle?: string;
 }
 
 // FIX6 - the public store API returns templateConfig.sections as a
@@ -179,7 +177,6 @@ export const DEFAULT_TEMPLATE_SECTIONS: TemplateSection[] = [
   { key: 'categoryGrid', label: 'گرید دسته‌بندی‌ها', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'collections', label: 'مجموعه‌ها', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'campaign', label: 'کمپین', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
-  { key: 'newsletter', label: 'خبرنامه', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'testimonials', label: 'نظرات مشتریان', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'faq', label: 'پرسش‌های متداول', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
   { key: 'products', label: 'همه کالاها', toggleable: true, orderable: true, defaultEnabled: true, selfHidesWhenEmpty: true },
@@ -245,14 +242,15 @@ export function storefrontProducts(store: Store, products: Product[]): Product[]
 export function normalizeTemplateSections(sections: unknown, blueprintOrder?: string[]): TemplateSection[] | undefined {
   if (sections === undefined || sections === null) return undefined;
   if (Array.isArray(sections)) {
-    return sections.filter((entry) => entry && typeof entry === 'object') as TemplateSection[];
+    return sections.filter((entry) => entry && typeof entry === 'object'
+      && canonicalSectionKey(sectionKey(entry)) !== 'newsletter') as TemplateSection[];
   }
   if (typeof sections === 'object') {
     const entries: TemplateSection[] = [];
     const seen = new Set<string>();
     for (const [rawKey, value] of Object.entries(sections as Record<string, unknown>)) {
       const key = canonicalSectionKey(rawKey);
-      if (!key || seen.has(key)) continue; // dedup after canonicalisation; first occurrence wins
+      if (!key || key === 'newsletter' || seen.has(key)) continue; // dedup after canonicalisation; first occurrence wins
       seen.add(key);
       entries.push({
         key,
@@ -350,15 +348,13 @@ function bp(templateId: string, tagline: string, sections: string[], custom: Tem
 export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
   'tpl-modern-1': bp('tpl-modern-1', 'مینیمال و آرام؛ تمرکز روی خودِ کالا', [
     'announcement', 'hero', 'categoryRail', 'products', 'featured', 'banners',
-    'bestsellers', 'trustStrip', 'about', 'testimonials', 'faq', 'newsletter',
+    'bestsellers', 'trustStrip', 'about', 'testimonials', 'faq',
   ], {
     categoriesTitle: 'دسته‌بندی‌ها',
     featuredTitle: 'منتخب‌های فروشگاه',
     bestSellersTitle: 'پرفروش‌ترین‌ها',
     productsTitle: 'همه کالاهای فروشگاه',
     aboutTitle: 'درباره فروشگاه ما',
-    newsletterTitle: 'از پیشنهادهای تازه جا نمانید',
-    newsletterSubtitle: 'با عضویت، اولین نفر از کالاها و پیشنهادهای جدید باخبر شوید.',
   }),
   'tpl-electronic-1': bp('tpl-electronic-1', 'پرانرژی و ریل‌محور؛ مخصوص گجت و کالای دیجیتال', [
     'announcement', 'hero', 'categoryRail', 'deals', 'timedDeals', 'banners',
@@ -370,8 +366,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
     bestSellersTitle: 'پرفروش‌ترین گجت‌ها',
     brandsTitle: 'برندهای محبوب',
     productsTitle: 'همه کالاها',
-    newsletterTitle: 'از تخفیف‌های گجت جا نمانی',
-    newsletterSubtitle: 'پیشنهادهای محدود و قیمت‌های ویژه، اول برای اعضای خبرنامه.',
   }),
   'tpl-fashion-1': bp('tpl-fashion-1', 'فروشگاه مد؛ طراحی مینیمال و ادیتوریال', [
     'announcement', 'hero', 'categoryRail', 'products', 'lookbook', 'about',
@@ -398,8 +392,6 @@ export const TEMPLATE_BLUEPRINTS: Record<string, TemplateBlueprint> = {
     lookbookLink: '#products',
     brandsTitle: 'برندها',
     aboutTitle: 'درباره فروشگاه',
-    newsletterTitle: 'از تازه‌ها باخبر شوید',
-    newsletterSubtitle: 'برای اطلاع از کالکشن‌های تازه، شماره موبایل خود را ثبت کنید.',
   }),
   'tpl-digikala-1': bp('tpl-digikala-1', 'مارکت‌پلیس متراکم؛ مثل فروشگاه‌های بزرگ', [
     'announcement', 'hero', 'categoryRail', 'deals', 'timedDeals', 'banners',
@@ -463,7 +455,7 @@ export function resolveTemplateConfig(templateId: string, saved?: TemplateConfig
     ? ['announcement', 'hero', 'heroSlides', 'categoryRail', 'products', 'allProducts']
     : [];
   const fixedEndSections = templateId === 'tpl-modern-1'
-    ? ['trustStrip', 'about', 'testimonials', 'faq', 'newsletter']
+    ? ['trustStrip', 'about', 'testimonials', 'faq']
     : [];
   const fixedSections = new Set([...fixedStartSections, ...fixedEndSections]);
   const displayKeys = [

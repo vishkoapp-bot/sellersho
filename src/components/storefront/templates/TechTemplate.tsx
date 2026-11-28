@@ -22,7 +22,6 @@ import {
   AboutSection,
   TopRatedSection,
   CampaignSection,
-  NewsletterSection,
   FaqSection,
   TestimonialsSection,
   LookbookSection,
@@ -268,10 +267,6 @@ export const TechTemplate: React.FC<StorefrontTemplateProps> = ({ store, product
       }
       case 'campaign':
         return <CampaignSection store={store} products={items} config={cfg} accentColor={accentColor} />;
-      case 'newsletter':
-        // NewsletterSection carries its own bordered card chrome;
-        // rendering it bare avoids a doubled frame.
-        return <NewsletterSection config={cfg} accentColor={accentColor} storeSlug={store.slug} />;
       case 'testimonials': {
         const hasTestimonials = (custom.testimonials || []).some(
           (t) => t && typeof t.text === 'string' && t.text.trim() !== '',

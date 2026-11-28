@@ -638,13 +638,6 @@ export const SellerTemplateTab: React.FC = () => {
             />
           </>
         );
-      case 'newsletter':
-        return (
-          <>
-            <TextField label="تیتر خبرنامه" value={str(custom.newsletterTitle)} onChange={(v) => setCustom({ newsletterTitle: v })} />
-            <TextField label="زیرتیتر خبرنامه" value={str(custom.newsletterSubtitle)} onChange={(v) => setCustom({ newsletterSubtitle: v })} />
-          </>
-        );
       case 'lookbook':
         return (
           <>

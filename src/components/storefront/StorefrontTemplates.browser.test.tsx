@@ -16,11 +16,12 @@ const themes = {
 test('Modern makes categories and the catalogue reachable early on narrow screens with an older layout', () =>
   visit(`${storefront}?template=modern&modern-support-order`, 320, async page => {
     await page.waitForSelector(items);
-    await page.waitForSelector('[data-testid="store-newsletter"]');
+    await page.waitForSelector('[data-testid="store-faq"]');
     const order = await page.$$eval('.modern-sections > section[data-testid]', sections =>
       sections.map(section => section.getAttribute('data-testid')));
     assert.deepEqual(order.slice(0, 5), ['store-hero-slider', 'store-category-mosaic', 'store-products', 'store-featured', 'store-trust-strip']);
-    assert.deepEqual(order.slice(-2), ['store-faq', 'store-newsletter']);
+    assert.equal(order.at(-1), 'store-faq');
+    assert.equal(await page.$('[data-testid="store-newsletter"]'), null);
     const category = 'a.modern-category';
     assert.equal(await page.$$eval(category, cards => cards.filter(card => card.getClientRects().length).length), 4);
     const start = await page.$eval('#products', section => section.getBoundingClientRect().top);
@@ -30,6 +31,12 @@ test('Modern makes categories and the catalogue reachable early on narrow screen
     await page.click(`${category}[data-category="کتاب"]`);
     await page.waitForFunction(selector => document.querySelectorAll(selector).length === 1, {}, items);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 320);
+  }));
+
+test('central storefront footer keeps its navigation without a newsletter form', () =>
+  visit('/', 390, async page => {
+    await page.waitForSelector('.central-footer nav');
+    assert.equal(await page.$('.central-footer form'), null);
   }));
 
 test('modern keeps its category links, spotlight and availability filter usable on a narrow display', () =>

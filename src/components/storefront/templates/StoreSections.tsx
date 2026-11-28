@@ -502,66 +502,6 @@ export const CampaignSection: React.FC<{
   );
 };
 
-export const NewsletterSection: React.FC<{
-  config: TemplateConfig;
-  accentColor: string;
-  // ISO-E: the store this form belongs to. Without it the subscribe
-  // POST carried no store identity at all, so a subscription entered
-  // on store B could not be attributed to B (the unsubscribe endpoint
-  // is store-aware: mobile+storeId). The success copy promises
-  // "this store's" notifications, so the request must say which store.
-  storeSlug?: string;
-}> = ({ config, accentColor, storeSlug }) => {
-  const [mobile, setMobile] = useState('');
-  const [done, setDone] = useState(false);
-  const [error, setError] = useState('');
-  useEffect(() => { setMobile(''); setDone(false); setError(''); }, [storeSlug]);
-  if (!sectionEnabled(config, 'newsletter')) return null;
-  const newsletterSubtitle = (templateCustom(config).newsletterSubtitle || '').trim();
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!/^09\d{9}$/.test(mobile.trim())) { setError('شماره موبایل معتبر وارد کنید.'); return; }
-    setError('');
-    try {
-      await apiRequest('/newsletter/subscribe', { method: 'POST', body: JSON.stringify(storeSlug ? { mobile: mobile.trim(), storeSlug } : { mobile: mobile.trim() }) });
-      setDone(true);
-    } catch {
-      setError('ثبت انجام نشد؛ دوباره تلاش کنید.');
-    }
-  };
-  return (
-    <section data-testid="store-newsletter" className="space-y-3 rounded-3xl border border-slate-200/60 bg-slate-50 p-5 shadow-sm">
-      <SectionTitle accentColor={accentColor}>{customText(config, 'newsletterTitle', 'عضویت در اطلاع‌رسانی')}</SectionTitle>
-      {newsletterSubtitle ? <p className="text-xs leading-6 text-slate-500">{newsletterSubtitle}</p> : null}
-      {done ? (
-        // The subscribe POST carries storeSlug and the backend
-        // resolves it to this store (unknown slug → 400), so the
-        // subscription is recorded against this store; the success
-        // copy stays neutral and claims nothing beyond registration.
-        <p className="text-emerald-600 font-bold text-xs">شماره شما ثبت شد.</p>
-      ) : (
-        <form onSubmit={submit} className="flex gap-2">
-          <input
-            type="tel"
-            name="mobile"
-            autoComplete="tel-national"
-            aria-label="شماره موبایل"
-            dir="ltr"
-            value={mobile}
-            onChange={(e) => setMobile(e.target.value)}
-            placeholder="09xxxxxxxxx"
-            className="flex-1 min-w-0 rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-xs text-left shadow-sm outline-hidden focus:border-brand"
-          />
-          <button type="submit" className="rounded-2xl px-5 py-2.5 text-xs font-bold text-white shadow-sm transition hover:opacity-90" style={{ backgroundColor: accentColor }}>
-            عضویت
-          </button>
-        </form>
-      )}
-      {error !== '' && <p className="text-rose-500 font-bold text-[11px]">{error}</p>}
-    </section>
-  );
-};
-
 export const FaqSection: React.FC<{
   config: TemplateConfig;
   accentColor: string;

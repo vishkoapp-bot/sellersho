@@ -123,17 +123,6 @@ export interface AdminBannerDto {
   endsAt?: string | null;
 }
 
-export interface NewsletterSubscriberDto {
-  id: string;
-  storeId: string;
-  mobile: string;
-  email?: string;
-  status: string;
-  source?: string;
-  createdAt: string;
-  unsubscribedAt?: string | null;
-}
-
 export type AdminReviewRow = Record<string, any>;
 
 export interface AdminStaffDto {
@@ -303,11 +292,6 @@ export const adminApi = {
   getAdminSiteContent: async (): Promise<Record<string, any>> => {
     const data = await apiRequest<any>('/admin/site-content', { method: 'GET', auth: true });
     return data?.content ?? {};
-  },
-
-  getAdminNewsletterSubscribers: async (): Promise<NewsletterSubscriberDto[]> => {
-    const data = await apiRequest<any>('/admin/newsletter/subscribers', { method: 'GET', auth: true });
-    return Array.isArray(data) ? data : (data?.subscribers ?? []);
   },
 
   getAdminReviews: async (): Promise<AdminReviewRow[]> => {

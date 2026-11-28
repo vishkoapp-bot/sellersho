@@ -3,14 +3,13 @@ import {
   adminApi,
   HomepageSectionDto,
   AdminBannerDto,
-  NewsletterSubscriberDto,
   AdminReviewRow,
   AdminStaffDto,
   CallbackRetryDto,
 } from '../../services/adminApi';
 import { useStore } from '../../context/StoreContext';
 import type { Store } from '../../types';
-import { RotateCcw, Store as StoreIcon, Home, Image, FileText, RefreshCw, Mail, Star, Users } from 'lucide-react';
+import { RotateCcw, Store as StoreIcon, Home, Image, FileText, RefreshCw, Star, Users } from 'lucide-react';
 
 // FIX 17: admin tabs added to reach live's 30-item structure.
 // support-returns wires to GET /admin/returns (read-only list).
@@ -253,33 +252,6 @@ export const AdminCallbackRetriesTab: React.FC = () => {
   return (
     <AdminListShell title="پرداخت‌های ناموفق" icon={<RefreshCw className={iconCls} strokeWidth={1.5} />} {...state}>
       <AdminCallbackRetriesListView retries={items} />
-    </AdminListShell>
-  );
-};
-
-// --- newsletter: GET /admin/newsletter/subscribers -> {subscribers}
-export const AdminNewsletterSubscribersListView: React.FC<{ subscribers: NewsletterSubscriberDto[] }> = ({ subscribers }) => (
-  <>
-    {subscribers.length === 0 && <div className={emptyCls}>مشترکی ثبت نشده است.</div>}
-    {subscribers.map((s) => (
-      <div key={s.id} className={rowCls}>
-        <div className={rowHeaderCls}>
-          <bdi className={rowTitleCls} dir="ltr">{s.mobile}</bdi>
-          <span className={badgeCls}>{s.status}</span>
-        </div>
-        <p>ایمیل: <bdi>{s.email || '—'}</bdi> • فروشگاه: <bdi>{s.storeId}</bdi></p>
-        <p>تاریخ عضویت: {formatDate(s.createdAt)}</p>
-      </div>
-    ))}
-  </>
-);
-
-export const AdminNewsletterTab: React.FC = () => {
-  const { items, ...state } = useAdminList<NewsletterSubscriberDto>(
-    adminApi.getAdminNewsletterSubscribers, 'خطا در دریافت مشترکان خبرنامه');
-  return (
-    <AdminListShell title="مشترکان خبرنامه" icon={<Mail className={iconCls} strokeWidth={1.5} />} {...state}>
-      <AdminNewsletterSubscribersListView subscribers={items} />
     </AdminListShell>
   );
 };

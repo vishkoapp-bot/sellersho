@@ -1,7 +1,7 @@
 import {
   Activity, ArrowDownToLine, BadgePercent, Building2, CalendarClock, ClipboardCheck, Clock,
   Cpu, Crown, DollarSign, FileEdit, FileText, GitFork, Headphones, Home, Image, LayoutDashboard,
-  Mail, MessageSquare, Package, Receipt, RefreshCw, RotateCcw, ShieldAlert, ShieldCheck, Star,
+  MessageSquare, Package, Receipt, RefreshCw, RotateCcw, ShieldAlert, ShieldCheck, Star,
   Store, Truck, Users, Warehouse,
 } from 'lucide-react';
 import type { AdminRole } from '../../context/storeContextTypes';
@@ -64,7 +64,6 @@ const groups = [
     { id: 'campaigns', label: 'کمپین‌ها و بودجه', icon: Crown, roles: administrators },
     { id: 'ad-network', label: 'تبلیغات و ضدتقلب', icon: Activity, roles: support },
     { id: 'referral-network', label: 'دعوت همکاران', icon: GitFork, roles: administrators },
-    { id: 'newsletter', label: 'مشترکان خبرنامه', icon: Mail, roles: administrators },
     { id: 'sms', label: 'پیامک و اعتبار', icon: MessageSquare, roles: administrators },
   ] },
   { id: 'system', label: 'عملیات و دسترسی‌ها', icon: ShieldCheck, items: [

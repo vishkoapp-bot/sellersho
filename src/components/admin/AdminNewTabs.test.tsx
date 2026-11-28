@@ -9,14 +9,12 @@ import {
   AdminBannersListView,
   AdminSiteContentListView,
   AdminCallbackRetriesListView,
-  AdminNewsletterSubscribersListView,
   AdminReviewsListView,
   AdminStaffListView,
   AdminHomepageTab,
   AdminBannersTab,
   AdminSiteContentTab,
   AdminCallbackRetriesTab,
-  AdminNewsletterTab,
   AdminReviewsTab,
   AdminStaffTab,
   flattenSiteContent,
@@ -25,7 +23,6 @@ import type { Store } from '../../types';
 import type {
   HomepageSectionDto,
   AdminBannerDto,
-  NewsletterSubscriberDto,
   AdminStaffDto,
   CallbackRetryDto,
 } from '../../services/adminApi';
@@ -143,19 +140,6 @@ it('callback-retries render order/status/attempts/last error, with no retry butt
   assert.match(empty, /پرداخت ناموفقی ثبت نشده است/);
 });
 
-it('newsletter subscribers render mobile/status/store and an honest empty state', () => {
-  const subscribers: NewsletterSubscriberDto[] = [
-    { id: 'n1', storeId: 'store-1', mobile: '09120000001', email: 'a@example.com', status: 'active', createdAt: '2026-11-01T00:00:00Z' },
-  ];
-  const html = renderToStaticMarkup(<AdminNewsletterSubscribersListView subscribers={subscribers} />);
-  assert.doesNotMatch(html, STALE_COPY);
-  assert.match(html, /09120000001/);
-  assert.match(html, /active/);
-  assert.match(html, /store-1/);
-  const empty = renderToStaticMarkup(<AdminNewsletterSubscribersListView subscribers={[]} />);
-  assert.match(empty, /مشترکی ثبت نشده است/);
-});
-
 it('reviews render customer/rating/status from the raw snake_case columns and an honest empty state', () => {
   const reviews = [
     {
@@ -193,7 +177,6 @@ it('each API-backed tab container renders a loading state with no stale copy', (
     ['banners', <AdminBannersTab />],
     ['site-content', <AdminSiteContentTab />],
     ['callback-retries', <AdminCallbackRetriesTab />],
-    ['newsletter', <AdminNewsletterTab />],
     ['reviews', <AdminReviewsTab />],
     ['staff', <AdminStaffTab />],
   ] as const) {

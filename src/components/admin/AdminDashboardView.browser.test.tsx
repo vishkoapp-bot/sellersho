@@ -78,6 +78,16 @@ test('anonymous direct admin order links keep the sign-in guard', { timeout: 120
     assert.equal(await page.$('#admin-main'), null);
   }));
 
+test('the retired subscribers link opens the default dashboard without a menu item or request', { timeout: 120000 }, () =>
+  visit('/admin?admin=super&section=newsletter', 390, async page => {
+    await page.waitForSelector('#admin-main', { visible: true });
+    assert.equal(await title(page), 'پیشخوان مدیریت');
+    await page.click(menuButton);
+    await page.waitForSelector(menu);
+    assert.equal(await page.$('a[data-section="newsletter"]'), null);
+    assert.equal(await page.evaluate(() => (window as any).batch8Fixture.adminReads.includes('/api/v1/admin/newsletter/subscribers')), false);
+  }));
+
 test('admin navigation resets scroll and opens the existing management lists', { timeout: 180000 }, () =>
   visit('/admin?admin=super', 1280, async page => {
     await page.setViewport({ width: 1280, height: 500 });
@@ -103,7 +113,6 @@ test('admin navigation resets scroll and opens the existing management lists', {
       ['banners', 'بنری ثبت نشده است'],
       ['site-content', 'محتوایی ثبت نشده است'],
       ['finance-callback-retries', 'پرداخت ناموفقی ثبت نشده است'],
-      ['newsletter', 'مشترکی ثبت نشده است'],
       ['reviews', 'نظری ثبت نشده است'],
       ['staff', 'کارکنی ثبت نشده است'],
     ];

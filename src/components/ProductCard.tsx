@@ -5,7 +5,7 @@ import { followStoreLink } from '../utils/followStoreLink';
 import { activeStoreSlugOf, useStore } from '../context/StoreContext';
 import { isProductPublishedInStore } from '../utils/storeAssortment';
 import { useToast } from '../context/ToastContext';
-import { Package, Plus, SlidersHorizontal } from 'lucide-react';
+import { Layers, Package, Plus } from 'lucide-react';
 import { ReturnWindowBadge } from './ReturnWindowBadge';
 import { CampaignDiscountBadge } from './common/CampaignDiscountBadge';
 import { FallbackImage } from './common/FallbackImage';
@@ -36,7 +36,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, compactAdd = 
   const displayChoice = product.productType === 'variable' || Boolean(product.variants?.length && !resolvePurchase(product));
   const actionLabel = !published ? 'در این فروشگاه عرضه نمی‌شود' : !available ? 'ناموجود'
     : displayChoice ? `انتخاب مدل ${product.title}` : `افزودن ${product.title} به سبد خرید`;
-  const ActionIcon = displayChoice ? SlidersHorizontal : Plus;
+  const ActionIcon = displayChoice ? Layers : Plus;
   const handleQuickAdd = () => {
     if (displayChoice) {
       openProductDetail(product);

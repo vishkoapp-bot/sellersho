@@ -217,14 +217,17 @@ export const isHiddenSyntheticVariant = (
 export const cheapestPurchaseVariant = <V extends PurchaseVariantCandidate>(product: PurchaseProductCandidate & { variants?: V[] }): V | undefined => {
   let cheapest: V | undefined;
   let cheapestPrice = Infinity;
+  let greatestStock = -1;
   for (const variant of activeProductVariants(product)) {
     const vp = product.variantPrices?.[variant.id];
     if (!vp || !Number.isFinite(vp.price) || vp.price <= 0
       || isHiddenSyntheticVariant(product, variant) || !variantPurchasable(product, variant)) continue;
     const price = variantSaleOf(vp)?.price ?? vp.price;
-    if (price < cheapestPrice) {
+    const stock = variant.stock ?? 0;
+    if (price < cheapestPrice || (price === cheapestPrice && stock > greatestStock)) {
       cheapest = variant;
       cheapestPrice = price;
+      greatestStock = stock;
     }
   }
   return cheapest;
@@ -243,7 +246,8 @@ export const initialPurchaseVariant = (product: Product, spnc?: string | null, s
 
 export const initialDetailPurchaseVariant = (product: Product, spnc?: string | null): ProductVariant | undefined => {
   if (!requiresProductVariant(product)) return initialPurchaseVariant(product, spnc, product.storeDefaultVariantId);
-  return spnc ? activeProductVariants(product).find(variant => variant.spnc === spnc && !isHiddenSyntheticVariant(product, variant)) : undefined;
+  const linked = spnc ? activeProductVariants(product).find(variant => variant.spnc === spnc && !isHiddenSyntheticVariant(product, variant)) : undefined;
+  return linked ?? cheapestPurchaseVariant(product);
 };
 
 // Earlier axes constrain later axes. Changing an earlier choice selects a

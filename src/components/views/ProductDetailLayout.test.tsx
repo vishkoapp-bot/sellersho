@@ -33,13 +33,14 @@ test('central campaign and discount badges fit a narrow screen and keep the actu
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 320);
   });
 });
-test('a legacy product asks for a real model and ignores links to the parent placeholder', async () => {
+test('a legacy product defaults to the cheapest real model and ignores links to the parent placeholder', async () => {
   await visit('/product/batch8-product-0?legacy-parent&spnc=LEGACY-PARENT', 390, async page => {
     const options = '.central-pdp-options button';
     await page.waitForSelector(options);
     assert.deepEqual(await page.$$eval(options, buttons => buttons.map(button => button.textContent?.trim())), ['اسپرت', 'استاندارد']);
-    assert.equal(await page.$(`${options}[aria-pressed="true"]`), null);
-    assert.equal(await page.$('.central-pdp-actions'), null);
+    assert.equal(await page.$eval(`${options}[aria-pressed="true"]`, button => button.textContent?.trim()), 'استاندارد');
+    assert.equal(await page.$eval('.central-pdp-subtotal strong', node => node.textContent?.trim()), '۱۲۰٬۰۰۰ تومان');
+    await page.waitForSelector('.central-pdp-actions button:not(:disabled)');
     await clickText(page, 'اسپرت', options);
     assert.equal(await page.$eval('.central-pdp-subtotal strong', node => node.textContent?.trim()), '۱۵۰٬۰۰۰ تومان');
     await page.waitForSelector('.central-pdp-actions button:not(:disabled)');

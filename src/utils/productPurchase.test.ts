@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Product, ProductVariant } from '../types';
-import { axisOptionVariant, cheapestPurchaseVariant, initialPurchaseVariant, resolvePurchase, resolveStockBadge, cartQuantityAllowed, sellerVariantPreview, mergeCartPurchase, productForVariant } from './productPurchase';
+import { axisOptionVariant, cheapestPurchaseVariant, initialDetailPurchaseVariant, initialPurchaseVariant, resolvePurchase, resolveStockBadge, cartQuantityAllowed, sellerVariantPreview, mergeCartPurchase, productForVariant } from './productPurchase';
 
 const sku = (id: string, selection: Record<string, string>, stock = 5): ProductVariant => ({
   id, selection, stock, spnc: id, name: id, variantName: id, attributes: {}, isDefault: false,
@@ -55,6 +55,21 @@ describe('canonical customer SKU resolution', () => {
     const product = fixture();
     assert.equal(initialPurchaseVariant(product, 'red-m')?.id, 'red-m');
     assert.equal(initialPurchaseVariant(product)?.id, 'red-s');
+  });
+  it('defaults to the lowest payable price, then the greatest stock, then the first variant', () => {
+    const product = fixture();
+    const [first, second, soldOut] = product.variants!;
+    second.stock = 15;
+    product.variantPrices![soldOut.id] = { price: 1, originalPrice: 1, discountPercent: 0 };
+    assert.equal(initialDetailPurchaseVariant(product)?.id, first.id);
+    product.variantPrices![second.id].salePrice = 1100;
+    second.maxCartQty = 1;
+    assert.equal(initialDetailPurchaseVariant(product)?.id, second.id);
+    second.stock = first.stock;
+    assert.equal(initialDetailPurchaseVariant(product)?.id, first.id);
+    assert.equal(initialDetailPurchaseVariant(product, soldOut.spnc)?.id, soldOut.id);
+    first.stock = second.stock = 0;
+    assert.equal(initialDetailPurchaseVariant(product), undefined);
   });
   it('resolves sparse axis choices without fabricating a combination or allowing tracked zero stock', () => {
     const product = fixture();

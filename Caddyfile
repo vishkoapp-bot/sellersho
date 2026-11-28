@@ -122,7 +122,12 @@ https://{$PLATFORM_HTTP_HOST:localhost} {
             disable_tlsalpn_challenge
         }
     }
-    import frontend_tls_routes
+    log
+    route {
+        @internal path /internal/*
+        respond @internal 404
+        import frontend_budget_proxy
+    }
 }
 
 :80 {
